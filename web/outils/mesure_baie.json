@@ -1,0 +1,32 @@
+{
+ "pids": {
+  "WebContent": 54742,
+  "GPU": 54740,
+  "WindowServer": 590
+ },
+ "date": "2026-09-08 23:10",
+ "plan": {
+  "secondes": 16.2,
+  "images": 0,
+  "gpu_util_moyenne_pct": 3.9,
+  "WebContent_pct_coeur": 0.06,
+  "GPU_pct_coeur": 0.0,
+  "WindowServer_pct_coeur": 28.01
+ },
+ "baie": {
+  "secondes": 16.3,
+  "images": 0,
+  "gpu_util_moyenne_pct": 1.0,
+  "WebContent_pct_coeur": 0.0,
+  "GPU_pct_coeur": 0.0,
+  "WindowServer_pct_coeur": 27.75
+ },
+ "fermee": {
+  "secondes": 8.1,
+  "images": 0,
+  "gpu_util_moyenne_pct": 2.0,
+  "WebContent_pct_coeur": 0.0,
+  "GPU_pct_coeur": 0.0,
+  "WindowServer_pct_coeur": 28.0
+ }
+}

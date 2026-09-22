@@ -1,0 +1,22 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+
+# Ajouté avant la publication du dépôt (2026-09-22) — rien de tout ça ne doit sortir.
+# (Dans un .gitignore, un commentaire ne vaut qu'en début de ligne : jamais après un motif.)
+
+# les copies de sauvegarde de .env (clés Binance, webhook Discord)…
+.env.*
+# …sauf le modèle, qui ne contient que des valeurs bidon
+!.env.example
+# positions, historiques de signaux, caches : données perso, 21 Mo
+data/
+# journaux d'exécution (chemins locaux, opérations)
+logs/
+notes-terminal-*.txt
+.claude/
+.DS_Store
+# le .app construit par PyInstaller (25 Mo) et les intermédiaires
+web/dist/
+web/build/

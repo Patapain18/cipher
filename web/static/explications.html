@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Comprendre les signaux</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23f4f1ea'/><path d='M6 22 L13 14 L18 18 L26 8' stroke='%2324476e' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+</head>
+<body>
+<div class="shell prose">
+
+  <header class="masthead">
+    <div>
+      <h1>Comprendre les signaux</h1>
+      <p class="sub">D'où vient une notification d'achat, et ce qu'elle vaut vraiment</p>
+    </div>
+    <div class="masthead-side">
+      <a class="badge" href="/">← Retour au tableau de bord</a>
+    </div>
+  </header>
+
+  <!-- ══════════════════════════════════════════════════════════
+       L'avertissement vient en premier, avant toute explication.
+       Une page qui détaillerait d'abord la mécanique du calcul
+       laisserait croire à sa fiabilité pendant plusieurs écrans.
+       ══════════════════════════════════════════════════════════ -->
+  <section class="section" id="verdict-section">
+    <div class="card verdict" id="verdict">
+      <p class="loading">Lecture des mesures…</p>
+    </div>
+  </section>
+
+  <section class="section">
+    <span class="eyebrow">1 — Ce qui déclenche une notification</span>
+    <div class="card">
+      <p>
+        Toutes les cinq minutes, le bot télécharge deux ans de cours pour
+        chacune des valeurs suivies, calcule leur état technique et les
+        <strong>classe par momentum 12-1</strong>. Deux événements
+        seulement déclenchent une bulle :
+      </p>
+
+      <ul class="plain">
+        <li>
+          <strong>Une recomposition du top 12</strong> — quelles valeurs
+          entrent, quelles valeurs sortent. Envoyée tous les 14 jours
+          environ, jamais entre deux.
+        </li>
+        <li>
+          <strong>Le décrochage d'une valeur que tu détiens</strong> —
+          si elle tombe au-delà du 25ᵉ rang. Celle-là part tout de suite :
+          c'est de l'argent réellement engagé.
+        </li>
+      </ul>
+
+      <p style="margin-top:var(--space-3)">
+        <strong>Le score technique ne notifie plus rien.</strong> Il reste
+        calculé et enregistré — il décrit fidèlement l'état d'une valeur et
+        alimente le graphique — mais les mesures de la section 3 ont montré
+        qu'il n'annonce pas la suite. Sonner pour un signal sans valeur
+        prédictive n'apprend qu'une chose : à ignorer ses propres alertes.
+      </p>
+
+      <p class="hint">
+        Pourquoi ce rythme de 14 jours plutôt qu'une alerte à chaque
+        changement ? Parce que la stratégie validée en section 4 rééquilibre
+        tous les dix jours de bourse, avec 15 % de rotation. Réagir à chaque
+        mouvement du classement produirait beaucoup plus de transactions,
+        donc plus de frais — et surtout un comportement qui n'est plus celui
+        qui a été mesuré. Au premier lancement, la composition est enregistrée
+        en silence : c'est un point de départ, pas un mouvement.
+      </p>
+    </div>
+  </section>
+
+  <section class="section">
+    <span class="eyebrow">2 — Comment le score est calculé</span>
+    <div class="card">
+      <p>
+        Le moteur mesure sept choses, réparties en deux familles qui
+        <strong>disent souvent le contraire l'une de l'autre</strong> :
+      </p>
+
+      <div class="two-col">
+        <div>
+          <h3 class="fam fam-trend">Suivi de tendance</h3>
+          <p class="sub">« ça monte, ça va continuer »</p>
+          <ul class="plain">
+            <li><strong>Impulsion EMA</strong> — écart entre les moyennes
+              12 et 26 séances</li>
+            <li><strong>Accélération MACD</strong> — l'impulsion
+              s'accentue-t-elle ou faiblit-elle</li>
+            <li><strong>Structure</strong> — moyenne 20 séances au-dessus
+              de la moyenne 50</li>
+            <li><strong>Momentum</strong> — hausse du dernier mois,
+              rapportée à la volatilité de la valeur</li>
+          </ul>
+        </div>
+        <div>
+          <h3 class="fam fam-rev">Retour à la moyenne</h3>
+          <p class="sub">« c'est descendu trop bas, ça va remonter »</p>
+          <ul class="plain">
+            <li><strong>RSI</strong> — la valeur est-elle survendue ou
+              surachetée</li>
+            <li><strong>Bollinger</strong> — position dans son canal de
+              volatilité habituel</li>
+            <li><strong>Écart moyenne</strong> — distance à sa moyenne
+              20 séances, comptée en ATR</li>
+          </ul>
+        </div>
+      </div>
+
+      <p>
+        Un indicateur de force de tendance, l'<strong>ADX</strong>, décide
+        laquelle des deux familles écouter. En régime de tendance, le suivi
+        pèse jusqu'à 75 % ; en régime de range, c'est le retour à la moyenne
+        qui domine. Le <strong>volume</strong> vient ensuite renforcer ou
+        atténuer le résultat de ±15 % : une cassure sans volume est du bruit,
+        la même avec trois fois le volume habituel est un mouvement.
+      </p>
+      <p class="hint">
+        Chaque distance est exprimée en <strong>ATR</strong>, l'amplitude
+        d'une séance ordinaire. C'est ce qui rend une valeur comparable à une
+        autre : « 4 % sous sa moyenne » ne veut rien dire tant qu'on ignore
+        ce que la valeur fait un jour normal.
+      </p>
+      <p>
+        Le score brut est enfin comparé aux <strong>250 séances
+        précédentes de la même valeur</strong>. Un 5/5 ne signifie donc pas
+        « parfait dans l'absolu », mais « rarement aussi bien orienté que
+        maintenant, pour cette valeur-là ».
+      </p>
+    </div>
+  </section>
+
+  <section class="section">
+    <span class="eyebrow">3 — Les preuves</span>
+    <div class="card" id="preuves">
+      <p class="loading">Lecture des mesures…</p>
+    </div>
+  </section>
+
+  <section class="section">
+    <span class="eyebrow">4 — Ce qui a réellement fait ses preuves</span>
+    <div class="card" id="ranking">
+      <p class="loading">Lecture des mesures…</p>
+    </div>
+  </section>
+
+  <section class="section">
+    <span class="eyebrow">5 — Que faire d'une notification, concrètement</span>
+    <div class="card">
+      <ol class="steps">
+        <li>
+          <strong>Une notification de rééquilibrage n'est pas un ordre.</strong>
+          Elle dit que la composition du haut de classement a changé depuis
+          deux semaines. À toi de juger si tu suis, en tenant compte de tes
+          frais et de ta fiscalité — que le backtest, lui, ignore.
+        </li>
+        <li>
+          <strong>Les entrantes valent mieux que les sortantes.</strong> La
+          stratégie mesurée détient les douze premières à parts égales. Elle
+          n'a jamais été testée en version « je prends seulement celles qui
+          me plaisent ».
+        </li>
+        <li>
+          <strong>Une valeur détenue qui décroche mérite un examen, pas une
+          vente réflexe.</strong> Le classement dit qu'elle n'est plus dans le
+          haut du panier — pas qu'elle va tomber.
+        </li>
+        <li>
+          <strong>Le score technique reste utile pour choisir un moment.</strong>
+          Si tu as déjà décidé d'acheter une valeur, il peut aider à ne pas
+          entrer au pire instant. C'est son usage le plus défendable — et le
+          seul.
+        </li>
+        <li>
+          <strong>Regarde la zone probable à 5 jours.</strong> Elle donne
+          l'amplitude à laquelle t'attendre. Si elle est large, ta position
+          bougera fort dans les deux sens.
+        </li>
+        <li>
+          <strong>Passe l'ordre toi-même, puis note-le</strong> dans
+          « Mes positions ». Le bot ne peut rien exécuter, et c'est très bien
+          ainsi.
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <footer>
+    <span>Tous les chiffres de cette page proviennent de
+      <code>stock_eval.py</code> et portent leur date de mesure. Ils sont
+      recalculés, jamais recopiés.</span>
+  </footer>
+
+</div>
+<script src="explications.js"></script>
+</body>
+</html>

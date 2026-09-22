@@ -1,0 +1,1385 @@
+/* ============================================================
+   TOKENS
+   ============================================================
+   Toutes les couleurs, tailles et espacements sont définis ici.
+   Aucune valeur en dur ailleurs dans la feuille. Changer l'accent
+   du dashboard, c'est changer UNE ligne.
+   ============================================================ */
+
+:root {
+  /* — Couleurs —
+     Même socle que le portfolio : crème et noir chaud. Une identité
+     se tient d'un projet à l'autre, elle ne se réinvente pas à chaque
+     dossier.
+
+     En revanche l'accent change, et pour une raison précise : sur un
+     outil de marché, le rouge et le vert ne sont plus des couleurs,
+     ce sont des MOTS. Ils veulent dire « ça baisse » et « ça monte ».
+     Le vermillon du portfolio ne peut donc pas servir ici de couleur
+     de marque — il serait lu comme une perte. L'accent passe à
+     l'indigo d'encre : assez profond pour porter l'identité, assez
+     neutre pour ne jamais être confondu avec un chiffre. */
+  /* La page EST claire, et ce n'est pas un oubli : « plein jour,
+     jamais de nuit » est une décision. Déclaré, pour que les menus de
+     formulaire que WebKit dessine hors du document le soient aussi. */
+  color-scheme: light;
+
+  --bg:            #f4f1ea;   /* crème chaud, pas un blanc clinique */
+  --bg-elevated:   #fffdf9;
+  --bg-sunken:     #eae5da;   /* creux : rails de jauge, fonds de cellule */
+  --text:          #14120f;   /* noir chaud, moins dur qu'un #000 */
+  --text-muted:    #6b6459;
+  --border:        #ddd7cb;
+  --border-strong: #c9c1b1;
+  --accent:        #24476e;   /* indigo d'encre */
+  --accent-soft:   rgba(36, 71, 110, 0.09);
+
+  /* — Les deux seules couleurs qui parlent —
+     Réservées aux valeurs chiffrées. Jamais un fond de bouton, jamais
+     un titre : dès qu'on les emploie pour décorer, elles cessent
+     d'informer. */
+  --up:            #2f6f4f;
+  --up-soft:       rgba(47, 111, 79, 0.10);
+  --down:          #a83f2e;
+  --down-soft:     rgba(168, 63, 46, 0.10);
+  --neutral:       #8a8172;
+
+  /* — Typographie —
+     Stacks système : rendu natif sur chaque OS, aucun chargement.
+     La stack mono n'est pas cosmétique — voir --num plus bas. */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica,
+    Arial, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* — Rythme vertical —
+     Une échelle unique, pour que les espacements soient cohérents
+     partout au lieu d'être choisis au hasard section par section. */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 1rem;
+  --space-4: 1.5rem;
+  --space-5: 2.5rem;
+  --space-6: 4rem;
+
+  --max-w: 1240px;
+
+  /* — Échelle de formes —
+     Trois valeurs, trois rôles :
+       pill → ce qui flotte et se clique (onglets, badges)
+       md   → les surfaces de contenu (cartes, panneaux)
+       sm   → les petits éléments à l'intérieur d'une surface */
+  --radius-pill: 999px;
+  --radius-md: 16px;
+  --radius-sm: 9px;
+  --radius: var(--radius-md);
+
+  /* — Recette « verre » —
+     Factorisée pour que les onglets, les cartes et l'en-tête partagent
+     exactement la même matière. */
+  --glass-bg: color-mix(in srgb, var(--bg-elevated) 68%, transparent);
+  --glass-border: color-mix(in srgb, var(--border) 85%, transparent);
+  --glass-lip: inset 0 1px 0 color-mix(in srgb, #fff 60%, transparent);
+  --shadow-card: 0 1px 2px rgba(20, 18, 15, 0.04),
+                 0 8px 24px -12px rgba(20, 18, 15, 0.12);
+
+  --transition: 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* — Chiffres alignés —
+   Sur un tableau de cours, les chiffres se lisent en colonne : l'œil
+   compare des ordres de grandeur, pas des mots. `tabular-nums` force
+   chaque chiffre à occuper la même largeur, donc les décimales se
+   superposent d'une ligne à l'autre. Sans ça, « 1.99 » et « 421.28 »
+   se décalent et le tableau vibre à chaque rafraîchissement. */
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* ============================================================
+   BASE
+   ============================================================ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Une texture de papier, très discrète : deux dégradés radiaux fixes.
+   Le fond plat d'un crème uni tourne au « beige d'écran » ; ce léger
+   grain lumineux lui redonne de la matière sans coûter une image. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(1100px 700px at 12% -10%,
+      rgba(255, 253, 249, 0.85), transparent 60%),
+    radial-gradient(900px 600px at 100% 0%,
+      var(--accent-soft), transparent 55%);
+}
+
+.shell {
+  position: relative;
+  z-index: 1;
+  max-width: var(--max-w);
+  margin: 0 auto;
+  padding: var(--space-4) var(--space-4) var(--space-6);
+}
+
+/* ============================================================
+   BANDEAU — LA BAIE VITRÉE
+   ============================================================
+   Le seul décor de cette interface, et il obéit à trois règles.
+
+   1. AUCUNE COULEUR NOUVELLE. Neuf tokens existants portent toute la
+      scène. Un décor qui introduit sa propre palette devient un
+      deuxième produit collé au premier.
+   2. AUCUN MOUVEMENT. Pas de `requestAnimationFrame`, pas de
+      transition, pas de parallaxe. Le dashboard coûtait 0 % de CPU au
+      repos ; ce bandeau ne change pas ce chiffre.
+   3. IL DÉFILE HORS CHAMP. Dans le flux du document, donc visible en
+      entier à l'ouverture puis absent dès qu'on lit. Fixé en fond, il
+      aurait été masqué à 97 % par la colonne de lecture tout en
+      coûtant sa hauteur à chaque écran.
+   ============================================================ */
+
+.baie {
+  /* Même sortie de colonne que le tableau : le décor appartient à la
+     fenêtre, pas à la colonne de texte. */
+  width: 100vw;
+  margin-inline: calc(50% - 50vw);
+  margin-top: calc(var(--space-4) * -1);   /* colle au haut de la fenêtre */
+  margin-bottom: var(--space-5);
+  /* clamp plutôt qu'une hauteur fixe : sur une fenêtre courte, un
+     bandeau de 210 px mangerait le quart de ce qu'on est venu lire. */
+  height: clamp(112px, 14.5vw, 210px);
+  overflow: hidden;
+  position: relative;
+  z-index: 0;
+}
+
+.baie svg { display: block; width: 100%; height: 100%; }
+
+/* Le ciel d'un matin couvert : plus pâle à l'horizon qu'au zénith.
+   C'est l'inverse d'un ciel bleu, et c'est ce qui donne la lumière du
+   nord — celle des ateliers, sans ombre portée. */
+.baie-ciel-haut { stop-color: var(--bg-sunken); }
+.baie-ciel-bas  { stop-color: var(--bg-elevated); }
+
+/* Perspective aérienne : la brume éclaircit et efface avec la
+   distance. Le plan le plus lointain touche presque la couleur du
+   papier — il n'y a donc pas de ligne d'horizon à dessiner, elle
+   apparaît toute seule. */
+.baie-loin   { fill: var(--border); }
+.baie-milieu { fill: var(--border-strong); }
+.baie-pres   { fill: var(--neutral); opacity: 0.42; }
+/* Les toits, vus d'en haut, prennent plus de ciel que les façades : un
+   cran plus clair, et c'est ce qui donne le volume à des silhouettes. */
+.baie-toit   { fill-opacity: 0.55; }
+/* Le sol urbain du bandeau : la chaussée est parmi les choses les plus
+   sombres d'une ville sous ciel couvert, mais vue d'ici elle baigne
+   dans la couche d'air la plus épaisse — transparente à l'horizon. */
+.baie-sol-haut { stop-color: var(--neutral); stop-opacity: 0; }
+.baie-sol-bas  { stop-color: var(--neutral); stop-opacity: 0.30; }
+
+/* La brume basse, celle qui noie le pied des immeubles. C'est ce
+   détail qui fait la distance : sans lui, la ville est une découpe
+   posée sur l'allège. */
+.baie-brume-haut { stop-color: var(--bg-elevated); stop-opacity: 0; }
+.baie-brume-bas  { stop-color: var(--bg-elevated); stop-opacity: 0.72; }
+
+/* Deux traits de lumière en travers : c'est tout ce qu'il faut pour
+   qu'on comprenne qu'il y a une vitre entre la ville et nous. */
+.baie-reflet-bord  { stop-color: var(--bg-elevated); stop-opacity: 0; }
+.baie-reflet-coeur { stop-color: var(--bg-elevated); stop-opacity: 0.34; }
+
+/* Les montants du mur-rideau. Ils sont l'élément décisif : sans eux on
+   regarde une ville, avec eux on est DEDANS, derrière une vitre. */
+.baie-montant { fill: var(--text-muted); opacity: 0.2; }
+.baie-cadre   { fill: var(--border-strong); opacity: 0.75; }
+
+/* Le sol de la pièce rejoint exactement la couleur de la page : aucune
+   couture entre le bandeau et le tableau qui suit. */
+.baie-fondu-haut { stop-color: var(--bg-sunken); }
+.baie-fondu-bas  { stop-color: var(--bg); }
+
+/* Quelqu'un qui a demandé moins d'animation n'a pas demandé moins
+   d'image : le bandeau est déjà immobile, il reste tel quel. En
+   revanche, sur une fenêtre très courte, il s'efface — la place va
+   aux chiffres. */
+@media (max-height: 620px) {
+  .baie { display: none; }
+}
+
+h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.02em; }
+
+/* Intitulé de section : petites capitales espacées. Il annonce sans
+   concurrencer les chiffres, qui sont la vraie information. */
+.eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* ============================================================
+   EN-TÊTE
+   ============================================================ */
+
+.masthead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding-bottom: var(--space-4);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.masthead h1 { font-size: 26px; }
+
+/* Texte d'appoint : une précision qu'on lit après le chiffre, jamais
+   avant. Défini globalement — il sert dans l'en-tête comme à côté des
+   cours. */
+.sub {
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.masthead .sub { margin-top: 2px; }
+
+.masthead-side {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* — Badge d'état —
+   Le badge « SIMULATION » est le plus important de la page : c'est lui
+   qui dit si un bot lancé jouerait avec de l'argent réel. Il est donc
+   permanent et lisible, jamais réduit à une icône. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: var(--glass-bg);
+  box-shadow: var(--glass-lip);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.badge.safe   { color: var(--up);   border-color: color-mix(in srgb, var(--up) 30%, var(--border)); }
+.badge.danger { color: var(--down); border-color: color-mix(in srgb, var(--down) 40%, var(--border)); }
+.badge.muted  { color: var(--text-muted); font-weight: 500; }
+
+.badge .dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* ============================================================
+   ONGLETS
+   ============================================================ */
+
+.tabs {
+  display: inline-flex;
+  /* Les pills se replient plutôt que de pousser la page : sur mobile,
+     quatre filtres nommés ne tiennent pas sur une ligne de 375 px, et
+     un débordement horizontal du document rendrait toute la page
+     bancale — pas seulement la barre. */
+  flex-wrap: wrap;
+  max-width: 100%;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: var(--space-4);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--glass-lip);
+}
+
+.tab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 7px 18px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: color var(--transition), background var(--transition);
+}
+
+.tab:hover { color: var(--text); }
+
+.tab[aria-selected="true"] {
+  background: var(--accent);
+  color: #fffdf9;
+  box-shadow: 0 1px 3px rgba(36, 71, 110, 0.3);
+}
+
+/* ============================================================
+   CARTES
+   ============================================================ */
+
+.card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-4);
+}
+
+.card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.grid-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+/* Une statistique : intitulé discret, chiffre imposant. La hiérarchie
+   fait tout le travail — on doit pouvoir lire la valeur de loin et
+   n'aller chercher l'étiquette qu'en cas de doute. */
+.stat { padding: var(--space-3) var(--space-4); }
+.stat .label { font-size: 12px; color: var(--text-muted); }
+.stat .value {
+  font-size: 27px;
+  font-weight: 600;
+  line-height: 1.15;
+  margin-top: 2px;
+}
+.stat .foot { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+
+.up   { color: var(--up); }
+.down { color: var(--down); }
+.flat { color: var(--text-muted); }
+
+/* ============================================================
+   JAUGE DE SCORE  —  l'élément signature
+   ============================================================
+   Le cœur de tes deux bots, c'est le score de confiance sur 5 : ni
+   le prix ni le RSI ne déclenchent quoi que ce soit, c'est ce score
+   qui décide. Il méritait donc une forme à lui plutôt qu'un « 3/5 »
+   noyé dans une colonne.
+
+   Cinq segments, remplis de gauche à droite. La lecture est immédiate
+   et surtout COMPARABLE d'une ligne à l'autre : on repère la valeur
+   la plus proche du seuil sans lire un seul chiffre.
+   ============================================================ */
+
+.gauge {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
+
+.gauge i {
+  width: 13px;
+  height: 7px;
+  border-radius: 2px;
+  background: var(--bg-sunken);
+  border: 1px solid transparent;
+  transition: background var(--transition);
+}
+
+.gauge i.on { background: var(--neutral); }
+.gauge.buy  i.on { background: var(--up); }
+.gauge.sell i.on { background: var(--down); }
+
+/* Le segment du seuil de déclenchement est souligné : il matérialise
+   « à partir d'ici, le bot agit ». Le score devient une distance à
+   franchir, pas un nombre abstrait. */
+.gauge i.threshold {
+  border-bottom: 2px solid var(--accent);
+  border-radius: 2px 2px 0 0;
+}
+
+.score-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.score-cell .n { font-size: 13px; color: var(--text-muted); }
+
+/* ============================================================
+   RECOMMANDATIONS
+   ============================================================ */
+
+.reco {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  border: 1px solid transparent;
+}
+
+.reco-BUY   { background: var(--up-soft);   color: var(--up);
+              border-color: color-mix(in srgb, var(--up) 25%, transparent); }
+.reco-SELL  { background: var(--down-soft); color: var(--down);
+              border-color: color-mix(in srgb, var(--down) 25%, transparent); }
+.reco-WATCH { background: var(--accent-soft); color: var(--accent);
+              border-color: color-mix(in srgb, var(--accent) 22%, transparent); }
+.reco-HOLD  { background: var(--bg-sunken); color: var(--text-muted); }
+
+/* ============================================================
+   TABLEAU
+   ============================================================ */
+
+/* — Pourquoi ce tableau sort de la colonne —
+   Treize colonnes en `nowrap` demandent ~1 163 px de texte pur. La
+   colonne de lecture en fait 1 240, dont 1 190 utiles : il resterait
+   27 px pour le rembourrage de 13 colonnes. Deux d'entre elles — « Ce
+   qui pèse » et « Zone probable à 5 j » — étaient donc hors champ en
+   permanence, et il fallait faire défiler pour les atteindre.
+
+   Le tableau prend maintenant la largeur de la FENÊTRE, pas celle de
+   la colonne. C'est le seul objet de la page qui le fasse, et c'est
+   assumé : c'est aussi le seul dont la densité soit le propos. Le
+   reste garde son alignement. */
+.table-wrap {
+  width: 100vw;
+  margin-inline: calc(50% - 50vw);
+  padding-inline: var(--space-4);
+  overflow-x: auto;              /* le tableau défile, jamais la page */
+}
+
+.table-wrap > table {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-card);
+  /* Surtout PAS d'`overflow: hidden` pour découper les coins : il
+     ferait de la table un conteneur de défilement, et l'en-tête
+     collant s'y accrocherait au lieu du viewport — exactement le bug
+     qu'on répare deux blocs plus bas. On arrondit donc les cellules
+     d'angle à la main. */
+}
+
+thead th:first-child { border-top-left-radius: var(--radius-md); }
+thead th:last-child { border-top-right-radius: var(--radius-md); }
+
+/* — L'en-tête collant, et pourquoi il ne collait pas —
+   `overflow-x: auto` fait de .table-wrap un conteneur de défilement.
+   `position: sticky` s'accroche alors à LUI et non au viewport ; et
+   comme ce conteneur n'a pas de hauteur contrainte, il ne défile
+   jamais verticalement : l'en-tête s'en allait avec la page. Dès que
+   le tableau tient dans la fenêtre, on retire le conteneur de
+   défilement et l'en-tête retrouve le viewport pour référence.
+
+   1425 px et pas un chiffre rond : le tableau mesure 1 373 px et les
+   gouttières 2 × 24. Il tient donc à partir de 1 421 px exactement,
+   mesuré. Un seuil plus bas ferait déborder le tableau hors de sa
+   propre bordure, sans barre pour le rattraper. */
+@media (min-width: 1425px) {
+  .table-wrap { overflow-x: visible; }
+}
+
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+
+thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-elevated);
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: var(--space-3) var(--space-2);
+  border-bottom: 1px solid var(--border-strong);
+  white-space: nowrap;
+}
+
+tbody td {
+  padding: 0.75rem var(--space-2);
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr { transition: background var(--transition); }
+tbody tr:hover { background: var(--accent-soft); }
+
+/* La ligne d'une valeur qu'on détient est marquée d'un filet à gauche.
+   Un fond coloré aurait été lu comme un signal de marché ; un filet
+   dit « celle-ci te concerne » sans rien affirmer sur son cours. */
+tbody tr.held td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+
+.ticker { font-weight: 600; letter-spacing: -0.01em; }
+.ticker .held-note {
+  display: block;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--accent);
+}
+
+.num-cell { text-align: right; }
+
+/* — Rang du jour —
+   Volontairement discret. La mesure a montré qu'un portefeuille des
+   mieux classées ne bat pas le panier complet une fois le risque pris
+   en compte : ce rang départage deux valeurs, il ne décide pas d'un
+   achat. Lui donner l'allure d'un signal serait mentir sur ce qu'il
+   vaut. */
+/* — Hiérarchie des colonnes —
+   Le momentum est le seul critère dont la valeur ait été démontrée : il
+   porte la couleur et le poids. Le score technique, mesuré sans pouvoir
+   prédictif, reste consultable mais s'efface — l'œil doit tomber sur ce
+   qui a fait ses preuves, pas sur ce qui a l'air d'un signal. */
+thead th.primary-col {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+td.primary-col { background: var(--accent-soft); }
+tbody tr:hover td.primary-col { background: transparent; }
+
+.secondary-col { opacity: 0.72; }
+tbody tr:hover .secondary-col { opacity: 1; }
+
+.rank { font-weight: 600; }
+
+.rank-total {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+/* Les étiquettes restent sur une seule ligne : une cellule qui passe à
+   trois lignes fait tripler la hauteur de TOUTE la rangée, et le
+   tableau cesse d'être balayable d'un coup d'œil. Au-delà de la
+   largeur disponible, c'est le tableau qui défile. */
+.signals {
+  display: flex;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-sunken);
+  color: var(--text-muted);
+}
+
+/* Les composantes qui poussent à la hausse et celles qui pèsent à la
+   baisse se distinguent d'un coup d'œil : une liste uniforme obligerait
+   à lire chaque étiquette pour savoir dans quel sens elle tire. */
+.chip-up   { background: var(--up-soft);   color: var(--up); }
+.chip-down { background: var(--down-soft); color: var(--down); }
+
+/* — Régime de marché —
+   Le nom du régime porte l'information, l'ADX qui l'a déterminé reste
+   consultable en dessous sans encombrer la colonne. */
+.regime { font-weight: 500; font-size: 13px; }
+
+.regime-hint {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+/* ============================================================
+   COURBES
+   ============================================================ */
+
+.spark { display: block; width: 100%; height: 34px; overflow: visible; }
+
+.chart-card { padding: var(--space-4); }
+/* — Pourquoi les étiquettes ne sont pas dans le SVG —
+   `preserveAspectRatio="none"` étire le tracé à la largeur disponible
+   sans rien recalculer : c'est ce qui rend la courbe nette à toute
+   taille. Mais il étire AUSSI le texte. Mesuré sur cette page : 1,903
+   en X pour 0,922 en Y, soit une déformation de 2,06 — un 10 px rendu
+   19 px de large pour 9,2 de haut.
+   Les étiquettes sont donc du HTML posé par-dessus, en pourcentages du
+   viewBox. Elles gardent leur police, et elles suivent le tracé. */
+.chart-wrap { position: relative; }
+.chart { display: block; width: 100%; height: 190px; }
+
+.chart-tick {
+  position: absolute;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.chart-tick.y { left: 0; transform: translateY(-50%); }
+.chart-tick.x { bottom: 0; }
+
+.chart-line { fill: none; stroke: var(--accent); stroke-width: 1.75;
+              stroke-linejoin: round; stroke-linecap: round; }
+.chart-area { fill: var(--accent-soft); }
+/* non-scaling-stroke ici aussi : sans lui, l'échelle Y de 0,922 rendait
+   ces repères à 0,92 px — plus fins que le trait qu'ils annoncent. */
+.chart-grid { stroke: var(--border); stroke-width: 1; }
+
+.pair-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: var(--space-3);
+}
+
+.pair-head {
+  display: flex;
+  flex-wrap: wrap;          /* sur carte étroite, la variation passe dessous */
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+}
+
+/* Un cours ne se coupe jamais en deux lignes : « 79 930,00 » d'un côté
+   et « $ » de l'autre cesse d'être un nombre et devient une énigme. */
+.pair-price {
+  font-size: 24px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.indicators {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.indicator .k { font-size: 10px; letter-spacing: 0.06em;
+                text-transform: uppercase; color: var(--text-muted); }
+.indicator .v { font-size: 14px; font-weight: 500; }
+
+/* ============================================================
+   JOURNAL
+   ============================================================ */
+
+.log { list-style: none; margin: 0; padding: 0; }
+
+.log li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.log li:last-child { border-bottom: 0; }
+.log time { color: var(--text-muted); font-size: 12px; min-width: 106px; }
+.log .who { font-weight: 600; min-width: 62px; }
+.log .what { color: var(--text-muted); }
+
+/* ============================================================
+   ÉTATS
+   ============================================================ */
+
+.empty, .loading, .error {
+  padding: var(--space-5) var(--space-4);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.error { color: var(--down); }
+
+/* Battement lent pendant un chargement : assez présent pour dire
+   « ça travaille », assez lent pour ne pas agiter la page. */
+.loading { animation: breathe 1.6s ease-in-out infinite; }
+@keyframes breathe { 50% { opacity: 0.45; } }
+
+.section { margin-top: var(--space-5); }
+.section > .eyebrow { margin-bottom: var(--space-3); display: block; }
+
+/* L'intitulé de section et ses filtres sur une même ligne : les
+   filtres appartiennent au tableau qui suit, les séparer les ferait
+   lire comme une navigation générale. */
+.section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.section-head > .eyebrow { margin: 0; }
+.section-head .tabs { margin-bottom: 0; }
+
+/* Le compte accolé à chaque filtre : on sait ce qu'on va trouver avant
+   de cliquer, ce qui évite les vues vides. */
+.tab-count {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-sunken);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tab[aria-selected="true"] .tab-count {
+  background: color-mix(in srgb, #fffdf9 24%, transparent);
+  color: #fffdf9;
+}
+
+/* Liste déroulante du graphique. `appearance: none` retire le rendu
+   natif du système pour que le contrôle porte la même matière que les
+   onglets — verre, arrondi complet — au lieu de trancher avec tout le
+   reste de la page. La flèche est redessinée en SVG intégré. */
+.picker {
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  padding: 7px 30px 7px 14px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--glass-border);
+  background-color: var(--glass-bg);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 L6 6.5 L11 1.5' stroke='%236b6459' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 10px;
+  box-shadow: var(--glass-lip);
+  cursor: pointer;
+  transition: border-color var(--transition);
+}
+
+.picker:hover { border-color: var(--border-strong); }
+.picker:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ── Formulaire de saisie d'une position ──
+   Les champs partagent la matière et l'arrondi des onglets et de la
+   liste déroulante : un formulaire qui garde l'apparence système par
+   défaut trancherait avec toute la page. */
+.add-position {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.field {
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  width: 130px;
+  padding: 7px 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  box-shadow: var(--glass-lip);
+  transition: border-color var(--transition);
+}
+
+.field::placeholder { color: var(--text-muted); }
+.field:hover { border-color: var(--border-strong); }
+.field:focus-visible,
+.picker:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.btn {
+  appearance: none;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fffdf9;
+  background: var(--accent);
+  border: 1px solid transparent;
+  padding: 8px 18px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: opacity var(--transition);
+}
+
+.btn:hover { opacity: 0.88; }
+.btn:disabled { opacity: 0.5; cursor: default; }
+
+/* Action secondaire et destructrice : traitée comme un lien plutôt que
+   comme un bouton, pour qu'elle n'attire pas l'œil autant que
+   l'enregistrement. */
+.link-btn {
+  appearance: none;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  transition: color var(--transition), background var(--transition);
+}
+
+.link-btn:hover { color: var(--down); background: var(--down-soft); }
+.link-btn:disabled { opacity: 0.5; cursor: default; }
+
+.form-msg { font-size: 12px; color: var(--text-muted); }
+.form-msg.ok { color: var(--up); }
+.form-msg.error { color: var(--down); }
+
+/* Le secteur sert au balayage, pas à la lecture ligne à ligne :
+   discret, mais présent sur chaque rangée pour qu'un coup d'œil
+   suffise à repérer une concentration. */
+.sector { font-size: 12px; color: var(--text-muted); }
+
+/* Une publication de résultats imminente : signalée, mais sans couleur
+   de hausse ni de baisse. Elle annonce du mouvement, pas une direction —
+   la teinter en vert ou en rouge lui ferait dire ce qu'elle ne sait pas. */
+.earnings { font-size: 12px; }
+.soon {
+  color: var(--accent);
+  font-weight: 600;
+  background: var(--accent-soft);
+  padding: 2px 7px;
+  border-radius: var(--radius-pill);
+}
+
+.hint {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 15%, transparent);
+  font-size: 13px;
+  color: var(--text);
+}
+
+.hint code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--bg-elevated);
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+
+/* ============================================================
+   PAGE D'EXPLICATIONS
+   ============================================================
+   Une page de lecture, pas un tableau de bord : le texte y prime, donc
+   il reçoit une largeur de ligne confortable et une interligne plus
+   généreuse que sur les écrans de données.
+   ============================================================ */
+
+.prose { max-width: 860px; }
+.prose p { line-height: 1.65; margin: 0 0 var(--space-3); }
+.prose p:last-child { margin-bottom: 0; }
+.prose .card { padding: var(--space-4) var(--space-5); }
+.prose h2 { font-size: 21px; line-height: 1.35; margin: 0 0 var(--space-3); }
+.prose h3 { font-size: 14px; margin: 0 0 2px; }
+.prose code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--bg-sunken);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+/* Le verdict ouvre la page : bordure accentuée pour qu'on ne puisse pas
+   le prendre pour une introduction décorative et le sauter. */
+.verdict { border-left: 3px solid var(--accent); }
+
+.verdict-tag {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  margin-bottom: var(--space-3);
+}
+
+.verdict-tag.ok   { background: var(--up-soft);   color: var(--up); }
+.verdict-tag.warn { background: var(--down-soft); color: var(--down); }
+
+.two-col {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-4);
+  margin: var(--space-4) 0;
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Les deux familles se contredisent : leur donner la couleur hausse et
+   baisse rend cette opposition immédiate, sans avoir à la lire. */
+.fam-trend { color: var(--up); }
+.fam-rev   { color: var(--down); }
+
+ul.plain { list-style: none; margin: var(--space-2) 0 0; padding: 0; }
+ul.plain li {
+  font-size: 14px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+}
+ul.plain li:last-child { border-bottom: 0; }
+
+.steps { margin: 0; padding-left: var(--space-4); }
+.steps li { padding: var(--space-2) 0; line-height: 1.6; }
+.steps li::marker { color: var(--accent); font-weight: 600; }
+
+/* La ligne de référence n'est pas un résultat parmi d'autres : c'est
+   l'alternative gratuite à laquelle tout le reste se compare. */
+.ref-row td { background: var(--bg-sunken); }
+
+a.badge { text-decoration: none; color: var(--text); }
+a.badge:hover { border-color: var(--accent); color: var(--accent); }
+
+footer {
+  margin-top: var(--space-6);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+[hidden] { display: none !important; }
+
+/* Respect du réglage système « réduire les animations ». */
+/* Message d'échec de la vue baie. Discret et éphémère : c'est un
+   agrément qui n'a pas marché, pas une donnée fausse. */
+.vue3d-msg {
+  font-size: 12px;
+  color: var(--text-muted);
+  max-width: 320px;
+  line-height: 1.4;
+}
+
+/* ============================================================
+   LE PANNEAU DE LA VUE BAIE
+   ============================================================
+   Le dashboard suspendu dans la pièce. C'est du DOM RÉEL transformé
+   par le CSS, jamais une texture : WebKit souille définitivement tout
+   canvas ayant touché un `foreignObject`, et refuse ensuite d'en faire
+   une texture WebGL. Mesuré, pas supposé.
+
+   Conséquence heureuse : le texte reste net à toute distance, WebKit
+   le rasterisant à la résolution transformée. Conséquence à assumer :
+   la couche CSS passe forcément DEVANT le canvas, donc le panneau ne
+   peut pas être masqué par un montant ni réfracté par le verre. Il est
+   placé en avant du vitrage, là où il ne doit de toute façon pas
+   l'être.
+
+   « Hologramme » devient ici un panneau de VERRE IMPRIMÉ. En plein
+   jour, de la lumière émise ne se voit pas : un hologramme cyan sur
+   ce ciel crème serait un objet venu d'une autre image. Même geste,
+   dite dans la matière du lieu.
+   ============================================================ */
+
+.vue3d-scene3d {
+  grid-area: 1 / 1;
+  perspective-origin: 50% 50%;
+  /* Le panneau se regarde, il ne se manipule pas : les commandes de
+     cette vue sont V et Échap, rien d'autre. */
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.vue3d-camera {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-style: preserve-3d;
+  /* Origine en haut à gauche, et c'est indispensable : les matrices
+     de vue placent un point absolu, pas un décalage relatif au centre
+     de la boîte. Avec l'origine par défaut (50 % 50 %) tout est
+     transformé autour du milieu de l'élément, et le panneau part de
+     668 px vers le haut — le symptôme exact qu'on a mis une heure à
+     lire. */
+  transform-origin: 0 0;
+}
+
+/* Le panneau est un POINT, pas une boîte : largeur et hauteur nulles.
+   C'est ce qui rend son ancrage sans ambiguïté — la matrice le place,
+   un point n'a ni bord ni pourcentage à résoudre.
+
+   Le centrage, lui, se fait en positionnement ordinaire sur l'enfant :
+   `left: -largeur/2`, `top: -hauteur/2`, en pixels mesurés. J'ai
+   d'abord essayé `translate(-50%,-50%)` dans la matrice, des deux
+   côtés de la liste : l'un plaçait le panneau 674 px trop haut,
+   l'autre 170 px trop bas. Dans une chaîne `preserve-3d` avec origine
+   à 0 0, ce pourcentage ne se résout pas où l'intuition l'attend. Un
+   point d'ancrage et du positionnement classique ne laissent rien à
+   interpréter. */
+.vue3d-panneau {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  /* `flat`, et non preserve-3d : le contenu est dans le plan du panneau,
+     rien à préserver — et c'est ce qui empêche le tableau qui déborde
+     d'être composé hors du tri de profondeur (mesuré : 1,27 % du
+     panneau courant envahi par le texte du voisin en preserve-3d). Les
+     cinq panneaux, eux, restent enfants de la caméra en preserve-3d. */
+  transform-style: flat;
+  transform-origin: 0 0;
+  pointer-events: auto;
+  opacity: 1;
+}
+/* Les non-courants : en retrait, et à demi effacés — leur texte fait
+   5 à 7 px, et sans cela il se lit en fantôme à travers le verre du
+   courant. `inert` (posé par vue3d.js) les retire au clavier et au
+   lecteur d'écran. */
+.vue3d-panneau.loin { opacity: 0.4; }
+/* Le courant à 98 % : le tableau (3,5 m) recouvre entièrement ses deux
+   voisins, et à 94 % leur texte se lisait en fantôme à travers lui. */
+.vue3d-panneau.courant .vue3d-contenu { background: color-mix(in srgb, var(--bg-elevated) 98%, transparent); }
+.vue3d-panneau.cache { visibility: hidden; }
+/* Pendant le tour : la position glisse (même rotation, même échelle :
+   l'interpolation de matrice de WebKit est alors exacte, mesuré), le
+   sortant s'efface vite, l'entrant s'allume tard — les deux se croisent
+   au bissecteur pendant ~60 ms, l'opacité le cache. */
+.vue3d-panneau.glisse { transition: transform 700ms ease, opacity 400ms linear 300ms; }
+.vue3d-panneau.glisse.sortant { transition: transform 700ms ease, opacity 200ms linear; }
+.vue3d.glisser .vue3d-panneau { user-select: none; }
+.vue3d-coin { position: absolute; left: 0; top: 0; width: 0; height: 0; pointer-events: none; }
+
+.vue3d-contenu {
+  position: absolute;
+  /* Verre dépoli : il prend la lumière du ciel sans devenir opaque.
+     Le texte, lui, garde le noir chaud de la page — c'est ce contraste
+     qui le rend lisible sur une ville claire. */
+  /* 94 %, et non 88 : à 88 les arêtes d'immeubles passaient sous les
+     chiffres (mesuré : 17 niveaux d'écart sous « +202 % »), et le
+     contraste des textes secondaires tombait sous le seuil AA dès que
+     la ville s'assombrissait. La ville reste devinée sur les bords. */
+  background: color-mix(in srgb, var(--bg-elevated) 94%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-strong) 70%, transparent);
+  border-radius: 2px;
+  /* Un halo court et SYMÉTRIQUE : l'ancienne ombre tombait 40 px vers
+     le bas, sur une vitre située derrière le panneau — un objet ne
+     porte pas d'ombre sur sa source de lumière. Le halo dit « objet
+     épais devant un fond », sans direction. */
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.55) inset,
+    0 0 0 1px rgba(20, 18, 15, 0.06),
+    0 0 28px rgba(20, 18, 15, 0.10);
+  color: var(--text);
+  /* Le reflet (::before) passe SOUS l'encre : peint par-dessus, il
+     rendait HOLD à 4,30:1 et « +569 % » à 4,50 au lieu de 5,84 —
+     mesuré au cœur du glyphe, pas sur la couleur nominale. */
+  isolation: isolate;
+}
+
+/* La tranche : six millimètres de verre vus par la lumière rasante.
+   Sous le texte, jamais dessus. */
+.vue3d-contenu::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: -1;
+  /* Un reflet de surface, pas un voile : à 50 % il délavait le
+     libellé du coin haut-gauche (30 niveaux de contraste perdus,
+     mesuré). 18 % suffit à dire « du verre ». */
+  background: linear-gradient(112deg,
+    rgba(255, 255, 255, 0.18) 0%,
+    transparent 22%,
+    transparent 78%,
+    rgba(255, 255, 255, 0.12) 100%);
+}
+
+.vue3d-contenu { padding: 26px 32px 22px; }
+
+/* Les sections de la page, dans un panneau : mêmes composants, sans
+   les marges de page. Le tableau ne déborde plus de la colonne (il
+   était en pleine largeur de fenêtre) et défile DANS le panneau — par
+   JavaScript : le défilement natif d'un overflow dans cette chaîne 3D
+   vaut zéro dans tous les états mesurés. */
+.vue3d-corps .section { margin-top: 0; }
+.vue3d-corps .section + .section { margin-top: var(--space-4); }
+.vue3d-corps .masthead { padding-bottom: var(--space-3); margin-bottom: var(--space-3); }
+.vue3d-corps .grid-stats { grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 0; }
+.vue3d-corps .grid-stats .stat { background: transparent; box-shadow: none; border: 0; padding: 0 14px 0 0; border-right: 1px solid var(--border); }
+.vue3d-corps .grid-stats .stat:last-child { border-right: 0; }
+.vue3d-corps .table-wrap {
+  width: auto;
+  margin-inline: 0;
+  padding-inline: 0;
+  overflow: hidden;
+  max-height: 560px;
+}
+.vue3d-corps .table-wrap > table { box-shadow: none; }
+.vue3d-corps .hint { margin-top: var(--space-3); }
+.vue3d-corps .reco-HOLD { background: color-mix(in srgb, var(--bg-sunken) 50%, transparent); }
+/* La jauge du tableau : un trait, à la place de la barre native. */
+.vue3d-jauge {
+  position: absolute;
+  right: 14px;
+  top: 0;
+  width: 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--text-muted) 45%, transparent);
+  pointer-events: none;
+}
+.vue3d-extrait { margin-top: var(--space-3); }
+
+
+/* La bande de synthèse garde ses cartes, à peine allégées : ce sont
+   de gros caractères, ils survivent à un fond qui n'est pas blanc. */
+.vue3d-stats {
+  /* Grille explicite : `auto-fit` se résout contre une largeur
+     disponible qui, dans un élément absolument positionné à l'intérieur
+     d'une chaîne 3D, n'est pas celle qu'on croit — les quatre cartes
+     s'empilaient au lieu de s'aligner. */
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-bottom: 20px;
+}
+.vue3d-stats .stat {
+  background: transparent;
+  box-shadow: none;
+  border: 0;
+  padding: 0 14px 0 0;
+  border-right: 1px solid var(--border);
+}
+.vue3d-stats .stat:last-child { border-right: 0; }
+.vue3d-stats .stat .value { font-size: 30px; }
+
+.vue3d-table { overflow: hidden; }
+.vue3d-table table { font-size: 15px; }
+.vue3d-table thead th { background: transparent; font-size: 10px; }
+.vue3d-table tbody td { padding: 0.6rem var(--space-2); }
+.vue3d-table tbody tr:hover { background: transparent; }
+/* La colonne mise en avant garde son trait indigo dans l'en-tête, mais
+   perd son fond : empilé sur le verre, il faisait tomber le fond sous
+   les rangs à 226 et le contraste des textes secondaires à 4,5:1 —
+   exactement le seuil. */
+.vue3d-table td.primary-col { background: transparent; }
+
+/* Sept colonnes sur treize. Le panneau montre la SYNTHÈSE — valeur,
+   secteur, momentum, cours, un mois, signal. Les colonnes de travail
+   (résultats, 1 j, 1 sem, régime, score technique, drivers, zone)
+   restent en vue plan, là où on décide. Une vue qu'on regarde n'a pas
+   besoin de tout. */
+.vue3d-table th:nth-child(4),  .vue3d-table td:nth-child(4),
+.vue3d-table th:nth-child(6),  .vue3d-table td:nth-child(6),
+.vue3d-table th:nth-child(7),  .vue3d-table td:nth-child(7),
+.vue3d-table th:nth-child(9),  .vue3d-table td:nth-child(9),
+.vue3d-table th:nth-child(10), .vue3d-table td:nth-child(10),
+.vue3d-table th:nth-child(12), .vue3d-table td:nth-child(12),
+.vue3d-table th:nth-child(13), .vue3d-table td:nth-child(13) { display: none; }
+
+.vue3d-pied {
+  margin-top: 18px;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* ============================================================
+   LA VUE BAIE
+   ============================================================
+   Un mode plein cadre, pas un décor. On y entre par la touche V ou le
+   bouton de l'en-tête, on en sort par Échap.
+
+   `.vue3d-active` fige le défilement de la page derrière : sans ça, la
+   molette continue de faire glisser le tableau qu'on ne voit plus, et
+   on revient ailleurs qu'on était parti.
+   ============================================================ */
+
+body.vue3d-active { overflow: hidden; }
+
+.vue3d {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: var(--bg);
+  /* Le canvas remplit tout : la scène EST la fenêtre, il n'y a pas de
+     cadre, pas de marge, rien qui rappelle une page web. */
+  display: grid;
+  /* Un fondu de 240 ms à l'entrée comme à la sortie, rien d'autre —
+     pas de mouvement de caméra. On se lève d'une chaise, on ne
+     traverse pas un couloir. La classe est posée une trame après
+     l'affichage (voir vue3d.js) ; reduced-motion ramène la durée à
+     zéro par la règle globale en bas de fichier. */
+  opacity: 0;
+  transition: opacity var(--transition);
+}
+.vue3d.est-la { opacity: 1; }
+
+.vue3d canvas {
+  grid-area: 1 / 1;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Les flèches : deux disques de verre, à mi-hauteur de chaque bord.
+   Une couche propre (position + z-index), sinon le canvas passe dessus. */
+.vue3d-fleche {
+  grid-area: 1 / 1;
+  align-self: center;
+  position: relative;
+  z-index: 2;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: var(--glass-bg);
+  box-shadow: var(--glass-lip), var(--shadow-card);
+  color: var(--accent);
+  font: 600 18px/1 var(--font-sans);
+  cursor: pointer;
+  margin: 0 var(--space-4);
+  transition: background var(--transition), opacity var(--transition);
+}
+.vue3d-fleche-gauche { justify-self: start; }
+.vue3d-fleche-droite { justify-self: end; }
+.vue3d-fleche:hover { background: var(--accent-soft); }
+.vue3d-fleche:disabled { opacity: 0.25; cursor: default; }
+.vue3d-fleche:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Les points de pagination, en bas au centre. */
+.vue3d-points {
+  grid-area: 1 / 1;
+  align-self: end;
+  justify-self: center;
+  position: relative;
+  z-index: 2;
+  display: flex;
+  gap: 10px;
+  margin-bottom: var(--space-4);
+}
+.vue3d-points button {
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  cursor: pointer;
+}
+.vue3d-points button.actif { background: var(--accent); border-color: var(--accent); }
+.vue3d-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* La seule chose écrite à l'écran, en bas à gauche, discrète : sans
+   elle on ne sait pas comment revenir, et une vue dont on ne sait pas
+   sortir est une vue dont on se méfie. */
+.vue3d-note {
+  grid-area: 1 / 1;
+  align-self: end;
+  justify-self: start;
+  /* Le canvas WebGL est une couche composée ; un paragraphe sans couche
+     propre peint dans le fond du parent et passe DESSOUS, quel que soit
+     l'ordre du DOM. Sans ces deux lignes, cette note n'a jamais été
+     affichée — vérifié par capture, pas par elementFromPoint
+     (pointer-events: none le rend aveugle). */
+  position: relative;
+  z-index: 1;
+  margin: var(--space-4);
+  font-size: 12px;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
+
+.vue3d-note kbd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+/* Le bouton d'entrée. Il emprunte l'allure des badges voisins : c'est
+   une porte, pas une annonce. */
+.vue3d-bouton {
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.vue3d-bouton:hover {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+
+/* La touche, visible dans le bouton : un raccourci qu'on ne découvre
+   qu'à la souris (dans un title) n'est pas un raccourci clavier. */
+.vue3d-bouton kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 4px;
+  color: var(--accent);
+}
+
+/* « Réduire la transparence » demande précisément d'enlever le verre
+   dépoli ; « augmenter le contraste », de fermer le panneau. Un réglage
+   d'accessibilité est un contrat pour toute la durée d'affichage. */
+@media (prefers-reduced-transparency: reduce) {
+  .vue3d-contenu { background: var(--bg-elevated); }
+}
+@media (prefers-contrast: more) {
+  .vue3d-contenu { background: var(--bg-elevated); border-color: var(--border-strong); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (max-width: 620px) {
+  .shell { padding: var(--space-3) var(--space-3) var(--space-5); }
+  .masthead h1 { font-size: 21px; }
+  .stat .value { font-size: 23px; }
+}
