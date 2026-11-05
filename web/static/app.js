@@ -347,7 +347,7 @@ function drawStocks() {
   const buys = rows.filter((r) => r.recommendation === 'BUY').length;
   const watch = rows.filter((r) => r.recommendation === 'WATCH').length;
   const held = rows.filter((r) => r.position);
-  const heldPnl = held.reduce((sum, r) => sum + (r.position.pnl_eur || 0), 0);
+  const heldPnl = held.reduce((sum, r) => sum + (r.position.pnl_usd || 0), 0);
 
   /* Les cartes suivent la même règle que le tableau : ce qui a été
      mesuré passe devant. Le compte de signaux techniques reste affiché,
@@ -381,7 +381,7 @@ function drawStocks() {
       <div class="label">${held.length ? 'Positions détenues' : 'Signaux techniques'}</div>
       <div class="value">${held.length || buys + watch}</div>
       <div class="foot">${held.length
-        ? `<span class="${trend(heldPnl)}">${heldPnl >= 0 ? '+' : ''}${nf(heldPnl)} €</span> latents`
+        ? `<span class="${trend(heldPnl)}">${heldPnl >= 0 ? '+' : ''}${nf(heldPnl)} $</span> latents`
         : `${buys} favorables · ${watch} mitigées — sans valeur prédictive mesurée`}</div>
     </div>`;
 
@@ -502,7 +502,7 @@ function renderPositions() {
 
   const rows = data.rows.filter((r) => !r.error);
   const held = rows.filter((r) => r.position);
-  const total = held.reduce((s, r) => s + r.position.pnl_eur, 0);
+  const total = held.reduce((s, r) => s + r.position.pnl_usd, 0);
   const invested = held.reduce(
     (s, r) => s + r.position.entry_price * r.position.quantity, 0);
   const pctTotal = invested ? (total / invested) * 100 : 0;
@@ -536,7 +536,7 @@ function renderPositions() {
               <td class="num-cell num">${nf(r.price)} $</td>
               <td class="num-cell num ${trend(r.position.pnl_pct)}">
                 ${pct(r.position.pnl_pct, 2)}
-                <span class="rank-total">${r.position.pnl_eur >= 0 ? '+' : ''}${nf(r.position.pnl_eur)} $</span>
+                <span class="rank-total">${r.position.pnl_usd >= 0 ? '+' : ''}${nf(r.position.pnl_usd)} $</span>
               </td>
               <td class="num-cell">
                 <button class="link-btn" data-remove="${esc(r.ticker)}"
@@ -732,9 +732,109 @@ function saisieEnCours() {
             && /^(INPUT|SELECT|TEXTAREA)$/.test(actif.tagName));
 }
 
+/* ------------------------------------------------------------
+   LA SEMAINE
+   Le point préparé par le bot chaque dimanche à 19 h
+   (point_semaine.py) : des faits sur la semaine écoulée, jamais de
+   conseil. La page ne fait que le mettre en forme.
+   ------------------------------------------------------------ */
+const JOURS_FR = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
+const MOIS_FR = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet',
+                 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+
+/* « 2026-10-30 » → « vendredi 30 octobre ». Midi plutôt que minuit :
+   une date seule est lue en UTC, et minuit UTC tombe la veille à l'ouest. */
+const jourLong = (iso) => {
+  const d = new Date(`${iso}T12:00:00`);
+  return `${JOURS_FR[d.getDay()]} ${d.getDate()} ${MOIS_FR[d.getMonth()]}`;
+};
+
+/* Une ligne « nom … variation ». La variation arrive en fraction (0,012),
+   elle s'affiche en pourcentage (+1,2 %). */
+const ligneSemaine = (nom, v) => `
+  <li><span>${esc(nom)}</span>
+      <span class="num ${trend(v * 100)}">${pct(v * 100)}</span></li>`;
+
+async function renderSemaine() {
+  let p;
+  try {
+    p = await api('/api/semaine');
+  } catch (e) {
+    return;   // serveur injoignable : la section reste comme elle était
+  }
+  const section = $('#section-semaine');
+  if (!p) {
+    section.hidden = true;
+    return;
+  }
+
+  const s = p.semaine;
+  $('#semaine-dates').textContent = `du ${jourLong(s.debut)} au ${jourLong(s.fin)}`;
+
+  const marches = p.marches.map((m) => `
+    <li><span>${esc(m.nom)}</span>
+        <span class="num ${trend(m.variation_dollars * 100)}">${pct(m.variation_dollars * 100)}</span></li>
+    <li class="semaine-euros"><span>en euros</span>
+        <span class="num ${trend(m.variation_euros * 100)}">${pct(m.variation_euros * 100)}</span></li>`).join('');
+  const e = p.euro_dollar;
+  const c = p.classement;
+  const avenir = p.resultats_a_venir || [];
+  const pos = p.positions && p.positions.lignes && p.positions.lignes.length ? p.positions : null;
+
+  $('#semaine').innerHTML = `
+    <p class="semaine-note">${esc(p.avertissement)}</p>
+    <div class="semaine-grille">
+      <div class="semaine-bloc">
+        <h2 class="semaine-titre">Les marchés</h2>
+        <ul class="semaine-liste">
+          ${marches}
+          <li><span>1 € = ${nf(e.cours, 4)} $</span>
+              <span class="num ${trend(e.variation * 100)}">${pct(e.variation * 100)}</span></li>
+        </ul>
+      </div>
+      <div class="semaine-bloc">
+        <h2 class="semaine-titre">Plus fortes hausses</h2>
+        <ul class="semaine-liste">${p.valeurs.hausses.map((x) => ligneSemaine(x.ticker, x.variation)).join('')}</ul>
+      </div>
+      <div class="semaine-bloc">
+        <h2 class="semaine-titre">Plus fortes baisses</h2>
+        <ul class="semaine-liste">${p.valeurs.baisses.map((x) => ligneSemaine(x.ticker, x.variation)).join('')}</ul>
+      </div>
+      <div class="semaine-bloc">
+        <h2 class="semaine-titre">Secteurs</h2>
+        <ul class="semaine-liste">${p.secteurs.map((x) => ligneSemaine(x.secteur, x.variation)).join('')}</ul>
+      </div>
+      <div class="semaine-bloc">
+        <h2 class="semaine-titre">Classement momentum</h2>
+        <p class="semaine-texte">Entrent dans le top 12 : <strong>${esc(c.entrent.join(', ') || 'aucune')}</strong></p>
+        <p class="semaine-texte">En sortent : <strong>${esc(c.sortent.join(', ') || 'aucune')}</strong></p>
+        <p class="semaine-rappel">${esc(c.rappel)}</p>
+      </div>
+      <div class="semaine-bloc">
+        <h2 class="semaine-titre">Résultats la semaine prochaine</h2>
+        ${avenir.length
+          ? `<ul class="semaine-liste">${avenir.map((r) => `
+              <li><span>${esc(r.ticker)}</span><span>${esc(jourLong(r.date))}</span></li>`).join('')}</ul>
+             <p class="semaine-rappel">Une publication annonce un gros mouvement probable, pas son sens.</p>`
+          : '<p class="semaine-rappel">Aucune parmi tes 49 valeurs.</p>'}
+      </div>
+      ${pos ? `
+      <div class="semaine-bloc">
+        <h2 class="semaine-titre">Tes positions, en euros</h2>
+        <ul class="semaine-liste">${pos.lignes.map((x) => `
+          <li><span>${esc(x.ticker)}</span>
+              <span class="num ${trend(x.gain_euros)}">${x.gain_euros >= 0 ? '+' : ''}${nf(x.gain_euros)} €</span></li>`).join('')}
+        </ul>
+        <p class="semaine-rappel">${nf(pos.valeur_euros)} € pour ${nf(pos.cout_euros)} € investis.</p>
+      </div>` : ''}
+    </div>`;
+  section.hidden = false;
+}
+
 function refresh({ force = false } = {}) {
   renderStatus();
   renderQuality();
+  renderSemaine();
   if (force || !saisieEnCours()) {
     renderStocks();   // dessine aussi la section « Mes positions »
   }

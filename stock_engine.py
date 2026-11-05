@@ -670,7 +670,10 @@ def pnl_position(position, prix_actuel, ticker=None):
         "quantity": quantite_eff,
         "entry_price": entree_eff,
         "pnl_pct": (prix_actuel - entree_eff) / entree_eff * 100,
-        "pnl_eur": (prix_actuel - entree_eff) * quantite_eff,
+        # En dollars : le cours et le prix d'entrée sont tous deux en $.
+        # (Cette clé s'appelait pnl_eur et s'affichait en « € » : faux
+        # jusqu'au 05/11/2026.)
+        "pnl_usd": (prix_actuel - entree_eff) * quantite_eff,
         "split": f,
     }
 

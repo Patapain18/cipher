@@ -31,6 +31,7 @@ import ta
 import requests
 
 import stock_engine as engine
+import point_semaine
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
@@ -85,6 +86,32 @@ REBALANCE_DAYS = int(os.getenv("STOCK_REBALANCE_DAYS", "14"))
 # d'arbitrer un portefeuille théorique mais de l'argent réellement engagé.
 HELD_ALERT_RANK = int(os.getenv("STOCK_HELD_ALERT_RANK", "25"))
 REBALANCE_STATE = "data/rebalance_state.json"
+
+# ── Le point de la semaine ───────────────────────────────────────
+#
+#  Chaque dimanche à 19 h, le bot prépare le point de la semaine
+#  (point_semaine.py) et prévient d'une bulle. C'est lui qui s'en charge
+#  parce qu'il tourne déjà en permanence : le point est prêt même si
+#  l'appli Claude est fermée. Si le Mac dort à 19 h, le point se fait au
+#  premier cycle après le réveil.
+POINT_JOUR = 6       # dimanche (lundi = 0)
+POINT_HEURE = 19
+
+
+def dernier_rendez_vous(maintenant):
+    """Le dernier dimanche 19 h déjà passé."""
+    jours = (maintenant.weekday() - POINT_JOUR) % 7
+    rdv = (maintenant - timedelta(days=jours)).replace(
+        hour=POINT_HEURE, minute=0, second=0, microsecond=0)
+    if rdv > maintenant:
+        rdv -= timedelta(days=7)
+    return rdv
+
+
+def point_a_preparer(maintenant, calcule_le):
+    """Le point est à refaire s'il n'existe pas, ou s'il date d'avant le dernier dimanche 19 h."""
+    return calcule_le is None or calcule_le < dernier_rendez_vous(maintenant)
+
 
 # Ce que le moteur conclut de son score technique, dit comme un état.
 # Les codes BUY, WATCH, HOLD et SELL restent dans les données (le tableau
@@ -175,6 +202,7 @@ class StockSignalBot:
         # ne réécrive pas aussitôt 49 relevés en double.
         self._last_snapshot = self._restore_snapshot_times()
         self.discord_enabled = bool(DISCORD_WEBHOOK)
+        self._point_essai = None   # dernier essai de point de la semaine
 
     def _load_history(self):
         """Charge l'historique des signaux."""
@@ -465,6 +493,44 @@ class StockSignalBot:
         if changed:
             state["alerted"] = alerted
             self._save_rebalance_state(state)
+
+    def check_point_semaine(self):
+        """
+        Prépare le point de la semaine au premier cycle après chaque
+        dimanche 19 h, puis prévient d'une bulle.
+
+        Un échec (réseau, Yahoo) est retenté au plus toutes les 30
+        minutes : sinon le bot interrogerait Yahoo à chaque cycle de
+        5 minutes. Renvoie True si un point vient d'être préparé.
+        """
+        maintenant = datetime.now()
+        if self._point_essai and maintenant - self._point_essai < timedelta(minutes=30):
+            return False
+        try:
+            with open(point_semaine.SORTIE) as f:
+                calcule_le = datetime.fromisoformat(json.load(f)["calcule_le"])
+        except (OSError, ValueError, KeyError, TypeError):
+            calcule_le = None
+        if not point_a_preparer(maintenant, calcule_le):
+            return False
+
+        self._point_essai = maintenant
+        try:
+            point = point_semaine.construire()
+        except (Exception, SystemExit) as e:
+            console.print(f"[yellow]Point de la semaine reporté : {e}[/yellow]")
+            return False
+        if not point["semaine"]["complete"]:
+            return False
+        point_semaine.enregistrer(point)
+
+        marches = " · ".join(f"{m['nom']} {point_semaine.pct(m['variation_dollars'])}"
+                             for m in point["marches"])
+        notify_macos(title="📅 Ton point de la semaine est prêt",
+                     message=marches,
+                     subtitle="Dans Signaux actions, vue plan")
+        console.print(f"\n[bold cyan]📅 Point de la semaine prêt[/bold cyan] — {marches}\n")
+        return True
 
     def _due_for_snapshot(self, ticker):
         """
@@ -962,6 +1028,7 @@ class StockSignalBot:
 
                 self.check_rebalance(ranked)
                 self.check_held_positions(ranked)
+                self.check_point_semaine()
 
                 # Les changements de score technique restent HISTORISÉS —
                 # ils décrivent fidèlement l'état d'une valeur et servent

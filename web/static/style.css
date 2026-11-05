@@ -1383,3 +1383,65 @@ body.vue3d-active { overflow: hidden; }
   .masthead h1 { font-size: 21px; }
   .stat .value { font-size: 23px; }
 }
+
+/* ------------------------------------------------------------
+   LA SEMAINE — le point du dimanche, en blocs sobres
+   Des listes « nom … variation », rien qui clignote : les effets
+   vivent dans la vue baie, pas dans les chiffres.
+   ------------------------------------------------------------ */
+.semaine { padding: var(--space-3) var(--space-4) var(--space-4); }
+
+.semaine-note {
+  margin: 0 0 var(--space-3);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.semaine-grille {
+  display: grid;
+  /* 240 px : trois colonnes sur deux lignes à 1280 et 1440, plutôt que
+     cinq plus une orpheline ; une seule colonne au téléphone. */
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-3) var(--space-4);
+}
+
+.semaine-titre {
+  margin: 0 0 var(--space-2);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.semaine-liste {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.semaine-liste li {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 3px 0;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+
+.semaine-liste li:last-child { border-bottom: 0; }
+
+.semaine-liste .semaine-euros {
+  padding-top: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.semaine-texte {
+  margin: 0 0 var(--space-1);
+  font-size: 13px;
+}
+
+.semaine-rappel {
+  margin: var(--space-2) 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}

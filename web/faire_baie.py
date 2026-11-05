@@ -154,6 +154,14 @@ def main():
             montants.append(f'<rect class="baie-montant" x="{x - 1.5:.1f}" y="0" width="3" height="{SOL}"/>')
     montants = "".join(montants)
 
+    # Le sol de la pièce, qui rejoint la couleur de la page, s'il reste de
+    # la place sous l'allège. Avec H = 210, il manquait 2 px : le <rect>
+    # avait une hauteur de −2, une erreur dans la console (05/11/2026).
+    hauteur_sol = H - SOL - 7
+    sol = ("\n    <!-- Le sol de la pièce, qui rejoint la couleur de la page. -->\n"
+           f'    <rect x="0" y="{SOL + 7}" width="{L}" height="{hauteur_sol}"\n'
+           '          fill="url(#baie-fondu)"/>') if hauteur_sol > 0 else ""
+
     fragment = f"""<!-- BANDEAU:DEBUT — ne pas éditer à la main, voir web/faire_baie.py
      ══════════════════════════════════════════════════════
      BANDEAU — la baie vitrée du onzième étage, vue de la chaise
@@ -221,10 +229,7 @@ def main():
          donnent l'échelle de l'étage. -->
     <rect class="baie-cadre" x="0" y="0" width="{L}" height="6"/>
     <rect class="baie-cadre" x="0" y="{SOL}" width="{L}" height="7"/>
-
-    <!-- Le sol de la pièce, qui rejoint la couleur de la page. -->
-    <rect x="0" y="{SOL + 7}" width="{L}" height="{H - SOL - 7}"
-          fill="url(#baie-fondu)"/>
+    {sol}
   </svg>
 </div>
 <!-- BANDEAU:FIN -->

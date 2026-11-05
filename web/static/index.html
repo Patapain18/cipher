@@ -87,10 +87,6 @@
            donnent l'échelle de l'étage. -->
       <rect class="baie-cadre" x="0" y="0" width="1440" height="6"/>
       <rect class="baie-cadre" x="0" y="205" width="1440" height="7"/>
-
-      <!-- Le sol de la pièce, qui rejoint la couleur de la page. -->
-      <rect x="0" y="212" width="1440" height="-2"
-            fill="url(#baie-fondu)"/>
     </svg>
   </div>
   <!-- BANDEAU:FIN -->
@@ -117,6 +113,18 @@
   </header>
 
   <div class="grid-stats" id="stocks-stats"></div>
+
+  <!-- Le point de la semaine : des faits sur la semaine écoulée, préparés
+       par le bot chaque dimanche à 19 h (point_semaine.py). Jamais de
+       conseil ni de prédiction. Caché tant qu'il n'y en a pas, et absent
+       de la vue baie, qui garde ses cinq panneaux. -->
+  <section class="section" id="section-semaine" hidden>
+    <div class="section-head">
+      <span class="eyebrow">La semaine</span>
+      <span class="badge muted" id="semaine-dates"></span>
+    </div>
+    <div class="card semaine" id="semaine"></div>
+  </section>
 
   <!-- Fiabilité mesurée du score : la première chose à savoir avant de
        lire une recommandation. -->

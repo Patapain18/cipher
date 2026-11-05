@@ -451,8 +451,22 @@ def bots_status():
 #  ROUTES
 # ══════════════════════════════════════════════════════════════════
 
+def point_de_la_semaine():
+    """
+    Le dernier point de la semaine, préparé par le bot chaque dimanche à
+    19 h (point_semaine.py). None tant qu'il n'y en a pas encore : la page
+    garde alors la section cachée.
+    """
+    path = os.path.join("data", "point_semaine.json")
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        return json.load(f)
+
+
 ROUTES = {
     # chemin              → (fonction, durée de cache en secondes)
+    "/api/semaine":        (point_de_la_semaine, 30),
     "/api/status":         (bots_status,    5),
     "/api/stocks":         (scan_stocks,    180),   # 3 min : yfinance est lent
     "/api/stocks/history": (stocks_history, 10),    # simple lecture de fichier
