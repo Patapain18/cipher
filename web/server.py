@@ -21,7 +21,8 @@ CE QU'IL NE FAIT PAS — ET C'EST VOULU
     ordres se passent à la main chez le courtier.
 
     Le serveur écoute sur 127.0.0.1 uniquement : il n'est pas
-    joignable depuis le réseau, seulement depuis ce Mac.
+    joignable depuis le réseau, seulement depuis ce Mac. Et il ne
+    répond qu'aux noms localhost et 127.0.0.1 (voir HOTES_AUTORISES).
 
 LANCEMENT
     python3 web/server.py          (depuis le dossier trading-bot)
@@ -67,6 +68,11 @@ warnings.filterwarnings("ignore")
 STATIC = os.path.join(STATIC_BASE, "static")
 VERSION = "1.0.0"
 PORT = int(os.getenv("DASHBOARD_PORT", "8770"))
+
+# Les seuls noms sous lesquels la page s'ouvre : l'application, le Hub
+# et le Terminal disent « localhost », les outils de capture
+# « 127.0.0.1 ». Tout autre nom est refusé, voir Handler._hote_refuse.
+HOTES_AUTORISES = {f"localhost:{PORT}", f"127.0.0.1:{PORT}"}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -258,6 +264,14 @@ def stocks_history():
 #      qui fait échouer la tentative. Le JavaScript de notre propre page,
 #      lui, l'envoie sans difficulté puisqu'il est servi depuis la même
 #      origine.
+#
+#      Le « DNS rebinding » contourne cette protection (vérifié le
+#      05/11/2026) : une page piégée fait pointer son propre nom vers
+#      127.0.0.1. Pour le navigateur, elle parle alors à son propre
+#      site : elle lit nos réponses et ajoute l'en-tête sans rien
+#      demander. Seul l'en-tête Host trahit le nom qu'elle a utilisé :
+#      Handler._hote_refuse le vérifie sur TOUTES les requêtes,
+#      lectures comprises.
 
 POSITIONS_FILE = os.path.join("data", "stock_positions.json")
 
@@ -460,7 +474,32 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store, must-revalidate")
         super().end_headers()
 
+    def _hote_refuse(self):
+        """
+        Refuse la requête si elle ne vise pas ce Mac par son vrai nom.
+
+        Une page piégée peut faire pointer son propre nom de domaine vers
+        127.0.0.1 : le navigateur la laisse alors lire nos réponses et
+        ajouter X-Dashboard. Mais l'en-tête Host porte toujours le nom
+        qu'elle a utilisé, et ce nom n'est ni localhost ni 127.0.0.1.
+
+        Renvoie True quand la requête a été refusée (réponse déjà envoyée).
+        """
+        hote = (self.headers.get("Host") or "").strip().lower()
+        if hote in HOTES_AUTORISES:
+            return False
+        self.send_error(421, explain="Ce serveur ne répond qu'à localhost et 127.0.0.1.")
+        return True
+
+    def do_HEAD(self):
+        if self._hote_refuse():
+            return
+        super().do_HEAD()
+
     def do_GET(self):
+        if self._hote_refuse():
+            return
+
         path = urlparse(self.path).path
 
         if path in ROUTES:
@@ -486,6 +525,9 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_POST(self):
+        if self._hote_refuse():
+            return
+
         path = urlparse(self.path).path
         actions = {
             "/api/positions/add": add_position,
