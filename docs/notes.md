@@ -543,6 +543,42 @@ ensemble.
 Le dashboard affiche donc le momentum 12-1 et le rang qui en découle, comme
 information de départage entre valeurs — jamais comme un signal d'achat.
 
+## Le simulateur 200 € (5 novembre 2026)
+
+```bash
+python3 simulateur_200.py                 # 200 € puis 50 € par mois
+python3 simulateur_200.py --sans-change   # si le courtier garde les dollars
+python3 simulateur_200.py --verifier      # 18 cas calculés à la main
+```
+
+Les mesures ci-dessus parlent en pourcentages, sans frais fixes ni impôt.
+Celle-ci rejoue un vrai petit portefeuille : 1 € par ordre, le cours
+euro/dollar de chaque jour, la flat tax de 31,4 % payée l'année suivante, et
+les pertes reportées sur dix ans. Chaque mois depuis octobre 2017 est un
+départ, sur 3 ans (72 départs) et sur 5 ans (48 départs). Six façons de jouer :
+les signaux techniques, le top 12 et le top 3 du momentum, le panier des 49,
+et un ETF S&P 500 coté en euros, acheté chaque mois par ordre normal ou par
+plan programmé.
+
+**Sur 5 ans**, gain net médian pour 3 150 € versés :
+
+| Façon de jouer | Avec frais de change | Sans |
+|---|---|---|
+| Signaux techniques | −67 € | +699 € |
+| Top 12 momentum | +979 € | +1 250 € |
+| Top 3 momentum | +1 366 € | +2 309 € |
+| Panier des 49 | +1 541 € | +1 572 € |
+| ETF, 1 € par ordre | +922 € | +922 € |
+| ETF, plan programmé | +973 € | +973 € |
+
+Les signaux techniques finissent derniers dans les deux cas : 183 ordres par
+an, et jusqu'à 1 934 € de frais. Le momentum et le panier passent devant
+l'ETF, mais ils choisissent parmi 49 sociétés dont on sait qu'elles ont
+survécu jusqu'en 2026 : c'est le biais du survivant qui, plus haut, divisait
+par six l'avantage du momentum. L'ETF n'a pas ce biais, et il n'a perdu sur
+aucune fenêtre de 5 ans (pire départ : +627 €). Rien de tout ça ne dit
+l'avenir.
+
 ## Lancer les bots
 
 **Démarrage automatique.** Le bot se lance à l'ouverture de session via
