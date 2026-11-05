@@ -72,8 +72,10 @@ DEFAULT_HORIZON = 5
 #      battait le panier une fois le risque pris en compte.
 #
 #      Sur ces 49 valeurs réparties en huit secteurs, le momentum 12-1
-#      atteint le 100ᵉ percentile du tirage au sort et bat le panier à
-#      la fois en performance, en Sharpe et en drawdown. Ce n'est pas
+#      atteint le 100ᵉ percentile du tirage au sort. (Audit du 07/09/2026 :
+#      il bat le panier en performance brute et en drawdown, mais pas en
+#      Sharpe — 0,932 contre 0,935 —, et le biais du survivant divise son
+#      avantage par six.) Ce n'est pas
 #      l'algorithme qui a changé, c'est le terrain : ce sont les écarts
 #      ENTRE secteurs qui font vivre un classement, bien plus que ceux
 #      entre deux fabricants de puces.

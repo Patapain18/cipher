@@ -250,8 +250,8 @@ function qualityVerdict(v2, edge, beatsReference) {
   if (ic <= 0.015) {
     return `<strong>Sur cette période, ce score n'a aucun pouvoir prédictif décelable.</strong>
       Il décrit l'état technique d'une valeur, mais il n'annonce pas la suite —
-      ne t'en sers pas pour décider d'un achat. Le seul critère validé de ce
-      tableau de bord est le classement par momentum 12-1.`;
+      ne t'en sers pas pour décider d'un achat. Le moins mauvais critère de ce
+      tableau de bord est le classement par momentum 12-1, sans être validé pour autant.`;
   }
   return `<strong>Sur cette période, le signal ne bat pas l'achat-conservation.</strong>
     Il reste utile pour choisir un moment d'entrée quand la décision d'acheter
@@ -288,19 +288,30 @@ function earningsCell(r) {
    ne doit pas relancer un scan de 49 valeurs. */
 let lastStocks = null;
 
-/* Vue par défaut : la sélection validée par la mesure, pas les signaux
+/* Vue par défaut : le moins mauvais critère mesuré, pas les signaux
    techniques. C'est ce qu'on veut voir en ouvrant la page. */
 let activeFilter = 'momentum';
+
+/* Ce que le moteur conclut du score technique, dit comme un état. Les codes
+   BUY, WATCH, HOLD et SELL restent dans les données ; affichés tels quels,
+   ils se lisent comme des ordres, alors que la mesure a montré que ce score
+   n'annonce rien. Même traduction dans stock_bot.py. */
+const ETAT_TECHNIQUE = {
+  BUY: 'favorable',
+  WATCH: 'mitigé',
+  HOLD: 'neutre',
+  SELL: 'défavorable',
+};
 
 const FILTERS = {
   momentum: {
     label: 'Top momentum',
-    hint: 'les 12 mieux classées — la sélection mesurée comme gagnante',
+    hint: 'les 12 mieux classées — le moins mauvais critère mesuré, pas un signal d\'achat',
     test: (r) => r.rang && r.rang <= 12,
   },
   signaux: {
     label: 'Signaux techniques',
-    hint: 'BUY et WATCH du moteur — sans valeur prédictive mesurée',
+    hint: '« favorable » et « mitigé » selon le moteur — sans valeur prédictive mesurée',
     test: (r) => r.recommendation === 'BUY' || r.recommendation === 'WATCH',
   },
   detenues: {
@@ -359,7 +370,7 @@ function drawStocks() {
     <div class="card stat">
       <div class="label">Sélection top 12</div>
       <div class="value">${top12Sectors}<span class="sub"> secteurs</span></div>
-      <div class="foot">la répartition mesurée comme gagnante</div>
+      <div class="foot">répartition des 12 mieux classées</div>
     </div>
     <div class="card stat">
       <div class="label">Momentum positif</div>
@@ -371,7 +382,7 @@ function drawStocks() {
       <div class="value">${held.length || buys + watch}</div>
       <div class="foot">${held.length
         ? `<span class="${trend(heldPnl)}">${heldPnl >= 0 ? '+' : ''}${nf(heldPnl)} €</span> latents`
-        : `${buys} BUY · ${watch} WATCH — sans valeur prédictive mesurée`}</div>
+        : `${buys} favorables · ${watch} mitigées — sans valeur prédictive mesurée`}</div>
     </div>`;
 
   /* Barre de filtres : chaque onglet porte son propre compte, pour
@@ -394,7 +405,7 @@ function drawStocks() {
      Le tableau était auparavant ordonné par score technique. Depuis que
      la mesure a montré que ce score n'annonce rien, le trier par lui
      revenait à mettre en haut de page ce qui n'a pas de valeur
-     démontrée. On ordonne donc par le seul critère validé ; les valeurs
+     démontrée. On ordonne donc par le moins mauvais critère mesuré ; les valeurs
      sans momentum calculable (historique trop court) ferment la marche
      plutôt que d'ouvrir le tableau. */
   const sorted = [...rows].filter(FILTERS[activeFilter].test).sort((a, b) =>
@@ -417,7 +428,7 @@ function drawStocks() {
       </td>
       <td class="sector">${esc(r.secteur || '—')}</td>
       <td class="num-cell num rank primary-col"
-          title="Momentum 12-1 et rang du jour. Seul critère de classement validé. Départage les valeurs ; ne décide pas d'un achat à lui seul.">${
+          title="Momentum 12-1 et rang du jour. Le moins mauvais critère mesuré : il bat le hasard, pas le simple panier une fois le risque compté. Départage les valeurs ; ne décide pas d'un achat.">${
         r.mom_12_1 === null || r.mom_12_1 === undefined
           ? '—'
           : `<span class="${trend(r.mom_12_1 * 100)}">${pct(r.mom_12_1 * 100, 0)}</span>
@@ -438,7 +449,7 @@ function drawStocks() {
           <span class="n num">${r.buy_score}/5</span>
         </span>
       </td>
-      <td><span class="reco reco-${esc(r.recommendation)}">${esc(r.recommendation)}</span></td>
+      <td><span class="reco reco-${esc(r.recommendation)}">${esc(ETAT_TECHNIQUE[r.recommendation] || r.recommendation)}</span></td>
       <td><div class="signals">${(r.drivers || []).slice(0, 2).map((d) =>
             `<span class="chip ${d.poids >= 0 ? 'chip-up' : 'chip-down'}"
                    title="${esc(d.famille)} · poids ${nf(d.poids, 3)}">${esc(d.nom)}</span>`
@@ -696,7 +707,7 @@ function drawEvents() {
         <li>
           <time class="num">${dt(e.t)}</time>
           <span class="who">${esc(e.ticker)}</span>
-          <span class="reco reco-${esc(e.reco)}">${esc(e.reco)}</span>
+          <span class="reco reco-${esc(e.reco)}">${esc(ETAT_TECHNIQUE[e.reco] || e.reco)}</span>
           <span class="what">à ${nf(e.price)} $${e.signals && e.signals.length
             ? ' — ' + esc(e.signals.join(', ')) : ''}</span>
         </li>`).join('')

@@ -144,10 +144,11 @@
           <tr>
             <th>Valeur</th>
             <th>Secteur</th>
-            <!-- Colonne principale : c'est le seul critère de ce tableau
-                 dont la valeur ait été démontrée. -->
+            <!-- Colonne principale : le moins mauvais critère mesuré de ce
+                 tableau (il bat le hasard, pas le panier une fois le risque
+                 compté). -->
             <th class="num-cell primary-col"
-                title="Rendement sur un an hors dernier mois, et rang du jour qui en découle. Seul critère validé : 100ᵉ percentile du hasard sur 9 ans et 49 valeurs, et meilleur que le panier en performance, en Sharpe et en drawdown.">Momentum 12-1</th>
+                title="Rendement sur un an hors dernier mois, et rang du jour qui en découle. Le moins mauvais critère mesuré : il bat le hasard (100ᵉ percentile sur 9 ans et 49 valeurs), mais pas le simple panier une fois le risque compté (Sharpe 0,932 contre 0,935).">Momentum 12-1</th>
             <th class="num-cell" title="Prochaine publication de resultats. Une date connue a l'avance : elle ne dit pas dans quel sens le cours ira, mais qu'il bougera probablement fort. Acheter la veille, c'est jouer a pile ou face sur un ecart d'ouverture.">Résultats</th>
             <th class="num-cell">Cours</th>
             <th class="num-cell">1 j</th>
@@ -155,7 +156,7 @@
             <th class="num-cell">1 mois</th>
             <th>Régime</th>
             <th title="État technique de la valeur selon le moteur v2. Mesuré sur 10 ans et 49 valeurs, ce score n'a aucun pouvoir prédictif : il décrit, il n'annonce pas.">Score technique</th>
-            <th>Signal</th>
+            <th title="Ce que le moteur conclut du score technique. Une description, pas un ordre : mesuré, ce score ne prédit rien.">État</th>
             <th>Ce qui pèse</th>
             <th>Zone probable à 5 j</th>
           </tr>
@@ -199,7 +200,7 @@
   </section>
 
   <section class="section" id="section-bascules">
-    <span class="eyebrow">Bascules de recommandation</span>
+    <span class="eyebrow">Bascules de l'état technique</span>
     <div class="card">
       <ul class="log" id="stocks-events">
         <li class="loading">Chargement…</li>

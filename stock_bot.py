@@ -1,18 +1,19 @@
 """
 Stock Signal Bot — Bot de signaux pour actions.
 
-Comme on ne peut pas trader automatiquement en France, ce bot :
+Ce bot ne passe aucun ordre. Il :
 1. Surveille les actions configurées en temps réel
 2. Calcule leur état technique et les classe par momentum 12-1
-3. Affiche un dashboard avec les recommandations
+3. Affiche le classement et tes positions — plus aucun « ACHETER »
 4. Notifie sur le CLASSEMENT, pas sur le score technique :
-   — une recomposition du top 12, au rythme validé de ~10 séances
+   — une recomposition du top 12, au rythme mesuré de ~10 séances
    — le décrochage immédiat d'une valeur que tu détiens
 
 Le score technique reste calculé et historisé, mais il ne déclenche plus
-d'alerte : la mesure (stock_eval.py) a montré qu'il n'annonce rien.
+ni alerte ni conseil : la mesure (stock_eval.py) a montré qu'il
+n'annonce rien.
 
-Tu fais les ordres manuellement sur ton broker (Trade Republic, DEGIRO, etc.).
+Les ordres, s'il y en a, c'est toi qui les passes chez ton courtier.
 """
 
 import time
@@ -60,11 +61,12 @@ PID_FILE = "logs/stock_bot.pid"
 #  Les notifications reposaient sur le score technique, dont la mesure
 #  (stock_eval.py) a montré qu'il n'annonce rien : IC négatif, écart nul
 #  avec « ne rien faire ». Elles suivent désormais le momentum 12-1, seul
-#  critère du projet à avoir battu à la fois le tirage au sort et le
-#  panier équipondéré.
+#  critère du projet à avoir battu le tirage au sort. Il ne bat PAS le
+#  panier équipondéré une fois le risque compté (Sharpe 0,932 contre
+#  0,935, audit du 07/09/2026) : c'est le moins mauvais, pas un validé.
 #
 #  MAIS LE MOMENTUM N'EST PAS UN SIGNAL, C'EST UN CLASSEMENT.
-#      Ce qui a été validé, c'est une stratégie complète : détenir les
+#      Ce qui a été mesuré, c'est une stratégie complète : détenir les
 #      douze mieux classées et rééquilibrer tous les dix jours de bourse.
 #      Alerter dès qu'une valeur entre ou sort du top douze reviendrait à
 #      rééquilibrer en continu — soit une rotation bien supérieure aux
@@ -83,6 +85,17 @@ REBALANCE_DAYS = int(os.getenv("STOCK_REBALANCE_DAYS", "14"))
 # d'arbitrer un portefeuille théorique mais de l'argent réellement engagé.
 HELD_ALERT_RANK = int(os.getenv("STOCK_HELD_ALERT_RANK", "25"))
 REBALANCE_STATE = "data/rebalance_state.json"
+
+# Ce que le moteur conclut de son score technique, dit comme un état.
+# Les codes BUY, WATCH, HOLD et SELL restent dans les données (le tableau
+# de bord et l'historique s'en servent) ; affichés tels quels, ils se
+# lisent comme des ordres. Même traduction dans web/static/app.js.
+ETAT_TECHNIQUE = {
+    "BUY": "favorable",
+    "WATCH": "mitigé",
+    "HOLD": "neutre",
+    "SELL": "défavorable",
+}
 
 
 def running_instance():
@@ -145,20 +158,6 @@ def notify_macos(title, message, subtitle=""):
                        capture_output=True, timeout=5, check=False)
     except Exception:
         pass
-
-
-def _sell_line(analysis, position):
-    """Une ligne du panneau de vente, qu'on connaisse la position ou non."""
-    head = f"[bold red]🔴 VENDRE {analysis['ticker']}[/bold red] @ ${analysis['price']:.2f}"
-    if not position:
-        return head + "\n   [dim]aucune position enregistrée[/dim]"
-    calcul = engine.pnl_position(position, analysis["price"], analysis["ticker"])
-    if not calcul:
-        return head + "\n   [dim]position illisible[/dim]"
-    split = "  (ajusté d'une division)" if calcul["split"] != 1.0 else ""
-    return (f"{head}\n"
-            f"   Position actuelle: {calcul['quantity']:.4f} actions{split}\n"
-            f"   P&L: {calcul['pnl_pct']:+.2f}%")
 
 
 class StockSignalBot:
@@ -336,7 +335,7 @@ class StockSignalBot:
 
     def check_rebalance(self, ranked):
         """
-        Notifie une recomposition du portefeuille, au rythme validé.
+        Notifie une recomposition du portefeuille, au rythme mesuré.
 
         Renvoie True si une notification a été envoyée.
         """
@@ -765,149 +764,151 @@ class StockSignalBot:
         }
 
     def render_dashboard(self, analyses):
-        """Affiche le dashboard."""
+        """
+        Affiche le classement du cycle dans le terminal (et donc le journal).
+
+        Jusqu'au 05/11/2026, cet écran criait « ACHETER » avec une quantité
+        suggérée et « Va sur ton broker », à partir du score technique —
+        celui dont la mesure a montré qu'il ne prédit rien. Il montre
+        maintenant ce que montre le tableau de bord : le classement par
+        momentum, présenté comme un classement et pas comme un ordre, puis
+        tes positions.
+
+        Seul le top 12 est listé (le tableau de bord a les 49) : le journal
+        grossit beaucoup moins vite.
+
+        Les analyses doivent être passées par rank_by_momentum (clé "rang").
+        """
         console.clear()
 
-        # Header
         console.print(Panel(
-            f"[bold cyan]📊 STOCK SIGNAL BOT[/bold cyan]  |  "
-            f"Capital: [yellow]{self.capital}€[/yellow]  |  "
-            f"Actions: {len(self.tickers)}  |  "
-            f"{datetime.now().strftime('%H:%M:%S')}",
+            f"[bold cyan]📊 SIGNAUX ACTIONS[/bold cyan]  |  "
+            f"{len(self.tickers)} valeurs  |  "
+            f"{datetime.now().strftime('%H:%M:%S')}\n"
+            f"[dim]Aucun ordre n'est passé : le bot informe, c'est toi qui décides.[/dim]",
             style="cyan"
         ))
 
-        # Tableau principal
-        table = Table(title="📈 Surveillance des Actions", show_header=True, header_style="bold magenta")
-        table.add_column("Action", style="bold", width=8)
-        table.add_column("Prix", justify="right", width=10)
-        table.add_column("1j", justify="right", width=7)
-        table.add_column("1sem", justify="right", width=8)
-        table.add_column("1m", justify="right", width=8)
-        table.add_column("RSI", justify="right", width=6)
-        table.add_column("Signal", justify="center", width=10)
-        table.add_column("Score", justify="center", width=8)
-        table.add_column("Position", justify="center", width=12)
+        classees = sorted((a for a in analyses if a.get("rang")),
+                          key=lambda a: a["rang"])
+        total = len(classees)
 
-        for a in analyses:
-            # Couleurs
-            d1_s = "green" if a["change_1d"] >= 0 else "red"
-            d7_s = "green" if a["change_1w"] >= 0 else "red"
-            d30_s = "green" if a["change_1m"] >= 0 else "red"
+        if classees:
+            table = Table(
+                title=f"🏁 Classement par momentum 12-1 : les {REBALANCE_TOP_N} premières",
+                show_header=True, header_style="bold magenta")
+            table.add_column("Rang", justify="right")
+            table.add_column("Action", style="bold")
+            table.add_column("Cours", justify="right")
+            table.add_column("Momentum", justify="right")
+            table.add_column("1 mois", justify="right")
+            table.add_column("Technique", style="dim")
 
-            if a["rsi"] < 30: rsi_s = "green bold"
-            elif a["rsi"] > 70: rsi_s = "red bold"
-            else: rsi_s = "yellow"
+            for a in classees[:REBALANCE_TOP_N]:
+                mom = a["mom_12_1"] * 100
+                mom_s = "green" if mom >= 0 else "red"
+                d30_s = "green" if a["change_1m"] >= 0 else "red"
+                table.add_row(
+                    str(a["rang"]),
+                    a["ticker"],
+                    f"${a['price']:.2f}",
+                    f"[{mom_s}]{mom:+.0f} %[/{mom_s}]",
+                    f"[{d30_s}]{a['change_1m']:+.1f} %[/{d30_s}]",
+                    ETAT_TECHNIQUE.get(a["recommendation"], a["recommendation"]),
+                )
+            console.print(table)
+        else:
+            console.print("[yellow]Classement indisponible ce cycle : "
+                          "aucun momentum calculable.[/yellow]")
 
-            rec_styles = {
-                "BUY": "[bold green]🟢 BUY[/bold green]",
-                "SELL": "[bold red]🔴 SELL[/bold red]",
-                "WATCH": "[yellow]👀 WATCH[/yellow]",
-                "HOLD": "[dim]HOLD[/dim]",
-            }
+        # Ce que vaut ce classement, rappelé à chaque affichage : c'est ce
+        # qui l'empêche de passer pour une liste de courses.
+        console.print(
+            "[dim]Un classement, pas un ordre d'achat. Mesuré sur 9 ans, il bat le hasard,\n"
+            "mais pas le simple panier des 49 une fois le risque compté.\n"
+            "« Technique » décrit l'état d'une valeur : mesuré, il ne prédit rien.[/dim]")
 
-            # Position
-            if a["ticker"] in self.positions:
-                pos = self.positions[a["ticker"]]
-                calcul = engine.pnl_position(pos, a["price"], a["ticker"])
-                pnl = calcul["pnl_pct"] if calcul else 0.0
-                pnl_s = "green" if pnl >= 0 else "red"
-                pos_str = f"[{pnl_s}]{pnl:+.1f}%[/{pnl_s}]"
-            else:
-                pos_str = "[dim]-[/dim]"
+        attendu = max(1, len(self.tickers))
+        if total < 0.95 * attendu:
+            console.print(f"[yellow]Classement partiel : {total}/{attendu} valeurs "
+                          f"classables ce cycle.[/yellow]")
 
-            table.add_row(
-                a["ticker"],
-                f"${a['price']:.2f}",
-                f"[{d1_s}]{a['change_1d']:+.1f}%[/{d1_s}]",
-                f"[{d7_s}]{a['change_1w']:+.1f}%[/{d7_s}]",
-                f"[{d30_s}]{a['change_1m']:+.1f}%[/{d30_s}]",
-                f"[{rsi_s}]{a['rsi']:.0f}[/{rsi_s}]",
-                rec_styles[a["recommendation"]],
-                f"{a['buy_score']}/{a['sell_score']}",
-                pos_str,
-            )
+        prochain = self._prochain_reequilibrage()
+        if prochain:
+            console.print(f"[dim]Prochain rééquilibrage du top {REBALANCE_TOP_N} : "
+                          f"{prochain}.[/dim]")
 
-        console.print(table)
-
-        # Recommandations actives
-        buys = [a for a in analyses if a["recommendation"] == "BUY"]
-        sells = [a for a in analyses if a["recommendation"] == "SELL"]
-        watches = [a for a in analyses if a["recommendation"] == "WATCH"]
-
-        if buys:
-            console.print()
-            console.print(Panel(
-                "\n".join([
-                    f"[bold green]🟢 ACHETER {a['ticker']}[/bold green] @ ${a['price']:.2f}\n"
-                    f"   Signaux: {', '.join(a['signals'])}\n"
-                    f"   Quantité suggérée: {self.capital/len(buys)/a['price']:.2f} actions ({self.capital/len(buys):.2f}€)\n"
-                    f"   [dim]Va sur ton broker (Trade Republic, DEGIRO...) et passe l'ordre manuellement[/dim]"
-                    for a in buys
-                ]),
-                title="💰 SIGNAUX D'ACHAT",
-                border_style="green",
-            ))
-
-        if sells:
-            console.print()
-            console.print(Panel(
-                # `.get` plutôt qu'un accès direct : même si la règle
-                # ci-dessus garantit qu'un SELL correspond à une position,
-                # une position supprimée entre le scan et l'affichage
-                # suffirait à faire tomber tout le cycle — historisation
-                # comprise — pour un simple panneau décoratif.
-                "\n".join([
-                    _sell_line(a, self.positions.get(a["ticker"].upper()))
-                    for a in sells
-                ]),
-                title="💸 SIGNAUX DE VENTE",
-                border_style="red",
-            ))
-
-        if watches:
-            console.print()
-            wt = Table(title="👀 Surveillance rapprochée", show_header=False)
-            wt.add_column()
-            for a in watches:
-                wt.add_row(f"  {a['ticker']} @ ${a['price']:.2f} — Score {a['buy_score']}/5 (proche signal d'achat)")
-            console.print(wt)
-
-        # Performance globale
-        if self.positions:
-            console.print()
-            total_value = 0
-            total_cost = 0
-            for ticker, pos in self.positions.items():
-                a = next((x for x in analyses if x["ticker"] == ticker), None)
-                if a:
-                    calcul = engine.pnl_position(pos, a["price"], ticker)
-                    if calcul:
-                        total_value += calcul["quantity"] * a["price"]
-                        total_cost += calcul["quantity"] * calcul["entry_price"]
-
-            pnl = total_value - total_cost
-            roi = (pnl / total_cost * 100) if total_cost > 0 else 0
-            pnl_s = "green" if pnl >= 0 else "red"
-
-            console.print(Panel(
-                f"[bold]Portefeuille:[/bold]\n"
-                f"  Valeur: ${total_value:.2f}\n"
-                f"  Coût: ${total_cost:.2f}\n"
-                f"  P&L: [{pnl_s}]{pnl:+.2f}$ ({roi:+.2f}%)[/{pnl_s}]",
-                title="📊 PORTEFEUILLE",
-                border_style="cyan",
-            ))
+        self._render_positions(analyses, total)
 
         console.print(f"\n[dim]Prochaine analyse dans {LOOP_INTERVAL}s | Ctrl+C pour arrêter[/dim]")
-        console.print(f"[dim]💡 Pour enregistrer un achat: python3 stock_bot.py --add TICKER QUANTITY PRICE[/dim]")
+        console.print("[dim]💡 Noter un achat déjà passé : "
+                      "python3 stock_bot.py --add TICKER QTÉ PRIX[/dim]")
+
+    def _prochain_reequilibrage(self):
+        """Date du prochain rééquilibrage, en clair, ou None au premier passage."""
+        last = self._load_rebalance_state().get("last_rebalance")
+        if not last:
+            return None
+        try:
+            date = datetime.fromisoformat(last) + timedelta(days=REBALANCE_DAYS)
+        except (ValueError, TypeError):
+            return None
+        if date <= datetime.now():
+            return "à ce cycle"
+        return f"le {date.strftime('%d/%m')}"
+
+    def _render_positions(self, analyses, total):
+        """
+        Tes positions : rang au momentum et P&L, puis le total.
+
+        Remplace l'ancien panneau « SIGNAUX DE VENTE », tiré lui aussi du
+        score technique. Une position n'est signalée que quand elle
+        décroche au classement, avec la même règle que la notification
+        (check_held_positions).
+        """
+        if not self.positions:
+            console.print("\n[dim]Tes positions : aucune enregistrée.[/dim]")
+            return
+
+        par_ticker = {a["ticker"]: a for a in analyses}
+        seuil = max(3, round(HELD_ALERT_RANK * total / max(1, len(self.tickers))))
+        lignes = []
+        valeur = cout = 0.0
+
+        for ticker, pos in self.positions.items():
+            a = par_ticker.get(ticker)
+            calcul = engine.pnl_position(pos, a["price"], ticker) if a else None
+            if not calcul:
+                lignes.append(f"{ticker:<6} [dim]cours ou position illisible ce cycle[/dim]")
+                continue
+            valeur += calcul["quantity"] * a["price"]
+            cout += calcul["quantity"] * calcul["entry_price"]
+
+            rang = a.get("rang")
+            if rang:
+                rang_txt = f"{rang}{'ᵉʳ' if rang == 1 else 'ᵉ'}/{total}"
+            else:
+                rang_txt = "sans rang"
+            pnl_s = "green" if calcul["pnl_pct"] >= 0 else "red"
+            alerte = (f"  [bold red]décroche : au-delà du {seuil}ᵉ rang[/bold red]"
+                      if rang and rang > seuil else "")
+            lignes.append(f"{ticker:<6} {rang_txt:>8}   "
+                          f"[{pnl_s}]{calcul['pnl_pct']:+.1f} %[/{pnl_s}]{alerte}")
+
+        if cout > 0:
+            pnl = valeur - cout
+            pnl_s = "green" if pnl >= 0 else "red"
+            lignes.append(f"\nTotal : ${valeur:.2f} pour ${cout:.2f} investis   "
+                          f"[{pnl_s}]{pnl:+.2f} $ ({pnl / cout * 100:+.2f} %)[/{pnl_s}]")
+
+        console.print()
+        console.print(Panel("\n".join(lignes), title="📊 TES POSITIONS", border_style="cyan"))
 
     def run(self):
         """Boucle principale."""
         console.print(Panel(
             f"[bold cyan]Démarrage du Stock Signal Bot[/bold cyan]\n"
             f"Actions surveillées: {', '.join(self.tickers)}\n"
-            f"Capital simulé: {self.capital}€\n"
             f"Intervalle: {LOOP_INTERVAL}s\n"
             f"Notifications: bulles macOS sur le classement (rééquilibrage + décrochage)\n"
             f"Historique: {HISTORY_FILE} ({len(self.signal_history)} entrées)",
@@ -950,12 +951,15 @@ class StockSignalBot:
                         except Exception as e:
                             console.print(f"[red]Erreur analyse {ticker}: {e}[/red]")
 
+                # Le classement par momentum est établi avant tout le
+                # reste : c'est lui qu'affiche le terminal, et lui qui
+                # pilote les alertes. rank_by_momentum ajoute la clé
+                # "rang" à chaque analyse classable.
+                ranked = self.rank_by_momentum(analyses)
+
                 if self.use_dashboard:
                     self.render_dashboard(analyses)
 
-                # Le classement par momentum est établi avant tout le
-                # reste : c'est lui qui pilote désormais les alertes.
-                ranked = self.rank_by_momentum(analyses)
                 self.check_rebalance(ranked)
                 self.check_held_positions(ranked)
 

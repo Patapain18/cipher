@@ -582,6 +582,12 @@ décrit l'état d'une valeur et alimente le graphique — mais sonner pour un
 signal dont on a mesuré qu'il n'annonce rien n'apprend qu'à ignorer ses
 propres alertes. L'état vit dans `data/rebalance_state.json`.
 
+**Le terminal non plus** (5 novembre 2026). Il affichait encore « ACHETER »
+avec une quantité suggérée, tiré de ce même score. Il montre maintenant le
+top 12 du classement, avec ce qu'il vaut, puis tes positions et leur rang.
+Le score technique n'y est plus qu'un état (favorable, mitigé, neutre ou
+défavorable), comme dans la colonne « État » du tableau de bord.
+
 Le bot **n'empêche pas le Mac de dormir** (plus de `caffeinate`) : un Mac
 éveillé écran éteint consomme ~5-10 W contre ~0,3 W en veille, soit près
 d'un cycle de batterie par nuit pour rien. Quand le Mac dort, le processus
@@ -599,7 +605,7 @@ python3 grid_bot.py        # grid bot — ajouter --live pour sortir de la simul
 
 | Fichier | Rôle |
 |---|---|
-| `stock_bot.py` | Signaux sur 9 actions (yfinance), moteur v2. N'exécute rien : le trading auto d'actions n'est pas ouvert aux particuliers en France, tu passes les ordres chez ton courtier. |
+| `stock_bot.py` | Classement de 49 actions (yfinance), moteur v2. N'exécute rien : tu passes les ordres chez ton courtier. |
 | `bot.py` | Bot crypto Binance (ccxt). Stratégie SMA + RSI + MACD + Bollinger, score de confiance sur 5. |
 | `grid_bot.py` | Grid trading. Config retenue après 68 268 backtests : DOGE/USDT, 4h, 3 niveaux, 0,8 % d'espacement. |
 
