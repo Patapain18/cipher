@@ -1,0 +1,469 @@
+<meta name="dash-one-writer">
+<!--
+  Point marché de la semaine : la page téléphone (Artifact « Dashboard »).
+  Copie de travail de files/index.html, l'original vit dans le store de la page.
+  Deux sources : `point` (les chiffres du bot, point_semaine.py --lignes) et
+  `nouvelles` (les nouvelles de la semaine, chacune avec sa page source).
+  Règle du projet : des faits, jamais de conseil ni de prédiction.
+-->
+<style>
+  /* Une colonne de lecture, des cartes qui passent à deux ou trois de front
+     quand il y a la place, une seule au téléphone. */
+  .pm {
+    display: grid;
+    gap: var(--cds-gap-xl);
+    max-width: 70rem;
+    margin-inline: auto;
+    font-family: var(--font-anthropic-sans);
+    color: var(--color-fg);
+  }
+
+  .pm-tete {
+    display: grid;
+    gap: var(--cds-gap-xs);
+  }
+
+  .pm-titre {
+    margin: 0;
+    font-family: var(--font-anthropic-serif);
+    font-weight: 400;
+    font-size: var(--cds-font-size-title);
+    text-wrap: balance;
+  }
+
+  .pm-dates,
+  .pm-avert {
+    margin: 0;
+  }
+
+  .pm-dates {
+    font-size: var(--cds-font-size-body);
+  }
+
+  .pm-avert {
+    font-size: var(--cds-font-size-caption);
+    color: var(--color-fg-muted);
+  }
+
+  .pm-section {
+    display: grid;
+    gap: var(--cds-gap-md);
+  }
+
+  .pm-h2 {
+    margin: 0;
+    font-size: var(--cds-font-size-heading);
+    font-weight: var(--cds-font-weight-medium);
+  }
+
+  .pm-tuiles,
+  .pm-grille {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr));
+    gap: var(--cds-gap-md);
+  }
+
+  .pm-carte {
+    display: grid;
+    align-content: start;
+    gap: var(--cds-gap-sm);
+    min-width: 0;
+    background: var(--color-panel);
+    border: 1px solid var(--color-border-line);
+    border-radius: var(--cds-radius);
+    padding: var(--cds-pad-lg);
+  }
+
+  .pm-tuile-nom,
+  .pm-tuile-valeur,
+  .pm-tuile-note,
+  .pm-note,
+  .pm-vide {
+    margin: 0;
+  }
+
+  .pm-tuile-nom {
+    font-size: var(--cds-font-size-body);
+    color: var(--color-fg-muted);
+  }
+
+  .pm-tuile-valeur {
+    font-family: var(--font-anthropic-serif);
+    font-weight: 400;
+    font-size: var(--cds-font-size-title);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .pm-tuile-note,
+  .pm-note,
+  .pm-vide {
+    font-size: var(--cds-font-size-caption);
+    color: var(--color-fg-muted);
+  }
+
+  .pm-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--cds-font-size-body);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .pm-table th {
+    padding: 0 0 var(--cds-pad-xs);
+    text-align: left;
+    font-weight: 400;
+    font-size: var(--cds-font-size-caption);
+    color: var(--color-fg-muted);
+  }
+
+  .pm-table td {
+    padding: var(--cds-pad-xs) 0;
+    border-top: 1px solid var(--color-border-line);
+  }
+
+  .pm-table .pm-num {
+    text-align: right;
+  }
+
+  .pm-hausse {
+    color: var(--color-ok);
+  }
+
+  .pm-baisse {
+    color: var(--color-bad);
+  }
+
+  .pm-nouvelles {
+    display: grid;
+    gap: var(--cds-gap-md);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .pm-nouvelle {
+    display: grid;
+    gap: var(--cds-gap-xs);
+    min-width: 0;
+    background: var(--color-panel);
+    border: 1px solid var(--color-border-line);
+    border-radius: var(--cds-radius);
+    padding: var(--cds-pad-lg);
+  }
+
+  .pm-nouvelle-titre {
+    margin: 0;
+    font-size: var(--cds-font-size-heading);
+    font-weight: var(--cds-font-weight-medium);
+    text-wrap: balance;
+  }
+
+  .pm-nouvelle-texte {
+    margin: 0;
+    max-width: 65ch;
+    font-size: var(--cds-font-size-body);
+  }
+
+  .pm-nouvelle-source {
+    margin: 0;
+    font-size: var(--cds-font-size-caption);
+    color: var(--color-fg-muted);
+  }
+
+  .pm-nouvelle-source a {
+    color: inherit;
+  }
+
+  .pm-liste-valeurs {
+    font-weight: var(--cds-font-weight-medium);
+  }
+
+  .pm-lire {
+    font-size: var(--cds-font-size-caption);
+    color: var(--color-fg-muted);
+  }
+
+  .pm-lire summary {
+    cursor: pointer;
+  }
+
+  .pm-lire dl {
+    display: grid;
+    gap: var(--cds-gap-xs);
+    margin: var(--cds-gap-sm) 0 0;
+  }
+
+  .pm-lire dt {
+    font-weight: var(--cds-font-weight-medium);
+    color: var(--color-fg);
+  }
+
+  .pm-lire dd {
+    margin: 0 0 var(--cds-gap-xs);
+    max-width: 65ch;
+  }
+
+  .pm [data-dash-source-state=empty] {
+    color: transparent;
+  }
+
+  .pm [data-dash-source-state=refreshing] {
+    opacity: .5;
+    transition: opacity var(--cds-dur-slow);
+  }
+</style>
+
+<div class="pm">
+  <header class="pm-tete" id="haut">
+    <h1 class="pm-titre">Point marché de la semaine</h1>
+    <p class="pm-dates">Du <span data-draw="debut" data-source="point" data-field="debut" data-where="bloc=semaine&amp;cle=semaine">—</span> au <span data-draw="fin" data-source="point" data-field="fin" data-where="bloc=semaine&amp;cle=semaine">—</span>, <span data-draw="seances" data-source="point" data-field="seances" data-where="bloc=semaine&amp;cle=semaine">—</span> séances de Bourse</p>
+    <p class="pm-avert">Des faits sur la semaine passée. Aucune prédiction, aucun conseil d'achat ou de vente.</p>
+  </header>
+
+  <section class="pm-section" id="marches" aria-labelledby="marches-titre">
+    <h2 class="pm-h2" id="marches-titre">Les marchés</h2>
+    <div class="pm-tuiles">
+      <div class="pm-carte" id="sp500">
+        <p class="pm-tuile-nom">S&amp;P 500, sur la semaine</p>
+        <p class="pm-tuile-valeur" data-draw="sp-var" data-source="point" data-field="variation_dollars" data-where="bloc=marche&amp;cle=S%26P%20500">—</p>
+        <p class="pm-tuile-note">En dollars. Vu d'un compte en euros : <span data-draw="sp-eur" data-source="point" data-field="variation_euros" data-where="bloc=marche&amp;cle=S%26P%20500">—</span>. Clôture : <span data-draw="sp-clo" data-source="point" data-field="cloture" data-where="bloc=marche&amp;cle=S%26P%20500">—</span> points.</p>
+      </div>
+      <div class="pm-carte" id="nasdaq">
+        <p class="pm-tuile-nom">Nasdaq, sur la semaine</p>
+        <p class="pm-tuile-valeur" data-draw="nq-var" data-source="point" data-field="variation_dollars" data-where="bloc=marche&amp;cle=Nasdaq">—</p>
+        <p class="pm-tuile-note">En dollars. Vu d'un compte en euros : <span data-draw="nq-eur" data-source="point" data-field="variation_euros" data-where="bloc=marche&amp;cle=Nasdaq">—</span>. Clôture : <span data-draw="nq-clo" data-source="point" data-field="cloture" data-where="bloc=marche&amp;cle=Nasdaq">—</span> points.</p>
+      </div>
+      <div class="pm-carte" id="euro">
+        <p class="pm-tuile-nom">L'euro face au dollar</p>
+        <p class="pm-tuile-valeur" data-draw="eur-var" data-source="point" data-field="variation" data-where="bloc=change&amp;cle=EUR/USD">—</p>
+        <p class="pm-tuile-note">1 € vaut <span data-draw="eur-cours" data-source="point" data-field="cours" data-where="bloc=change&amp;cle=EUR/USD">—</span> $ à la clôture.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="pm-section" id="nouvelles-section" aria-labelledby="nouvelles-titre">
+    <h2 class="pm-h2" id="nouvelles-titre">Ce qui s'est passé</h2>
+    <ol class="pm-nouvelles" id="nouvelles" data-draw="nouvelles" data-source="nouvelles"></ol>
+  </section>
+
+  <section class="pm-section" id="valeurs" aria-labelledby="valeurs-titre">
+    <h2 class="pm-h2" id="valeurs-titre">Tes 49 valeurs</h2>
+    <div class="pm-grille">
+      <div class="pm-carte" id="hausses">
+        <h3 class="pm-h2">Plus fortes hausses</h3>
+        <p class="pm-note">Sur la semaine, en dollars.</p>
+        <table class="pm-table" data-source="point" data-row-key="bloc,cle">
+          <thead><tr><th scope="col" data-field="cle">Valeur</th><th scope="col" data-field="secteur">Secteur</th><th scope="col" class="pm-num" data-field="variation">Semaine</th></tr></thead>
+          <tbody data-draw="hausses"></tbody>
+        </table>
+      </div>
+      <div class="pm-carte" id="baisses">
+        <h3 class="pm-h2">Plus fortes baisses</h3>
+        <p class="pm-note">Sur la semaine, en dollars.</p>
+        <table class="pm-table" data-source="point" data-row-key="bloc,cle">
+          <thead><tr><th scope="col" data-field="cle">Valeur</th><th scope="col" data-field="secteur">Secteur</th><th scope="col" class="pm-num" data-field="variation">Semaine</th></tr></thead>
+          <tbody data-draw="baisses"></tbody>
+        </table>
+      </div>
+      <div class="pm-carte" id="secteurs">
+        <h3 class="pm-h2">Les secteurs</h3>
+        <p class="pm-note">Moyenne de leurs valeurs parmi les 49, sur la semaine.</p>
+        <table class="pm-table" data-source="point" data-row-key="bloc,cle">
+          <thead><tr><th scope="col" data-field="cle">Secteur</th><th scope="col" class="pm-num" data-field="valeurs">Valeurs</th><th scope="col" class="pm-num" data-field="variation">Semaine</th></tr></thead>
+          <tbody data-draw="secteurs"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="pm-section" id="classement" aria-labelledby="classement-titre">
+    <h2 class="pm-h2" id="classement-titre">Le classement du bot</h2>
+    <div class="pm-grille">
+      <div class="pm-carte" id="top12">
+        <h3 class="pm-h2">Top 12 par momentum 12-1</h3>
+        <p class="pm-note">Un classement, pas un ordre d'achat. Mesuré sur 9 ans, le momentum bat le hasard, mais pas le simple panier des 49 une fois le risque compté.</p>
+        <table class="pm-table" data-source="point" data-row-key="bloc,cle">
+          <thead><tr><th scope="col" class="pm-num" data-field="rang">Rang</th><th scope="col" data-field="cle">Valeur</th><th scope="col" data-field="secteur">Secteur</th><th scope="col" class="pm-num" data-field="momentum">Sur un an</th></tr></thead>
+          <tbody data-draw="top12"></tbody>
+        </table>
+      </div>
+      <div class="pm-carte" id="mouvements">
+        <h3 class="pm-h2">Ce qui a bougé dans le top 12</h3>
+        <p class="pm-tuile-note">Entrent depuis la semaine dernière : <span class="pm-liste-valeurs" data-draw="entrent" data-source="point">—</span></p>
+        <p class="pm-tuile-note">En sortent : <span class="pm-liste-valeurs" data-draw="sortent" data-source="point">—</span></p>
+        <p class="pm-tuile-note">Le bot ne recompose son top 12 que tous les 14 jours. Prochain rééquilibrage : <span data-draw="prochain" data-source="point" data-field="prochain" data-where="bloc=reequilibrage&amp;cle=bot">—</span>.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="pm-section" id="a-venir" aria-labelledby="a-venir-titre">
+    <h2 class="pm-h2" id="a-venir-titre">La semaine prochaine</h2>
+    <div class="pm-carte">
+      <h3 class="pm-h2">Résultats d'entreprises parmi tes 49 valeurs</h3>
+      <p class="pm-note">Une publication annonce un gros mouvement probable, pas son sens.</p>
+      <table class="pm-table pm-resultats" data-source="point" data-row-key="bloc,cle">
+        <thead><tr><th scope="col" data-field="cle">Valeur</th><th scope="col" data-field="secteur">Secteur</th><th scope="col" data-field="date">Jour</th></tr></thead>
+        <tbody data-draw="resultats"></tbody>
+      </table>
+      <p class="pm-vide pm-resultats-vide" hidden>Aucune publication de résultats parmi tes 49 valeurs, d'après le calendrier du bot.</p>
+    </div>
+  </section>
+
+  <section class="pm-section pm-positions" id="positions" aria-labelledby="positions-titre" hidden>
+    <h2 class="pm-h2" id="positions-titre">Tes positions, en euros</h2>
+    <div class="pm-carte">
+      <p class="pm-note">Gain depuis l'achat, au cours du dollar du jour de l'achat.</p>
+      <table class="pm-table" data-source="point" data-row-key="bloc,cle">
+        <thead><tr><th scope="col" data-field="cle">Valeur</th><th scope="col" class="pm-num" data-field="valeur_euros">Valeur</th><th scope="col" class="pm-num" data-field="gain_euros">Gain</th><th scope="col" class="pm-num" data-field="variation_semaine">Semaine</th></tr></thead>
+        <tbody data-draw="positions"></tbody>
+      </table>
+      <p class="pm-note">En tout : <span data-draw="pos-valeur" data-source="point" data-field="valeur_euros" data-where="bloc=positions_total&amp;cle=total">—</span> pour <span data-draw="pos-cout" data-source="point" data-field="cout_euros" data-where="bloc=positions_total&amp;cle=total">—</span> investis.</p>
+    </div>
+  </section>
+
+  <details class="pm-lire" id="lire">
+    <summary>Comment lire cette page</summary>
+    <dl>
+      <dt>Sur la semaine</dt>
+      <dd>Du dernier cours de la semaine d'avant au dernier cours de celle-ci.</dd>
+      <dt>Vu d'un compte en euros</dt>
+      <dd>La même variation pour quelqu'un qui investit en euros : elle compte aussi ce que l'euro a gagné ou perdu face au dollar.</dd>
+      <dt>Momentum 12-1</dt>
+      <dd>La hausse d'une action sur un an, sans le dernier mois. Le bot classe ses 49 valeurs avec ce chiffre.</dd>
+      <dt>Les nouvelles</dt>
+      <dd>Résumées par Claude à partir de la page citée sous chacune. Ce qui s'est passé, jamais ce qui va se passer.</dd>
+      <dt>Ce que la page ne fait pas</dt>
+      <dd>Elle ne dit jamais quoi acheter, vendre ou garder, et ne prédit rien.</dd>
+    </dl>
+  </details>
+</div>
+
+<script>
+  /* Les formats français : « +1,2 % », « 7 580 », « lundi 26 octobre ». */
+  const pmPct = (v) => (v === null || v === undefined || !Number.isFinite(+v)) ? '—'
+    : (+v >= 0 ? '+' : '−') + Math.abs(+v * 100).toLocaleString('fr-FR',
+        { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' %';
+  const pmNombre = (d) => (v) => (v === null || v === undefined || !Number.isFinite(+v)) ? '—'
+    : (+v).toLocaleString('fr-FR', { minimumFractionDigits: d, maximumFractionDigits: d });
+  const pmJour = (iso) => {
+    const d = new Date(`${iso}T12:00:00Z`);
+    return Number.isNaN(+d) ? '—'
+      : d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' });
+  };
+  const pmSens = (v) => (+v > 0 ? 'pm-hausse' : +v < 0 ? 'pm-baisse' : '');
+
+  /* Les lignes d'un bloc du point, ou null tant que la source n'est pas prête. */
+  const pmLignes = (bloc) => {
+    const p = dash.data('point');
+    return p.status === 'ok' ? p.data.filter((r) => r.bloc === bloc) : null;
+  };
+
+  /* Une valeur tirée d'une seule ligne. */
+  const pmValeur = (nom, bloc, cle, champ, format, colorer) => dash.draw(nom, (el) => {
+    const r = (pmLignes(bloc) || []).find((x) => x.cle === cle);
+    const v = r ? r[champ] : null;
+    el.textContent = v === null || v === undefined ? '—' : format(v);
+    el.classList.remove('pm-hausse', 'pm-baisse');
+    const sens = colorer && v !== null && v !== undefined ? pmSens(v) : '';
+    if (sens) el.classList.add(sens);
+  });
+
+  pmValeur('debut', 'semaine', 'semaine', 'debut', pmJour);
+  pmValeur('fin', 'semaine', 'semaine', 'fin', pmJour);
+  pmValeur('seances', 'semaine', 'semaine', 'seances', pmNombre(0));
+  pmValeur('sp-var', 'marche', 'S&P 500', 'variation_dollars', pmPct, true);
+  pmValeur('sp-eur', 'marche', 'S&P 500', 'variation_euros', pmPct, true);
+  pmValeur('sp-clo', 'marche', 'S&P 500', 'cloture', pmNombre(0));
+  pmValeur('nq-var', 'marche', 'Nasdaq', 'variation_dollars', pmPct, true);
+  pmValeur('nq-eur', 'marche', 'Nasdaq', 'variation_euros', pmPct, true);
+  pmValeur('nq-clo', 'marche', 'Nasdaq', 'cloture', pmNombre(0));
+  pmValeur('eur-var', 'change', 'EUR/USD', 'variation', pmPct, true);
+  pmValeur('eur-cours', 'change', 'EUR/USD', 'cours', pmNombre(4));
+  pmValeur('prochain', 'reequilibrage', 'bot', 'prochain', pmJour);
+  pmValeur('pos-valeur', 'positions_total', 'total', 'valeur_euros', (v) => pmNombre(2)(v) + ' €');
+  pmValeur('pos-cout', 'positions_total', 'total', 'cout_euros', (v) => pmNombre(2)(v) + ' €');
+
+  /* Un tableau tiré des lignes d'un bloc, rangées par rang. Chaque <tr> porte
+     sa clé (bloc, cle) : c'est elle qui fait de chaque case une citation. */
+  const pmTableau = (nom, bloc, colonnes) => dash.draw(nom, (tbody) => {
+    tbody.replaceChildren();
+    const lignes = pmLignes(bloc);
+    if (!lignes) return;
+    [...lignes].sort((a, b) => (a.rang ?? 0) - (b.rang ?? 0)).forEach((r) => {
+      const tr = document.createElement('tr');
+      tr.dataset.key = `${encodeURIComponent(r.bloc)},${encodeURIComponent(r.cle)}`;
+      colonnes.forEach(([champ, format, numerique, colorer]) => {
+        const td = document.createElement('td');
+        const v = r[champ];
+        td.textContent = v === null || v === undefined ? '—' : (format ? format(v) : String(v));
+        if (numerique) td.classList.add('pm-num');
+        const sens = colorer ? pmSens(v) : '';
+        if (sens) td.classList.add(sens);
+        tr.append(td);
+      });
+      tbody.append(tr);
+    });
+  });
+
+  pmTableau('hausses', 'hausse', [['cle'], ['secteur'], ['variation', pmPct, true, true]]);
+  pmTableau('baisses', 'baisse', [['cle'], ['secteur'], ['variation', pmPct, true, true]]);
+  pmTableau('secteurs', 'secteur', [['cle'], ['valeurs', pmNombre(0), true], ['variation', pmPct, true, true]]);
+  pmTableau('top12', 'top12', [['rang', pmNombre(0), true], ['cle'], ['secteur'], ['momentum', (v) => pmPct(v).replace(',0 %', ' %'), true, true]]);
+  pmTableau('resultats', 'resultat', [['cle'], ['secteur'], ['date', pmJour]]);
+  pmTableau('positions', 'position', [['cle'], ['valeur_euros', (v) => pmNombre(2)(v) + ' €', true],
+    ['gain_euros', (v) => (+v >= 0 ? '+' : '−') + pmNombre(2)(Math.abs(+v)) + ' €', true, true],
+    ['variation_semaine', pmPct, true, true]]);
+
+  /* Les valeurs qui entrent dans le top 12, ou qui en sortent. */
+  const pmListe = (nom, bloc) => dash.draw(nom, (el) => {
+    const lignes = pmLignes(bloc);
+    el.textContent = !lignes ? '—' : (lignes.map((r) => r.cle).join(', ') || 'aucune');
+  });
+  pmListe('entrent', 'entre');
+  pmListe('sortent', 'sort');
+
+  /* Les nouvelles : un titre, deux phrases, la page qui les rapporte.
+     Un lien n'est cliquable que s'il commence par https://. */
+  dash.draw('nouvelles', (ol) => {
+    ol.replaceChildren();
+    const n = dash.data('nouvelles');
+    if (n.status !== 'ok') return;
+    [...n.data].sort((a, b) => (a.rang ?? 0) - (b.rang ?? 0)).forEach((r) => {
+      const li = document.createElement('li');
+      li.className = 'pm-nouvelle';
+      const titre = document.createElement('h3');
+      titre.className = 'pm-nouvelle-titre';
+      titre.textContent = r.titre ?? '';
+      const texte = document.createElement('p');
+      texte.className = 'pm-nouvelle-texte';
+      texte.textContent = r.resume ?? '';
+      const source = document.createElement('p');
+      source.className = 'pm-nouvelle-source';
+      const url = String(r.url ?? '');
+      if (/^https:\/\//.test(url)) {
+        const a = document.createElement('a');
+        a.href = url;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        a.textContent = r.source || 'Source';
+        source.append(a);
+      } else {
+        source.append(r.source || '');
+      }
+      if (r.date) source.append(` · ${pmJour(r.date)}`);
+      li.append(titre, texte, source);
+      ol.append(li);
+    });
+  });
+
+  /* Montrer ou cacher ce qui dépend de la présence de lignes : les positions,
+     et le message « aucune publication ». Hors dessin, on ne fait que ça. */
+  dash.onData(() => {
+    const p = dash.data('point');
+    const ok = p.status === 'ok';
+    const nombre = (bloc) => (ok ? p.data.filter((r) => r.bloc === bloc).length : 0);
+    document.querySelectorAll('.pm-positions').forEach((el) => { el.hidden = !(ok && nombre('position') > 0); });
+    document.querySelectorAll('.pm-resultats').forEach((el) => { el.hidden = ok && nombre('resultat') === 0; });
+    document.querySelectorAll('.pm-resultats-vide').forEach((el) => { el.hidden = !(ok && nombre('resultat') === 0); });
+  });
+</script>

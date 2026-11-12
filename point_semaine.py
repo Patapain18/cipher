@@ -291,6 +291,52 @@ def construire(jour=None):
     }
 
 
+def en_lignes(point):
+    """
+    Le point à plat, une ligne par chiffre : le format que lit la page
+    téléphone (un tableau d'objets). Chaque ligne dit à quel bloc elle
+    appartient (`bloc`) et qui elle est dans ce bloc (`cle`) : le couple
+    est unique, c'est ce qui permet à la page de citer chaque chiffre.
+    """
+    s = point["semaine"]
+    lignes = [{"bloc": "semaine", "cle": "semaine", "debut": s["debut"], "fin": s["fin"],
+               "seances": s["seances"], "calcule_le": point["calcule_le"]}]
+    for m in point["marches"]:
+        lignes.append({"bloc": "marche", "cle": m["nom"], "cloture": m["cloture"],
+                       "variation_dollars": m["variation_dollars"],
+                       "variation_euros": m["variation_euros"]})
+    e = point["euro_dollar"]
+    lignes.append({"bloc": "change", "cle": "EUR/USD", "cours": e["cours"], "variation": e["variation"]})
+    for sens in ("hausses", "baisses"):
+        for i, x in enumerate(point["valeurs"][sens], start=1):
+            lignes.append({"bloc": sens[:-1], "cle": x["ticker"], "rang": i,
+                           "secteur": x["secteur"], "variation": x["variation"]})
+    for i, x in enumerate(point["secteurs"], start=1):
+        lignes.append({"bloc": "secteur", "cle": x["secteur"], "rang": i,
+                       "variation": x["variation"], "valeurs": x["valeurs"]})
+    c = point["classement"]
+    for x in c["top"]:
+        lignes.append({"bloc": "top12", "cle": x["ticker"], "rang": x["rang"], "secteur": x["secteur"],
+                       "momentum": x["momentum"], "rang_semaine_derniere": x["rang_semaine_derniere"]})
+    lignes += [{"bloc": "entre", "cle": t} for t in c["entrent"]]
+    lignes += [{"bloc": "sort", "cle": t} for t in c["sortent"]]
+    if c.get("dernier_reequilibrage"):
+        lignes.append({"bloc": "reequilibrage", "cle": "bot", "dernier": c["dernier_reequilibrage"],
+                       "prochain": c["prochain_reequilibrage"]})
+    for x in point["resultats_a_venir"]:
+        lignes.append({"bloc": "resultat", "cle": x["ticker"], "date": x["date"],
+                       "jour": x["jour"], "secteur": x["secteur"]})
+    p = point["positions"]
+    if p and p["lignes"]:
+        for x in p["lignes"]:
+            lignes.append({"bloc": "position", "cle": x["ticker"], "valeur_euros": x["valeur_euros"],
+                           "gain_euros": x["gain_euros"], "variation_semaine": x["variation_semaine"],
+                           "rang_momentum": x["rang_momentum"]})
+        lignes.append({"bloc": "positions_total", "cle": "total", "valeur_euros": p["valeur_euros"],
+                       "cout_euros": p["cout_euros"], "gain_euros": p["gain_euros"]})
+    return lignes
+
+
 def enregistrer(point):
     """Écrit le point du jour et sa copie datée, sans jamais laisser un fichier à moitié écrit."""
     os.makedirs(HISTORIQUE, exist_ok=True)
@@ -398,9 +444,24 @@ def main():
                         help="un jour de la semaine voulue (AAAA-MM-JJ) ; par défaut la dernière complète")
     parser.add_argument("--silencieux", action="store_true",
                         help="enregistrer sans rien afficher (pour le bot et la tâche programmée)")
+    parser.add_argument("--lignes", metavar="FICHIER",
+                        help="écrire aussi le point à plat, une ligne par chiffre (pour la page "
+                             "téléphone) ; {fin} dans le nom devient la date de la dernière séance")
     args = parser.parse_args()
 
     point = construire(args.semaine)
+    if args.lignes:
+        if not point["semaine"]["complete"]:
+            console.print("[yellow]Semaine en cours : pas de lignes pour la page téléphone.[/yellow]")
+            sys.exit(3)
+        chemin = args.lignes.replace("{fin}", point["semaine"]["fin"])
+        os.makedirs(os.path.dirname(chemin) or ".", exist_ok=True)
+        tmp = chemin + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(en_lignes(point), f, indent=1, ensure_ascii=False)
+        os.replace(tmp, chemin)
+        # Une ligne lisible par la tâche programmée : où est le fichier.
+        print(f"LIGNES {chemin}")
     # Une semaine en cours s'affiche, mais ne s'enregistre pas : le
     # tableau de bord et la page téléphone ne doivent montrer que des
     # semaines finies.
