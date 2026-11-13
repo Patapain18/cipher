@@ -11,7 +11,9 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23f4f1ea'/><path d='M6 22 L13 14 L18 18 L26 8' stroke='%2324476e' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
 </head>
 <body>
-<div class="shell">
+<!-- La vue plan est la zone principale (<main>) de la page. Le carnet de
+     bord a la sienne : quand il s'ouvre, celle-ci passe en hidden. -->
+<main class="shell">
 
   <!-- BANDEAU:DEBUT — ne pas éditer à la main, voir web/faire_baie.py
        ══════════════════════════════════════════════════════
@@ -146,9 +148,13 @@
       <!-- Avec 49 lignes, tout afficher en permanence noie le peu qui
            demande une décision. Les filtres ne rechargent rien : les
            données sont déjà en mémoire. -->
-      <div class="tabs" id="filters" role="tablist"></div>
+      <!-- Des boutons à bascule (aria-pressed), pas des onglets : ils filtrent le
+           MÊME tableau, ils n'affichent pas un autre panneau. -->
+      <div class="tabs" id="filters" role="group" aria-label="Filtrer le tableau"></div>
     </div>
-    <div class="table-wrap">
+    <!-- Sous 1 425 px, le tableau défile à l'horizontale : le clavier doit
+         pouvoir l'atteindre (Tab), puis le faire défiler avec les flèches. -->
+    <div class="table-wrap" tabindex="0" role="region" aria-label="Tableau des valeurs suivies">
       <table>
         <thead>
           <tr>
@@ -220,10 +226,10 @@
   </section>
 
   <footer>
-    <span id="footer-note">Serveur local, lecture seule — aucun ordre, aucune clé d'API.</span>
+    <span id="footer-note">Serveur local — aucun ordre, aucune clé d'API. Il n'écrit qu'une chose : ton journal.</span>
   </footer>
 
-</div>
+</main>
 <!-- Le socle de « Ma position » (routes, formats, phrases communes) AVANT
      app.js : son résumé s'en sert dès le premier affichage. -->
 <script src="ma-position/socle.js"></script>

@@ -958,6 +958,10 @@
     if (estOuverte() || vueBaieOuverte()) return;
     defilementAvant = window.scrollY;
     racine.classList.add('pc-carnet-ouvert');
+    /* Une seule zone principale visible à la fois : la vue plan (<main
+       class="shell">) passe en hidden, le carnet prend sa place. */
+    const plan = $('.shell');
+    if (plan) plan.hidden = true;
     vue.hidden = false;
     window.scrollTo(0, 0);
     titre.focus({ preventScroll: true });
@@ -972,6 +976,8 @@
   function fermer() {
     if (!estOuverte()) return;
     vue.hidden = true;
+    const plan = $('.shell');
+    if (plan) plan.hidden = false;
     racine.classList.remove('pc-carnet-ouvert');
     window.scrollTo(0, defilementAvant);
     bouton.focus({ preventScroll: true });

@@ -387,12 +387,16 @@ function drawStocks() {
   /* Déjà connue ? Elle s'affiche tout de suite, sans « … » chaque minute. */
   dessinerCartePosition();
 
-  /* Barre de filtres : chaque onglet porte son propre compte, pour
-     qu'on sache ce qu'on va trouver avant de cliquer. */
+  /* Barre de filtres : chaque bouton porte son propre compte, pour
+     qu'on sache ce qu'on va trouver avant de cliquer. Elle est réécrite
+     à chaque dessin (au clic comme au rafraîchissement de la minute) :
+     si le clavier était sur un filtre, il y revient au lieu de repartir
+     du haut de la page. */
+  const filtreAvecFocus = document.activeElement?.closest?.('#filters [data-filter]')?.dataset.filter;
   $('#filters').innerHTML = Object.entries(FILTERS).map(([key, f]) => {
     const n = rows.filter(f.test).length;
     return `<button class="tab" data-filter="${key}" title="${esc(f.hint)}"
-                    aria-selected="${key === activeFilter}">${esc(f.label)}
+                    aria-pressed="${key === activeFilter}">${esc(f.label)}
               <span class="tab-count">${n}</span></button>`;
   }).join('');
 
@@ -402,6 +406,7 @@ function drawStocks() {
       drawStocks();
     });
   });
+  if (filtreAvecFocus) $(`#filters [data-filter="${filtreAvecFocus}"]`)?.focus();
 
   /* Tri par rang de momentum.
      Le tableau était auparavant ordonné par score technique. Depuis que

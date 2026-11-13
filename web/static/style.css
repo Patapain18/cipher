@@ -336,8 +336,11 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.02em; }
 }
 
 .tab:hover { color: var(--text); }
+/* Le focus au clavier, à l'encre comme le reste de l'appli (sans cette
+   règle, le navigateur dessinait son anneau bleu vif). */
+.tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-.tab[aria-selected="true"] {
+.tab[aria-pressed="true"] {
   background: var(--accent);
   color: #fffdf9;
   box-shadow: 0 1px 3px rgba(36, 71, 110, 0.3);
@@ -510,6 +513,11 @@ thead th:last-child { border-top-right-radius: var(--radius-md); }
   .table-wrap { overflow-x: visible; }
 }
 
+/* Le tableau se prend au clavier pour défiler : son focus se voit. Le
+   contour est DEDANS (-2px) : la bande fait toute la largeur de la
+   fenêtre, un contour dehors serait coupé par ses bords. */
+.table-wrap:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 
 thead th {
@@ -573,8 +581,12 @@ thead th.primary-col {
 td.primary-col { background: var(--accent-soft); }
 tbody tr:hover td.primary-col { background: transparent; }
 
-.secondary-col { opacity: 0.72; }
-tbody tr:hover .secondary-col { opacity: 1; }
+/* Le score technique reste en retrait — mesuré, il ne prédit rien —
+   mais son chiffre garde un contraste lisible (AA, 4,5:1) : seule la
+   jauge pâlit. Jusqu'au 13/11/2026, toute la cellule passait à 72 %
+   d'opacité, et le chiffre, déjà discret, tombait sous le seuil. */
+.secondary-col .gauge { opacity: 0.72; }
+tbody tr:hover .secondary-col .gauge { opacity: 1; }
 
 .rank { font-weight: 600; }
 
@@ -760,7 +772,7 @@ tbody tr:hover .secondary-col { opacity: 1; }
   font-variant-numeric: tabular-nums;
 }
 
-.tab[aria-selected="true"] .tab-count {
+.tab[aria-pressed="true"] .tab-count {
   background: color-mix(in srgb, #fffdf9 24%, transparent);
   color: #fffdf9;
 }
