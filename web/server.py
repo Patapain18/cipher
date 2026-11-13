@@ -464,9 +464,55 @@ def point_de_la_semaine():
         return json.load(f)
 
 
+def rang_de(ticker):
+    """
+    Le rang d'une valeur au momentum, lu dans le dernier scan gardé en
+    mémoire : la position ne relance pas un scan de 49 valeurs pour ça.
+    """
+    with _cache_lock:
+        entree = _cache.get("/api/stocks")
+    if not entree:
+        return None, None
+    donnees = entree["value"]
+    for r in donnees.get("rows", []):
+        if r.get("ticker") == ticker:
+            return r.get("rang"), donnees.get("classes")
+    return None, donnees.get("classes")
+
+
+def ma_position_en_direct():
+    """Ma position (ma_position.py) : valeur, gain frais compris, seuils, rang."""
+    import ma_position
+    return ma_position.position(rang_de)
+
+
+def mon_journal():
+    """Mes décisions, et pour chaque achat la même somme dans le S&P 500."""
+    import ma_position
+    return ma_position.journal_compare()
+
+
+def ajouter_au_journal(payload):
+    """Note une décision déjà passée chez le courtier ; le carnet suit."""
+    import ma_position
+    decision = ma_position.ajouter_decision(payload)
+    with _cache_lock:
+        for cle in [k for k in _cache if k.startswith(("/api/position", "/api/journal",
+                                                       "/api/graphique"))]:
+            _cache.pop(cle, None)
+    return decision
+
+
+# Le graphique dépend de sa période : une minute pour la journée, plus
+# longtemps pour le mois et l'année, qui ne bougent qu'une fois par barre.
+GRAPHIQUE_CACHE = {"1j": 60, "1m": 600, "1a": 3600}
+
+
 ROUTES = {
     # chemin              → (fonction, durée de cache en secondes)
     "/api/semaine":        (point_de_la_semaine, 30),
+    "/api/position":       (ma_position_en_direct, 60),
+    "/api/journal":        (mon_journal, 300),
     "/api/status":         (bots_status,    5),
     "/api/stocks":         (scan_stocks,    180),   # 3 min : yfinance est lent
     "/api/stocks/history": (stocks_history, 10),    # simple lecture de fichier
@@ -516,6 +562,10 @@ class Handler(SimpleHTTPRequestHandler):
 
         path = urlparse(self.path).path
 
+        if path == "/api/graphique":
+            self._graphique()
+            return
+
         if path in ROUTES:
             producer, ttl = ROUTES[path]
             try:
@@ -538,6 +588,26 @@ class Handler(SimpleHTTPRequestHandler):
 
         return super().do_GET()
 
+    def _graphique(self):
+        """/api/graphique?ticker=NVDA&periode=1j|1m|1a : la seule route à paramètres."""
+        import ma_position
+        from urllib.parse import parse_qs
+        qs = parse_qs(urlparse(self.path).query)
+        ticker = (qs.get("ticker") or ["NVDA"])[0].strip().upper()
+        periode = (qs.get("periode") or ["1j"])[0]
+        try:
+            if periode not in GRAPHIQUE_CACHE:
+                raise ValueError("période : 1j, 1m ou 1a")
+            # La valeur est vérifiée DANS la fonction, avant toute mise en
+            # cache : un ticker inconnu ne remplit pas la mémoire du serveur.
+            payload, at = cached(f"/api/graphique?{ticker}&{periode}", GRAPHIQUE_CACHE[periode],
+                                 lambda: ma_position.graphique(ticker, periode))
+            self._json(200, {"ok": True, "data": payload, "cached_at": at})
+        except ValueError as e:
+            self._json(400, {"ok": False, "error": str(e)})
+        except Exception as e:
+            self._json(500, {"ok": False, "error": str(e)})
+
     def do_POST(self):
         if self._hote_refuse():
             return
@@ -546,6 +616,7 @@ class Handler(SimpleHTTPRequestHandler):
         actions = {
             "/api/positions/add": add_position,
             "/api/positions/remove": remove_position,
+            "/api/journal/ajouter": ajouter_au_journal,
         }
         if path not in actions:
             self.send_error(404)
