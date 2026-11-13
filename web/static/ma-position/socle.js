@@ -1,9 +1,11 @@
 /* ============================================================
-   pistes/commun.js — le socle des pistes « Ma position »
+   ma-position/socle.js — le socle de « Ma position »
    ============================================================
-   Les trois pistes lisent les mêmes routes, écrivent les nombres de
-   la même façon et disent les mêmes phrases : on compare des mises
-   en page, pas des calculs ni des formulations.
+   Les routes, la façon d'écrire les nombres et les dates, et les
+   phrases communes (des faits, jamais un conseil). Écrit le 13/11/2026
+   pour les trois pistes d'affichage ; le carnet de bord (carnet.js),
+   choisi par Mathis, et le résumé d'app.js s'en servent tous les deux :
+   ils disent donc la même chose.
 
    Règle : tout texte venu du serveur s'insère par textContent, ou
    par PP.esc() dans un gabarit. Jamais tel quel dans innerHTML.

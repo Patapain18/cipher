@@ -30,7 +30,6 @@ LANCEMENT
 """
 
 import json
-import math
 import os
 import sys
 import time
@@ -242,126 +241,6 @@ def stocks_history():
     }
 
 
-# ══════════════════════════════════════════════════════════════════
-#  POSITIONS  —  les seules écritures du serveur
-# ══════════════════════════════════════════════════════════════════
-#
-#  Le serveur était jusqu'ici en lecture pure. Ces deux routes sont ses
-#  seules écritures, et leur portée est étroite : elles ne touchent que
-#  `data/stock_positions.json`, le carnet des achats que TU as passés
-#  chez ton courtier. Aucun ordre n'est émis, aucune clé d'API n'entre
-#  en jeu — on note ce qui a déjà eu lieu, rien de plus.
-#
-#  PROTECTION CONTRE LES REQUÊTES D'AUTRES SITES
-#      Un serveur qui écoute sur localhost reste joignable par n'importe
-#      quelle page web ouverte dans ton navigateur : elle ne peut pas
-#      lire la réponse, mais elle peut envoyer la requête, et cela
-#      suffirait à polluer ton carnet de positions.
-#
-#      D'où l'en-tête `X-Dashboard` exigé ci-dessous. Une page tierce ne
-#      peut pas l'ajouter sans déclencher au préalable une requête
-#      OPTIONS de vérification — à laquelle ce serveur ne répond pas, ce
-#      qui fait échouer la tentative. Le JavaScript de notre propre page,
-#      lui, l'envoie sans difficulté puisqu'il est servi depuis la même
-#      origine.
-#
-#      Le « DNS rebinding » contourne cette protection (vérifié le
-#      05/11/2026) : une page piégée fait pointer son propre nom vers
-#      127.0.0.1. Pour le navigateur, elle parle alors à son propre
-#      site : elle lit nos réponses et ajoute l'en-tête sans rien
-#      demander. Seul l'en-tête Host trahit le nom qu'elle a utilisé :
-#      Handler._hote_refuse le vérifie sur TOUTES les requêtes,
-#      lectures comprises.
-
-# Même règle que ma_position.py : un serveur d'essai écrit dans sa copie.
-POSITIONS_FILE = os.environ.get("MA_POSITION_CARNET") or os.path.join("data", "stock_positions.json")
-
-
-class CarnetIllisible(Exception):
-    """Le carnet existe mais n'a pas pu être lu."""
-
-
-def read_positions():
-    """
-    Lit le carnet, ou refuse d'agir.
-
-    L'ancienne version renvoyait `{}` dès qu'une lecture échouait —
-    fichier corrompu, disque occupé, JSON tronqué. Comme `add_position`
-    écrit ensuite `positions[ticker] = ...` puis sauvegarde, un simple
-    ajout depuis le dashboard aurait REMPLACÉ tout le carnet par une
-    seule ligne. Une erreur de lecture doit interrompre l'opération, pas
-    la faire continuer sur des données inventées.
-
-    L'absence de fichier reste un cas normal : c'est un carnet vide.
-    """
-    if not os.path.exists(POSITIONS_FILE):
-        return {}
-    try:
-        with open(POSITIONS_FILE) as f:
-            data = json.load(f)
-    except (OSError, ValueError) as e:
-        raise CarnetIllisible(
-            f"carnet de positions illisible ({e}) — aucune modification "
-            f"effectuée, pour ne pas l'écraser") from e
-    if not isinstance(data, dict):
-        raise CarnetIllisible("carnet de positions au mauvais format")
-    return data
-
-
-def write_positions(positions):
-    os.makedirs("data", exist_ok=True)
-    # Écriture par fichier temporaire puis remplacement atomique : le bot
-    # relit ce fichier à chaque cycle, il ne doit jamais tomber sur un
-    # JSON à moitié écrit.
-    tmp = POSITIONS_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(positions, f, indent=2)
-    os.replace(tmp, POSITIONS_FILE)
-
-
-def add_position(payload):
-    """Enregistre un achat déjà passé chez le courtier."""
-    import stock_engine
-
-    ticker = str(payload.get("ticker", "")).strip().upper()
-    if not ticker:
-        raise ValueError("ticker manquant")
-    if ticker not in stock_engine.UNIVERSE:
-        raise ValueError(f"{ticker} ne fait pas partie des valeurs suivies")
-
-    try:
-        quantity = float(payload.get("quantity"))
-        price = float(payload.get("price"))
-    except (TypeError, ValueError):
-        raise ValueError("quantité et prix doivent être des nombres")
-    # `float("nan")` et `float("inf")` passent la conversion sans broncher,
-    # et `json.dump` les écrit tels quels : le fichier devient alors du
-    # JSON invalide que plus rien ne sait relire.
-    if not (math.isfinite(quantity) and math.isfinite(price)):
-        raise ValueError("quantité et prix doivent être des nombres finis")
-    if quantity <= 0 or price <= 0:
-        raise ValueError("quantité et prix doivent être positifs")
-
-    positions = read_positions()
-    positions[ticker] = {
-        "quantity": quantity,
-        "entry_price": price,
-        "entry_date": datetime.now().isoformat(),
-    }
-    write_positions(positions)
-    return {"ticker": ticker, "positions": len(positions)}
-
-
-def remove_position(payload):
-    ticker = str(payload.get("ticker", "")).strip().upper()
-    positions = read_positions()
-    if ticker not in positions:
-        raise ValueError(f"aucune position sur {ticker}")
-    del positions[ticker]
-    write_positions(positions)
-    return {"ticker": ticker, "positions": len(positions)}
-
-
 def signal_quality():
     """
     Fiabilité mesurée du score, produite par stock_eval.py --save.
@@ -499,6 +378,41 @@ def mon_journal():
     return ma_position.journal_compare(prix, pos["eurusd"])
 
 
+# ══════════════════════════════════════════════════════════════════
+#  LE JOURNAL  —  la seule écriture du serveur
+# ══════════════════════════════════════════════════════════════════
+#
+#  Le serveur était jusqu'ici en lecture pure. Sa seule écriture est
+#  l'ajout d'une décision au journal (`ma_position.ajouter_decision`),
+#  qui tient aussi à jour `data/stock_positions.json`, le carnet du bot.
+#  Aucun ordre n'est émis, aucune clé d'API n'entre en jeu — on note ce
+#  qui a déjà eu lieu chez le courtier, rien de plus.
+#
+#  Les anciennes routes /api/positions/add et /remove écrivaient le
+#  carnet SANS le journal : retirées le 13/11/2026, quand le carnet de
+#  bord (touche P) est devenu la seule façon de noter une décision.
+#
+#  PROTECTION CONTRE LES REQUÊTES D'AUTRES SITES
+#      Un serveur qui écoute sur localhost reste joignable par n'importe
+#      quelle page web ouverte dans ton navigateur : elle ne peut pas
+#      lire la réponse, mais elle peut envoyer la requête, et cela
+#      suffirait à polluer ton carnet de positions.
+#
+#      D'où l'en-tête `X-Dashboard` exigé ci-dessous. Une page tierce ne
+#      peut pas l'ajouter sans déclencher au préalable une requête
+#      OPTIONS de vérification — à laquelle ce serveur ne répond pas, ce
+#      qui fait échouer la tentative. Le JavaScript de notre propre page,
+#      lui, l'envoie sans difficulté puisqu'il est servi depuis la même
+#      origine.
+#
+#      Le « DNS rebinding » contourne cette protection (vérifié le
+#      05/11/2026) : une page piégée fait pointer son propre nom vers
+#      127.0.0.1. Pour le navigateur, elle parle alors à son propre
+#      site : elle lit nos réponses et ajoute l'en-tête sans rien
+#      demander. Seul l'en-tête Host trahit le nom qu'elle a utilisé :
+#      Handler._hote_refuse le vérifie sur TOUTES les requêtes,
+#      lectures comprises.
+
 def ajouter_au_journal(payload):
     """Note une décision déjà passée chez le courtier ; le carnet suit."""
     import ma_position
@@ -621,16 +535,14 @@ class Handler(SimpleHTTPRequestHandler):
 
         path = urlparse(self.path).path
         actions = {
-            "/api/positions/add": add_position,
-            "/api/positions/remove": remove_position,
             "/api/journal/ajouter": ajouter_au_journal,
         }
         if path not in actions:
             self.send_error(404)
             return
 
-        # Voir le commentaire au-dessus de POSITIONS_FILE : cet en-tête
-        # est ce qui empêche une page tierce d'écrire dans ton carnet.
+        # Voir le commentaire « LE JOURNAL » plus haut : cet en-tête est
+        # ce qui empêche une page tierce d'écrire dans ton journal.
         if self.headers.get("X-Dashboard") != "1":
             self._json(403, {"ok": False, "error": "requête refusée (origine non reconnue)"})
             return
@@ -641,7 +553,7 @@ class Handler(SimpleHTTPRequestHandler):
                 raise ValueError("corps de requête invalide")
             payload = json.loads(self.rfile.read(length))
             result = actions[path](payload)
-        except (ValueError, CarnetIllisible) as e:
+        except ValueError as e:
             self._json(400, {"ok": False, "error": str(e)})
             return
         except Exception as e:

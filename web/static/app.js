@@ -346,8 +346,8 @@ function drawStocks() {
 
   const buys = rows.filter((r) => r.recommendation === 'BUY').length;
   const watch = rows.filter((r) => r.recommendation === 'WATCH').length;
+  /* Le carnet du bot suit le journal : une ligne détenue = une position. */
   const held = rows.filter((r) => r.position);
-  const heldPnl = held.reduce((sum, r) => sum + (r.position.pnl_usd || 0), 0);
 
   /* Les cartes suivent la même règle que le tableau : ce qui a été
      mesuré passe devant. Le compte de signaux techniques reste affiché,
@@ -377,13 +377,15 @@ function drawStocks() {
       <div class="value">${positive}<span class="sub"> / ${rows.length}</span></div>
       <div class="foot">scan de ${dt(data.scanned_at, false)}</div>
     </div>
-    <div class="card stat">
-      <div class="label">${held.length ? 'Positions détenues' : 'Signaux techniques'}</div>
-      <div class="value">${held.length || buys + watch}</div>
+    <div class="card stat" id="carte-position">
+      <div class="label">${held.length ? 'Ma position' : 'Signaux techniques'}</div>
+      <div class="value">${held.length ? '…' : buys + watch}</div>
       <div class="foot">${held.length
-        ? `<span class="${trend(heldPnl)}">${heldPnl >= 0 ? '+' : ''}${nf(heldPnl)} $</span> latents`
+        ? 'en euros, frais compris'
         : `${buys} favorables · ${watch} mitigées — sans valeur prédictive mesurée`}</div>
     </div>`;
+  /* Déjà connue ? Elle s'affiche tout de suite, sans « … » chaque minute. */
+  dessinerCartePosition();
 
   /* Barre de filtres : chaque onglet porte son propre compte, pour
      qu'on sache ce qu'on va trouver avant de cliquer. */
@@ -461,191 +463,89 @@ function drawStocks() {
   }).join('') + (activeFilter === 'tout' ? failed.map((r) => `
     <tr><td class="ticker">${esc(r.ticker)}</td>
         <td colspan="12" class="flat">${esc(r.error)}</td></tr>`).join('') : '');
-
-  renderPositions();
 }
 
 /* ------------------------------------------------------------
-   MES POSITIONS
+   MA POSITION, EN RÉSUMÉ
    ------------------------------------------------------------
-   La seule partie de la page qui écrit. Elle ne passe aucun ordre :
-   elle note ce que tu as déjà acheté chez ton courtier, pour que le
-   bot connaisse ton portefeuille et puisse en calculer le P&L.
+   Les mêmes chiffres que le carnet de bord (touche P,
+   ma-position/carnet.js) : en euros, frais compris, lus dans
+   /api/position. L'ancien tableau en dollars, sans les frais ni le
+   change, donnait une AUTRE réponse à « est-ce que je gagne ? » : le
+   carnet du bot reste en dollars pour le bot, plus à l'écran.
+   Rien ne s'écrit ici : une décision se note dans le carnet.
    ------------------------------------------------------------ */
 
-/* Message de la section positions.
-   Il vit en dehors du rendu parce que `renderPositions` reconstruit tout
-   son HTML : un message écrit directement dans le DOM disparaîtrait au
-   premier redessin, c'est-à-dire précisément au moment où l'utilisateur
-   attend une confirmation. */
-let positionNotice = null;   // { text, kind } ou null
+/* La dernière réponse de /api/position : la carte de la synthèse et
+   la section du bas la partagent, donc disent la même chose. */
+let maPosition = null;
 
-async function postJSON(path, payload) {
-  const res = await fetch(path, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      /* Cet en-tête est ce qui distingue notre page d'un site tiers
-         qui tenterait d'écrire dans le carnet — voir server.py. */
-      'X-Dashboard': '1',
-    },
-    body: JSON.stringify(payload),
-  });
-  const json = await res.json();
-  if (!json.ok) throw new Error(json.error || 'échec de l’enregistrement');
-  return json.data;
+/* « 0,125 » ou « 5 » : les décimales utiles, et rien de plus. */
+const quantite = (q) => Number(q).toLocaleString('fr-FR', { maximumFractionDigits: 6 });
+
+/* La 4e carte de la synthèse, dès que la position est connue. */
+function dessinerCartePosition() {
+  const carte = $('#carte-position');
+  if (!carte || !window.PP || !maPosition || !maPosition.lignes.length) return;
+  const { total } = maPosition;
+  carte.innerHTML = `
+    <div class="label">Ma position</div>
+    <div class="value">${PP.euros(total.valeur_eur)}</div>
+    <div class="foot"><span class="${PP.sens(total.gain_eur)}">${PP.euros(total.gain_eur, { signe: true })}</span>
+      depuis l'achat, frais compris</div>`;
 }
 
-function renderPositions() {
-  const data = lastStocks;
-  if (!data) return;
+async function renderPositions() {
+  const zone = $('#positions');
+  if (!zone || !window.PP) return;
+  try {
+    maPosition = await PP.position();
+  } catch (e) {
+    zone.innerHTML = `<p class="error">${esc(e.message)}</p>`;
+    return;
+  }
+  dessinerCartePosition();
 
-  const rows = data.rows.filter((r) => !r.error);
-  const held = rows.filter((r) => r.position);
-  const total = held.reduce((s, r) => s + r.position.pnl_usd, 0);
-  const invested = held.reduce(
-    (s, r) => s + r.position.entry_price * r.position.quantity, 0);
-  const pctTotal = invested ? (total / invested) * 100 : 0;
-
-  /* La liste des valeurs proposées à l'ajout exclut celles déjà
-     détenues : le carnet ne garde qu'une ligne par valeur, en
-     proposer une seconde ne ferait qu'écraser la première en silence. */
-  const addable = rows
-    .filter((r) => !r.position)
-    .map((r) => r.ticker)
-    .sort();
-
-  const table = held.length ? `
-    <div class="table-wrap" style="box-shadow:none;margin-bottom:var(--space-4)">
+  const { lignes, total } = maPosition;
+  if (!lignes.length) {
+    zone.innerHTML = `
+      <p class="empty">Aucune position. Une décision déjà passée chez ton courtier
+        se note dans <strong>Ma position</strong> (touche <kbd>P</kbd>).</p>`;
+    return;
+  }
+  const ligne = (l) => `
+    <tr>
+      <td class="ticker">${esc(l.ticker)}</td>
+      <td class="num-cell num">${quantite(l.quantite)}</td>
+      <td class="num-cell num">${PP.euros(l.prix_achat_eur)}</td>
+      <td class="num-cell num">${PP.euros(l.prix_eur)}</td>
+      <td class="num-cell num">${PP.euros(l.valeur_eur)}</td>
+      <td class="num-cell num ${PP.sens(l.gain_eur)}">${PP.euros(l.gain_eur, { signe: true })}
+        <span class="rank-total">${PP.pct(l.gain_pct)}</span></td>
+    </tr>`;
+  zone.innerHTML = `
+    <div class="table-wrap" style="box-shadow:none">
       <table>
         <thead><tr>
-          <th>Valeur</th>
+          <th>Action</th>
           <th class="num-cell">Quantité</th>
           <th class="num-cell">Prix d'achat</th>
           <th class="num-cell">Cours</th>
-          <th class="num-cell">P&L</th>
-          <th></th>
+          <th class="num-cell">Valeur</th>
+          <th class="num-cell">Depuis l'achat, frais compris</th>
         </tr></thead>
-        <tbody>
-          ${held.map((r) => `
-            <tr>
-              <td class="ticker">${esc(r.ticker)}
-                <span class="sector">${esc(r.secteur || '')}</span></td>
-              <td class="num-cell num">${nf(r.position.quantity, 4)}</td>
-              <td class="num-cell num">${nf(r.position.entry_price)} $</td>
-              <td class="num-cell num">${nf(r.price)} $</td>
-              <td class="num-cell num ${trend(r.position.pnl_pct)}">
-                ${pct(r.position.pnl_pct, 2)}
-                <span class="rank-total">${r.position.pnl_usd >= 0 ? '+' : ''}${nf(r.position.pnl_usd)} $</span>
-              </td>
-              <td class="num-cell">
-                <button class="link-btn" data-remove="${esc(r.ticker)}"
-                        title="Retirer ${esc(r.ticker)} du carnet">Retirer</button>
-              </td>
-            </tr>`).join('')}
-        </tbody>
+        <tbody>${lignes.map(ligne).join('')}</tbody>
+        ${lignes.length > 1 ? `
+        <tfoot><tr>
+          <th scope="row" colspan="4">Total</th>
+          <td class="num-cell num">${PP.euros(total.valeur_eur)}</td>
+          <td class="num-cell num ${PP.sens(total.gain_eur)}">${PP.euros(total.gain_eur, { signe: true })}
+            <span class="rank-total">${PP.pct(total.gain_pct)}</span></td>
+        </tr></tfoot>` : ''}
       </table>
-    </div>` : `
-    <p class="empty" style="padding:var(--space-4) 0">
-      Aucune position enregistrée. Ajoute ce que tu détiens déjà pour
-      suivre ton P&L ici.
-    </p>`;
-
-  const summary = held.length ? `
-    <div class="grid-stats" style="margin-bottom:var(--space-4)">
-      <div class="stat" style="padding:0">
-        <div class="label">Valeurs détenues</div>
-        <div class="value">${held.length}</div>
-        <div class="foot">${nf(invested)} $ investis</div>
-      </div>
-      <div class="stat" style="padding:0">
-        <div class="label">P&L latent</div>
-        <div class="value ${trend(total)}">${total >= 0 ? '+' : ''}${nf(total)} $</div>
-        <div class="foot">${pct(pctTotal, 2)} sur le montant investi</div>
-      </div>
-    </div>` : '';
-
-  $('#positions').innerHTML = `
-    ${summary}
-    ${table}
-    <form class="add-position" id="add-position" autocomplete="off">
-      <select class="picker" name="ticker" aria-label="Valeur" required>
-        <option value="">Choisir une valeur…</option>
-        ${addable.map((t) => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}
-      </select>
-      <input class="field num" name="quantity" type="number" step="any" min="0"
-             placeholder="Quantité" aria-label="Quantité" required>
-      <input class="field num" name="price" type="number" step="any" min="0"
-             placeholder="Prix d'achat ($)" aria-label="Prix d'achat" required>
-      <button class="btn" type="submit">Enregistrer</button>
-      <span class="form-msg ${esc(positionNotice?.kind || '')}" id="position-msg">${
-        esc(positionNotice?.text || '')}</span>
-    </form>
-    <p class="hint" style="margin-top:var(--space-3)">
-      Ce carnet n'achète rien : il note ce que tu as déjà acheté chez ton
-      courtier, pour que le bot suive ton P&L et n'émette un signal de vente
-      que sur une valeur que tu détiens réellement.
-    </p>`;
-
-  /* Le rechargement qui suit relance un scan des 49 valeurs, soit une
-     dizaine de secondes. Sans état d'attente explicite, on croit que
-     rien ne s'est passé et on reclique. */
-  function notice(text, kind = '') {
-    positionNotice = text ? { text, kind } : null;
-    const el = $('#position-msg');
-    if (el) {
-      el.textContent = text;
-      el.className = `form-msg ${kind}`;
-    }
-  }
-
-  $('#add-position').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const form = e.target;
-    const submit = form.querySelector('button[type="submit"]');
-    const payload = {
-      ticker: form.ticker.value,
-      quantity: form.quantity.value,
-      price: form.price.value,
-    };
-
-    submit.disabled = true;          // pas de double enregistrement
-    notice('Enregistrement…');
-    try {
-      await postJSON('/api/positions/add', payload);
-      notice(`${payload.ticker} enregistré — actualisation des cours…`, 'ok');
-      await renderStocks();          // recharge le scan, P&L compris
-      notice(`${payload.ticker} enregistré`, 'ok');
-    } catch (err) {
-      submit.disabled = false;
-      notice(err.message, 'error');
-    }
-  });
-
-  $('#positions').querySelectorAll('[data-remove]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const ticker = btn.dataset.remove;
-      /* La seule action irréversible de toute l'application, et elle
-         était à un clic — juste à côté des lignes qu'on survole pour
-         lire son P&L. Rien ne permet de retrouver un prix d'achat et
-         une date de saisie effacés. */
-      if (!confirm(`Retirer ${ticker} du carnet ?\n\n`
-          + `Le prix d'achat et la date de saisie seront perdus : `
-          + `il faudra les ressaisir à la main.`)) return;
-      btn.disabled = true;
-      btn.textContent = '…';
-      notice(`Retrait de ${ticker} — actualisation…`);
-      try {
-        await postJSON('/api/positions/remove', { ticker });
-        await renderStocks();
-        notice(`${ticker} retiré`, 'ok');
-      } catch (err) {
-        btn.disabled = false;
-        btn.textContent = 'Retirer';
-        notice(err.message, 'error');
-      }
-    });
-  });
+    </div>`;
+  /* Le panneau 1 de la vue baie EST cette section : il se remesure. */
+  document.dispatchEvent(new CustomEvent('stocks:dessine'));
 }
 
 /* --- Historique : une courbe par valeur, sélectionnable --- */
@@ -712,24 +612,6 @@ function drawEvents() {
             ? ' — ' + esc(e.signals.join(', ')) : ''}</span>
         </li>`).join('')
     : '<li class="empty">Aucune bascule enregistrée.</li>';
-}
-
-/* ------------------------------------------------------------
-   CYCLE DE VIE
-   ------------------------------------------------------------ */
-
-/* Le carnet est la seule partie de la page où l'on ÉCRIT, et
-   `renderStocks` le reconstruit entièrement par innerHTML. Une saisie
-   en cours — un prix tapé à moitié — était donc effacée au tour
-   suivant, sans prévenir, jusqu'à une minute après l'avoir commencée.
-   On saute le rafraîchissement tant que le curseur est dans le carnet :
-   les cours peuvent attendre soixante secondes de plus, pas une saisie
-   perdue. */
-function saisieEnCours() {
-  const actif = document.activeElement;
-  const carnet = $('#positions');
-  return !!(actif && carnet && carnet.contains(actif)
-            && /^(INPUT|SELECT|TEXTAREA)$/.test(actif.tagName));
 }
 
 /* ------------------------------------------------------------
@@ -831,13 +713,16 @@ async function renderSemaine() {
   section.hidden = false;
 }
 
-function refresh({ force = false } = {}) {
+/* ------------------------------------------------------------
+   CYCLE DE VIE
+   ------------------------------------------------------------ */
+
+function refresh() {
   renderStatus();
   renderQuality();
   renderSemaine();
-  if (force || !saisieEnCours()) {
-    renderStocks();   // dessine aussi la section « Mes positions »
-  }
+  renderStocks();
+  renderPositions();   // à part : la position n'attend pas le scan des 49 valeurs
   renderHistory();
 }
 
@@ -867,7 +752,7 @@ setInterval(() => {
    rafraîchissement si l'écart le justifie — sous les yeux, jamais en
    cachette pendant qu'on regardait la ville. */
 document.addEventListener('vue3d:fermee', () => {
-  if (Date.now() - dernier < 60_000 || saisieEnCours()) return;
+  if (Date.now() - dernier < 60_000) return;
   dernier = Date.now();
   refresh();
 });
@@ -879,7 +764,7 @@ document.addEventListener('vue3d:fermee', () => {
    justifie — revenir deux fois en dix secondes ne doit pas relancer
    deux scans. */
 window.addEventListener('focus', () => {
-  if (Date.now() - dernier < 60_000 || saisieEnCours()) return;
+  if (Date.now() - dernier < 60_000) return;
   dernier = Date.now();
   refresh();
 });

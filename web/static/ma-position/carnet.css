@@ -1,0 +1,666 @@
+/* ============================================================
+   ma-position/carnet.css — « Ma position », le carnet de bord
+   (piste C, choisie par Mathis le 13/11/2026)
+   ============================================================
+   Une page de lecture plutôt qu'un tableau de bord : une colonne
+   de 50 rem, et à gauche une MARGE, comme celle d'un carnet, où se
+   posent les dates, les intitulés et les valeurs des indicateurs.
+   Le texte court à droite ; des filets fins séparent les entrées.
+
+   Aucune couleur nouvelle : les jetons de style.css. --up et --down
+   ne servent qu'aux écarts chiffrés (le gain, l'écart au S&P 500) :
+   jamais un fond, un titre, une courbe ni un message.
+   ============================================================ */
+
+/* ============================================================
+   1. LA VUE PLAN — le bouton de l'en-tête et la note
+   ============================================================
+   (L'ancien formulaire « Mes positions », qui écrivait le carnet du
+   bot sans le journal, a été retiré d'app.js le 13/11/2026.) */
+
+html .pc-note kbd,
+html .pc-bouton kbd,
+.pc-fermer kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 4px;
+  color: var(--accent);
+}
+html .pc-note kbd { margin-left: 0; font-size: 11px; }
+
+/* Le bouton « Ma position » : l'allure exacte de « Vue baie », son
+   voisin. Une porte de plus, pas une annonce. */
+html .pc-bouton,
+.pc-fermer {
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  transition: background var(--transition), border-color var(--transition);
+}
+html .pc-bouton:hover,
+.pc-fermer:hover {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+html .pc-bouton:focus-visible,
+.pc-fermer:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Dans la vue baie, l'en-tête part dans le panneau « Synthèse » : le
+   bouton n'y a rien à faire, la vue ne s'ouvre jamais par-dessus la
+   scène. */
+html .vue3d-corps .pc-bouton { display: none; }
+
+/* Vue ouverte, la vue plan est RETIRÉE (et pas seulement couverte) :
+   hors d'atteinte du clavier comme des lecteurs d'écran. Elle revient
+   intacte à la fermeture. */
+html.pc-carnet-ouvert .shell { display: none; }
+
+/* ============================================================
+   2. LA VUE — la page du carnet
+   ============================================================ */
+
+.pc-vue {
+  --pc-colonne: 50rem;    /* 800 px : une ligne de lecture, pas un écran de données */
+  --pc-marge: 9rem;       /* la marge du carnet */
+  --pc-gouttiere: 2rem;
+  position: relative;     /* au-dessus du grain de papier de body::before, comme .shell */
+  z-index: 1;
+  padding: var(--space-5) var(--space-4) var(--space-6);
+  /* Un fondu très court à l'ouverture, rien d'autre ; supprimé en
+     mouvement réduit (plus bas). */
+  animation: pc-fondu 160ms ease-out;
+}
+@keyframes pc-fondu { from { opacity: 0; } }
+
+.pc-colonne { max-width: var(--pc-colonne); margin: 0 auto; }
+
+/* La grille du carnet, reprise partout : marge à gauche, texte à
+   droite. C'est elle qui donne le rythme — l'œil retrouve les dates,
+   les intitulés et les valeurs toujours au même endroit. */
+.pc-ligne {
+  display: grid;
+  grid-template-columns: var(--pc-marge) minmax(0, 1fr);
+  column-gap: var(--pc-gouttiere);
+}
+.pc-marge { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-muted); }
+
+/* style.css remet à zéro les marges de h1 à h3, pas celles de h4.
+   :where() rend cette remise à zéro sans poids : la moindre règle
+   écrite plus bas pour un paragraphe précis l'emporte, sans avoir
+   besoin de !important. */
+.pc-vue :where(p, h4) { margin: 0; }
+.pc-sep { margin: 0 2px; color: var(--text-muted); }
+.pc-discret, .pc-discret .num { color: var(--text-muted); }
+.pc-attente, .pc-vide { margin: var(--space-4) 0; font-size: 14px; color: var(--text-muted); }
+
+/* ── L'en-tête ─────────────────────────────────────────── */
+.pc-barre {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+}
+
+.pc-titre {
+  font-size: 44px;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+}
+/* Le titre reçoit le focus à l'ouverture (un lecteur d'écran annonce
+   « Ma position ») ; ce n'est pas une commande : pas d'anneau. */
+.pc-titre:focus { outline: none; }
+
+.pc-chapeau {
+  margin-top: var(--space-2);
+  max-width: 44em;
+  font-size: 17px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+/* La position en une ligne, entre deux filets : la ligne de date d'un
+   journal. Petite, parce que le carnet parle d'abord des décisions. */
+.pc-direct {
+  margin-top: var(--space-5);
+  padding: 11px 0;
+  border-top: 1px solid var(--text);
+  border-bottom: 1px solid var(--border);
+}
+.pc-direct .pc-attente { margin: 0; }
+.pc-direct-ligne {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
+  row-gap: 2px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.pc-direct-quoi {
+  margin-right: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.pc-direct-valeur .num { font-size: 15px; font-weight: 600; color: var(--text); }
+.pc-direct-erreur { margin-top: 4px; font-size: 12px; color: var(--text-muted); }
+
+/* ── Les rubriques ─────────────────────────────────────── */
+.pc-section { margin-top: var(--space-6); }
+
+.pc-rubrique,
+.pc-rubrique-ligne {
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border-strong);
+}
+.pc-rubrique {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.pc-rubrique-ligne {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 2.1rem;
+}
+.pc-rubrique-ligne .pc-rubrique { padding: 0; border: 0; }
+.pc-rubrique-note { font-size: 12px; color: var(--text-muted); }
+
+/* ============================================================
+   3. LE JOURNAL
+   ============================================================ */
+
+/* Le bilan, dès deux achats : la question du carnet, en une phrase. */
+.pc-bilan {
+  padding: var(--space-4) 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 17px;
+  line-height: 1.5;
+}
+
+.pc-entree {
+  padding: var(--space-4) 0 var(--space-5);
+  border-bottom: 1px solid var(--border);
+}
+.pc-entree:last-child { border-bottom: 0; padding-bottom: 0; }
+
+/* Le repli des décisions anciennes : un bouton discret dans la colonne
+   du texte, la même matière que « Fermer ». */
+.pc-plus {
+  padding: var(--space-4) 0;
+  padding-left: calc(var(--pc-marge) + var(--pc-gouttiere));
+}
+#pc-anciennes { border-top: 1px solid var(--border); }
+.pc-plus-bouton {
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  transition: background var(--transition), border-color var(--transition);
+}
+.pc-plus-bouton:hover {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+.pc-plus-bouton:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.pc-entree-date { padding-top: 2px; }
+.pc-entree-date .num { color: var(--text-muted); }
+
+.pc-entree-sens {
+  margin-bottom: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+/* La raison, en titre : c'est elle qu'on relira dans six mois. */
+.pc-raison {
+  font-size: 30px;
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+/* Une longue raison (jusqu'à 200 caractères) passe un cran plus petit :
+   quatre lignes à 30 px feraient un bloc, plus un titre. */
+.pc-raison-longue { font-size: 24px; line-height: 1.25; }
+.pc-raison-vide {
+  font-size: 17px;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--text-muted);
+}
+
+.pc-paye {
+  margin-top: 10px;
+  font-size: 14px;
+  color: var(--text-muted);
+}
+.pc-paye .num { color: var(--text); }
+.pc-paye .pc-discret .num { color: var(--text-muted); }
+
+/* Le duel : un registre, comme l'addition au bas d'une page de carnet.
+   Les montants alignés en colonne (chiffres tabulaires), des points de
+   conduite pour guider l'œil, l'écart sous un trait plein. */
+.pc-duel { margin-top: var(--space-4); max-width: 30rem; }
+.pc-duel-titre {
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.pc-registre { margin: 0; font-size: 14px; }
+.pc-registre > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+}
+.pc-registre dt {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.pc-registre dt::after {
+  content: '';
+  flex: 1;
+  min-width: 1rem;
+  border-bottom: 1px dotted var(--border-strong);
+}
+.pc-registre dd { margin: 0; min-width: 6.5em; text-align: right; font-size: 15px; }
+.pc-registre .pc-registre-ecart {
+  margin-top: 4px;
+  padding-top: 7px;
+  border-top: 1px solid var(--text);
+  font-weight: 600;
+}
+.pc-registre-ecart dt::after { border-bottom: 0; }
+.pc-duel-phrase {
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.pc-duel-phrase .num { color: var(--text); }
+.pc-duel-absent { margin-top: var(--space-3); font-size: 13px; color: var(--text-muted); }
+
+/* ============================================================
+   4. NOTER UNE DÉCISION
+   ============================================================ */
+
+.pc-form { margin-top: var(--space-4); }
+.pc-form-intro {
+  margin: 0 0 var(--space-4) calc(var(--pc-marge) + var(--pc-gouttiere));
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+/* La raison d'abord, et en grand : c'est le cœur du carnet. Le champ
+   écrit gros (22 px), presque à la taille des titres d'entrée, pour
+   qu'on voie déjà ce qu'on relira. */
+.pc-raison-label {
+  padding-top: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.pc-raison-label span,
+.pc-detail-label span { display: block; font-weight: 400; color: var(--text-muted); }
+.pc-raison-champ {
+  display: block;
+  width: 100%;
+  min-height: 5.75rem;
+  padding: 12px 16px;
+  font: inherit;
+  font-size: 22px;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--glass-lip);
+  resize: vertical;
+}
+.pc-raison-champ:hover { border-color: var(--text-muted); }
+.pc-raison-champ:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pc-raison-compte { margin-top: 6px; text-align: right; font-size: 12px; color: var(--text-muted); }
+
+/* Le reste, plus discret : les petits champs de l'appli, rangés. */
+.pc-ligne-detail { margin-top: var(--space-4); }
+.pc-detail-label { padding-top: 4px; font-size: 14px; font-weight: 600; color: var(--text); }
+.pc-champs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+.pc-champ { min-width: 0; margin: 0; padding: 0; border: 0; }
+.pc-champ label,
+.pc-champ legend {
+  display: block;
+  margin-bottom: 4px;
+  padding: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.pc-champ .field,
+.pc-champ .picker { width: 100%; }
+/* .field remet la police de la page (font: inherit) : les nombres
+   tapés retrouvent la mono, comme partout ailleurs. */
+.pc-champ .field.num { font-family: var(--font-mono); }
+.pc-champ-date { grid-column: span 2; position: relative; }
+/* Date vide = maintenant. Vide et sans le focus, le champ le dit en
+   toutes lettres, au lieu de la date d'exemple grise que WebKit y
+   dessine (et du « jj/mm/aaaa --:-- » de Chrome). Au focus, les cases
+   de saisie reviennent. Seulement là où l'on sait masquer ces cases
+   (WebKit et Chrome) : ailleurs, le mot se poserait par-dessus. */
+@supports selector(::-webkit-datetime-edit) {
+  .pc-date-vide:not(:focus)::-webkit-datetime-edit { opacity: 0; }
+  .pc-champ-date:has(.pc-date-vide:not(:focus))::after {
+    content: 'maintenant';
+    position: absolute;
+    left: 13px;
+    bottom: 9px;
+    font-size: 13px;
+    color: var(--text-muted);
+    pointer-events: none;
+  }
+}
+
+/* Achat / Vente : deux boutons radio habillés en pilules. Le vrai
+   bouton radio reste là, transparent, par-dessus : clavier (flèches),
+   clic et lecteur d'écran fonctionnent comme d'origine. */
+.pc-pilules {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  box-shadow: var(--glass-lip);
+}
+.pc-pilule { position: relative; display: block; }
+.pc-pilule input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.pc-pilule span {
+  display: block;
+  padding: 3px 14px;
+  border-radius: var(--radius-pill);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+  transition: background var(--transition), color var(--transition);
+}
+.pc-pilule input:checked + span { background: var(--accent); color: var(--bg-elevated); }
+.pc-pilule input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.pc-aide { margin-top: 10px; font-size: 12px; color: var(--text-muted); }
+.pc-envoi {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+.pc-envoi .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pc-msg { font-size: 13px; }
+/* Une réussite s'écrit à l'encre, pas en vert : « Achat noté » n'est
+   pas une bonne nouvelle de marché. L'échec garde la couleur d'erreur
+   de l'appli. */
+.pc-msg.ok { color: var(--text); }
+
+/* ============================================================
+   5. LA VALEUR
+   ============================================================ */
+
+.pc-chiffres { padding: var(--space-4) 0 0; }
+.pc-chiffres-quoi { padding-top: 12px; }
+.pc-chiffres-quoi strong { font-size: 15px; color: var(--text); }
+
+.pc-valeur-ligne {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 14px;
+}
+.pc-valeur-euros .num {
+  font-size: 36px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+}
+.pc-valeur-dollars .num { font-size: 17px; color: var(--text-muted); }
+.pc-gain-ligne { margin-top: 4px; font-size: 14px; color: var(--text-muted); }
+.pc-gain-ligne > span { font-weight: 600; }
+.pc-cours-ligne { margin-top: 2px; font-size: 14px; color: var(--text-muted); }
+.pc-cours-ligne .num { color: var(--text); }
+
+/* Le graphique, sur toute la largeur de la colonne. */
+.pc-figure { margin: var(--space-5) 0 0; }
+.pc-figure-tete {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+.pc-figure-titre { font-size: 13px; font-weight: 600; }
+
+/* Les boutons de période (et de valeur) : un groupe sobre, la matière
+   des onglets de l'appli ; aria-pressed dit lequel est choisi. */
+.pc-segments {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  box-shadow: var(--glass-lip);
+}
+.pc-segments button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+  padding: 4px 14px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+.pc-segments button:hover { color: var(--text); }
+.pc-segments button[aria-pressed="true"] { background: var(--accent); color: var(--bg-elevated); }
+.pc-segments button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.pc-graphe { position: relative; height: 240px; }
+.pc-graphe > .pc-attente { margin: 0; padding-top: var(--space-5); text-align: center; }
+.pc-svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; overflow: visible; }
+.pc-grille { stroke: var(--border); stroke-width: 1; }
+/* La courbe à l'encre noire, tes deux lignes à l'encre bleue : le
+   marché d'un côté, tes décisions de l'autre. Aucune couleur de hausse
+   ou de baisse sur le tracé. */
+.pc-courbe { fill: none; stroke: var(--text); stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
+.pc-repere-achat { stroke: var(--accent); stroke-width: 1.25; }
+.pc-repere-seuil { stroke: var(--accent); stroke-width: 1.25; stroke-dasharray: 5 4; }
+
+.pc-tick {
+  position: absolute;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.pc-tick-y { left: 0; transform: translateY(-50%); }
+.pc-tick-x { bottom: 0; }
+.pc-tick-x.pc-milieu { transform: translateX(-50%); }
+.pc-tick-x.pc-fin { transform: translateX(-100%); }
+
+/* Les étiquettes des deux lignes. Un halo couleur papier les garde
+   lisibles si la courbe passe dessous. */
+.pc-repere-texte {
+  position: absolute;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 11.5px;
+  color: var(--accent);
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  pointer-events: none;
+}
+.pc-repere-texte.pc-dessus { transform: translateY(calc(-100% - 2px)); }
+.pc-repere-texte.pc-dessous { transform: translateY(2px); }
+
+/* Le dernier cours : un point, sans étiquette (le chiffre est au-dessus). */
+.pc-point {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text);
+  box-shadow: 0 0 0 2px var(--bg);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.pc-legende { margin-top: var(--space-3); font-size: 13px; color: var(--text-muted); }
+
+/* Les seuils, le rang, les résultats : des notes dans la grille du
+   carnet, leur intitulé dans la marge. */
+.pc-faits { margin: var(--space-5) 0 0; border-top: 1px solid var(--border); }
+.pc-faits > div { padding: var(--space-3) 0; border-bottom: 1px solid var(--border); }
+.pc-faits dt {
+  padding-top: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.pc-faits dd { margin: 0; font-size: 15px; line-height: 1.5; }
+.pc-faits dd p + p { margin-top: 4px; }
+/* Au-delà du 25ᵉ : un fait à ne pas manquer, signalé par un filet
+   d'encre, pas par une couleur d'alarme. */
+.pc-faits .pc-alerte {
+  margin-top: 8px;
+  padding-left: 10px;
+  border-left: 2px solid var(--accent);
+}
+
+/* ============================================================
+   6. LES INDICATEURS — en retrait
+   ============================================================
+   Après l'argent, plus petits, plus pâles : ils décrivent, ils
+   n'annoncent rien, et chacun le dit.
+   ============================================================ */
+
+.pc-ind-avertissement {
+  margin: var(--space-3) 0 0 calc(var(--pc-marge) + var(--pc-gouttiere));
+  font-size: 14px;
+  color: var(--text-muted);
+}
+.pc-ind { padding: var(--space-4) 0; border-bottom: 1px solid var(--border); }
+.pc-ind:last-child { border-bottom: 0; }
+
+.pc-ind-valeurs p + p { margin-top: 8px; }
+.pc-ind-cle { display: block; font-size: 11px; color: var(--text-muted); }
+.pc-ind-valeurs .num { font-size: 16px; color: var(--text); }
+
+.pc-ind-texte { font-size: 14px; line-height: 1.55; color: var(--text-muted); }
+.pc-ind-nom {
+  display: inline;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--text);
+}
+.pc-etiquette {
+  display: inline-block;
+  margin-top: 10px;
+  padding: 2px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.pc-ind-corps > .pc-discret { margin-top: 8px; font-size: 12px; }
+
+.pc-figure-mm { margin-top: var(--space-4); }
+.pc-graphe-mm { height: 180px; }
+.pc-figure-mm .pc-courbe { stroke: var(--neutral); stroke-width: 1.25; }
+.pc-figure-mm .pc-point { background: var(--neutral); }
+.pc-mm50 { fill: none; stroke: var(--text); stroke-width: 1.25; stroke-dasharray: 6 3; }
+.pc-mm200 { fill: none; stroke: var(--text-muted); stroke-width: 1.25; stroke-dasharray: 1.5 3; stroke-linecap: round; }
+.pc-mm-legende {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.pc-trait {
+  display: inline-block;
+  width: 22px;
+  margin-right: 6px;
+  vertical-align: middle;
+  border-top: 1.5px solid;
+}
+.pc-trait-cours { border-color: var(--neutral); }
+.pc-trait-mm50 { border-top-style: dashed; border-color: var(--text); }
+.pc-trait-mm200 { border-top-style: dotted; border-color: var(--text-muted); border-top-width: 2px; }
+
+/* ============================================================
+   FENÊTRE ÉTROITE
+   ============================================================
+   L'appli vise 1440 et 1280 px. Une fenêtre réduite ne doit pourtant
+   rien casser : la marge du carnet passe au-dessus du texte, et les
+   champs du formulaire vont par deux.
+   ============================================================ */
+@media (max-width: 700px) {
+  .pc-vue { padding-inline: var(--space-3); }
+  .pc-titre { font-size: 34px; }
+  .pc-ligne { grid-template-columns: minmax(0, 1fr); row-gap: 6px; }
+  .pc-form-intro,
+  .pc-ind-avertissement { margin-left: 0; }
+  .pc-plus { padding-left: 0; }
+  .pc-champs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pc-raison { font-size: 24px; }
+}
+
+/* ============================================================
+   MOUVEMENT RÉDUIT
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  .pc-vue { animation: none; }
+}

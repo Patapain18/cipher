@@ -722,7 +722,7 @@ void main() {
      clonées : le formulaire du carnet reste un formulaire, les filtres
      des filtres. 408 px par mètre partout : même taille de texte. */
   const PANNEAUX = [
-    { id: 'positions', nom: 'Mes positions', largeurPx: 1020, largeurM: 2.5, sources: ['#section-positions'] },
+    { id: 'positions', nom: 'Ma position', largeurPx: 1020, largeurM: 2.5, sources: ['#section-positions'] },
     { id: 'fiabilite', nom: 'Fiabilité du signal', largeurPx: 1020, largeurM: 2.5, sources: ['#quality-section'] },
     { id: 'synthese', nom: 'Synthèse', largeurPx: 1020, largeurM: 2.5, sources: ['.masthead', '#stocks-stats'], extrait: true },
     { id: 'tableau', nom: 'Valeurs suivies', largeurPx: 1428, largeurM: 3.5, sources: ['#section-valeurs'] },

@@ -6,6 +6,8 @@
   <meta name="color-scheme" content="light">
   <title>Signaux actions</title>
   <link rel="stylesheet" href="style.css">
+  <!-- « Ma position », le carnet de bord (touche P) -->
+  <link rel="stylesheet" href="ma-position/carnet.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23f4f1ea'/><path d='M6 22 L13 14 L18 18 L26 8' stroke='%2324476e' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
 </head>
 <body>
@@ -179,15 +181,16 @@
       Ce bot ne passe aucun ordre — le trading automatisé d'actions n'est pas
       ouvert aux particuliers en France. Il repère les moments intéressants,
       tu décides et tu exécutes chez ton courtier. Une fois l'ordre passé,
-      note-le dans <strong>Mes positions</strong> juste en dessous pour suivre
-      ton P&amp;L ici.
+      note-le dans <strong>Ma position</strong> (touche <kbd>P</kbd>) : le carnet
+      suit ta position, frais compris, et la compare au S&amp;P 500.
     </p>
   </section>
 
-  <!-- Le carnet des achats déjà passés chez le courtier. C'est la seule
-       partie de la page qui écrit quelque chose sur le disque. -->
+  <!-- Ma position, en résumé : les mêmes chiffres que le carnet de bord
+       (touche P), en euros, frais compris. Rien ne s'écrit ici. C'est
+       aussi le panneau 1 de la vue baie. -->
   <section class="section" id="section-positions">
-    <span class="eyebrow">Mes positions</span>
+    <span class="eyebrow">Ma position</span>
     <div class="card" id="positions">
       <p class="loading">Chargement…</p>
     </div>
@@ -221,11 +224,15 @@
   </footer>
 
 </div>
+<!-- Le socle de « Ma position » (routes, formats, phrases communes) AVANT
+     app.js : son résumé s'en sert dès le premier affichage. -->
+<script src="ma-position/socle.js"></script>
 <script src="app.js"></script>
 <!-- Le générateur de ville d'abord : vue3d.js en dépend au chargement. -->
 <script src="vue3d_ville.js"></script>
 <script src="vue3d.js"></script>
-<!-- Les pistes « Ma position » (?piste=a, b ou c). Sans ce paramètre, rien ne change. -->
-<script src="pistes/charger.js"></script>
+<!-- Le carnet de bord de « Ma position », après app.js et vue3d.js : il
+     range son bouton dans l'en-tête et sa note sous le résumé. -->
+<script src="ma-position/carnet.js"></script>
 </body>
 </html>
