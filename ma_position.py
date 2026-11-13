@@ -29,6 +29,7 @@ import math
 import os
 import sys
 import threading
+import time
 import warnings
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -42,8 +43,10 @@ warnings.filterwarnings("ignore")
 
 import stock_engine as engine   # noqa: E402
 
-JOURNAL = os.path.join(ROOT, "data", "journal.json")
-CARNET = os.path.join(ROOT, "data", "stock_positions.json")
+# Un serveur d'essai peut pointer vers des copies (data/essai-*/) :
+# les pistes s'y testent sans jamais toucher le vrai journal.
+JOURNAL = os.environ.get("MA_POSITION_JOURNAL") or os.path.join(ROOT, "data", "journal.json")
+CARNET = os.environ.get("MA_POSITION_CARNET") or os.path.join(ROOT, "data", "stock_positions.json")
 PARIS = ZoneInfo("Europe/Paris")
 CHANGE = "EURUSD=X"
 INDICE = "SPY"            # le S&P 500, tel qu'un ETF le suit
@@ -155,10 +158,23 @@ def _historique(symbole, **kwargs):
     return h["Close"].dropna()
 
 
+# Les cours déjà lus, pour que la position et le journal, demandés au
+# même moment par la page, comptent avec LE MÊME cours (sinon l'écran
+# montre 12,62 € en haut et 12,60 € dans le journal).
+_memo_actuel = {}     # symbole → (instant de lecture, cours, heure du cours)
+_memo_passe = {}      # (symbole, moment) → cours : un cours passé ne change plus
+MEMO_ACTUEL_S = 30
+
+
 def cours_actuel(symbole):
     """Le dernier cours connu et son heure : le marché peut être fermé."""
+    deja = _memo_actuel.get(symbole)
+    if deja and time.monotonic() - deja[0] < MEMO_ACTUEL_S:
+        return deja[1], deja[2]
     c = _historique(symbole, period="5d", interval="1m", prepost=True)
-    return float(c.iloc[-1]), c.index[-1]
+    cours, heure = float(c.iloc[-1]), c.index[-1]
+    _memo_actuel[symbole] = (time.monotonic(), cours, heure)
+    return cours, heure
 
 
 def cours_a(symbole, quand_utc):
@@ -166,18 +182,26 @@ def cours_a(symbole, quand_utc):
     Le cours d'un symbole à un moment passé : les barres de 5 minutes du
     jour (Yahoo les garde 60 jours), sinon la clôture du jour.
     """
+    cle = (symbole, quand_utc.isoformat())
+    if cle in _memo_passe:
+        return _memo_passe[cle]
     jour = quand_utc.date()
+    v = float("nan")
     try:
         c = _historique(symbole, start=jour - timedelta(days=4), end=jour + timedelta(days=1),
                         interval="5m", prepost=True)
-        v = c.asof(quand_utc)
-        if v == v:
-            return float(v)
+        v = float(c.asof(quand_utc))
     except ValueError:
         pass
-    c = _historique(symbole, start=jour - timedelta(days=10), end=jour + timedelta(days=1),
-                    interval="1d")
-    return float(c.asof(quand_utc))
+    if v != v:
+        c = _historique(symbole, start=jour - timedelta(days=10), end=jour + timedelta(days=1),
+                        interval="1d")
+        v = float(c.asof(quand_utc))
+    # Gardé seulement s'il date de plus de 10 minutes : la barre de
+    # 5 minutes en cours peut encore bouger.
+    if datetime.now(timezone.utc) - quand_utc > timedelta(minutes=10):
+        _memo_passe[cle] = v
+    return v
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -293,14 +317,20 @@ def position(rang_de=None):
     }
 
 
-def journal_compare():
-    """Chaque décision, et pour chaque achat ce qu'aurait fait la même somme dans le S&P 500."""
+def journal_compare(prix_actuels=None, fx_actuel=None):
+    """
+    Chaque décision, et pour chaque achat ce qu'aurait fait la même somme
+    dans le S&P 500. `prix_actuels` ({ticker: cours en $}) et `fx_actuel`
+    sont les cours de la position déjà affichée : le journal compte avec
+    les mêmes, sinon l'écran montre deux valeurs pour la même action.
+    """
     journal = sorted(lire_journal(), key=lambda d: d["date"])
+    valeurs = sorted(engine.UNIVERSE)    # pour la liste du formulaire
     if not journal:
-        return {"decisions": [], "avertissement": AVERTISSEMENT}
+        return {"decisions": [], "valeurs": valeurs, "avertissement": AVERTISSEMENT}
     indice_maintenant, _ = cours_actuel(INDICE)
-    fx_maintenant, _ = cours_actuel(CHANGE)
-    prix_maintenant = {}
+    fx_maintenant = fx_actuel or cours_actuel(CHANGE)[0]
+    prix_maintenant = dict(prix_actuels or {})
     sortie = []
     for d in journal:
         ligne = dict(d)
@@ -314,7 +344,8 @@ def journal_compare():
             ligne.update({"valeur_choix_eur": valeur_choix, "valeur_indice_eur": valeur_indice,
                           "ecart_eur": valeur_choix - valeur_indice})
         sortie.append(ligne)
-    return {"decisions": sortie, "indice": "S&P 500 (SPY)", "avertissement": AVERTISSEMENT}
+    return {"decisions": sortie, "indice": "S&P 500 (SPY)", "valeurs": valeurs,
+            "avertissement": AVERTISSEMENT}
 
 
 PERIODES = {"1j": dict(period="5d", interval="5m"),

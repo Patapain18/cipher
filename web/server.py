@@ -273,7 +273,8 @@ def stocks_history():
 #      Handler._hote_refuse le vérifie sur TOUTES les requêtes,
 #      lectures comprises.
 
-POSITIONS_FILE = os.path.join("data", "stock_positions.json")
+# Même règle que ma_position.py : un serveur d'essai écrit dans sa copie.
+POSITIONS_FILE = os.environ.get("MA_POSITION_CARNET") or os.path.join("data", "stock_positions.json")
 
 
 class CarnetIllisible(Exception):
@@ -470,7 +471,7 @@ def rang_de(ticker):
     mémoire : la position ne relance pas un scan de 49 valeurs pour ça.
     """
     with _cache_lock:
-        entree = _cache.get("/api/stocks")
+        entree = _cache.get("/api/stocks") or _cache.get("/api/stocks:classement")
     if not entree:
         return None, None
     donnees = entree["value"]
@@ -487,9 +488,15 @@ def ma_position_en_direct():
 
 
 def mon_journal():
-    """Mes décisions, et pour chaque achat la même somme dans le S&P 500."""
+    """
+    Mes décisions, et pour chaque achat la même somme dans le S&P 500,
+    comptées avec les cours de la position en cache : la page affiche
+    alors la même valeur en haut et dans le journal.
+    """
     import ma_position
-    return ma_position.journal_compare()
+    pos, _ = cached("/api/position", 60, ma_position_en_direct)
+    prix = {l["ticker"]: l["prix_usd"] for l in pos["lignes"]}
+    return ma_position.journal_compare(prix, pos["eurusd"])
 
 
 def ajouter_au_journal(payload):
@@ -512,7 +519,7 @@ ROUTES = {
     # chemin              → (fonction, durée de cache en secondes)
     "/api/semaine":        (point_de_la_semaine, 30),
     "/api/position":       (ma_position_en_direct, 60),
-    "/api/journal":        (mon_journal, 300),
+    "/api/journal":        (mon_journal, 0),      # recalculé à chaque fois, sur la position en cache (60 s)
     "/api/status":         (bots_status,    5),
     "/api/stocks":         (scan_stocks,    180),   # 3 min : yfinance est lent
     "/api/stocks/history": (stocks_history, 10),    # simple lecture de fichier
@@ -645,7 +652,12 @@ class Handler(SimpleHTTPRequestHandler):
         # /api/stocks doit les refléter, pas resservir un scan calculé
         # avant l'ajout.
         with _cache_lock:
-            _cache.pop("/api/stocks", None)
+            ancien = _cache.pop("/api/stocks", None)
+            if ancien:
+                # Le classement, lui, ne dépend pas du carnet : on le garde
+                # pour le rang de « Ma position » jusqu'au prochain scan
+                # (sinon le rang reste « en attente » une minute).
+                _cache["/api/stocks:classement"] = ancien
 
         self._json(200, {"ok": True, "data": result})
 
