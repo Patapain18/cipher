@@ -726,6 +726,285 @@ async function renderSemaine() {
 }
 
 /* ------------------------------------------------------------
+   LE THERMOMÈTRE DU MARCHÉ
+   ------------------------------------------------------------
+   Trois aiguilles lues avec le seul passé connu (thermometre.py), et
+   ce que le thermomètre a valu depuis 1973. Un thermomètre, pas une
+   boule de cristal : il dit si le marché est tendu, jamais quand il
+   chutera. Chaque aiguille montre sa propre mesure, même quand elle
+   ne vaut rien : c'est la règle du projet (comme le score technique).
+   ------------------------------------------------------------ */
+const NIVEAUX_THERMO = ['calme', 'à surveiller', 'tendu', 'très tendu'];
+
+/* Un taux sans signe : 0,205 → « 21 % », toujours en mono (DA). */
+const taux = (x) => PP.pct(x, { signe: false, decimales: 0 });
+const tauxNum = (x) => `<span class="num">${taux(x)}</span>`;
+const pctNum = (x, d = 0) => `<span class="num">${PP.pct(x, { decimales: d })}</span>`;
+
+/* « 2026-11 » → « nov. 2026 ». */
+const moisAnnee = (ym) => {
+  const [a, m] = String(ym || '').split('-').map(Number);
+  if (!a || !m) return '—';
+  return new Date(a, m - 1, 15).toLocaleDateString('fr-FR', { month: 'short', year: 'numeric' });
+};
+
+/* La mesure d'une aiguille, en une phrase. Les conclusions suivent les
+   chiffres (relecture du 15/11/2026) : trop peu de mois allumés → on ne
+   conclut pas ; presque le même taux allumée ou éteinte → elle n'apporte
+   rien. */
+function phraseAiguille(a) {
+  if (!a || !a.allumee || a.allumee.taux == null) return 'Pas encore mesurée.';
+  const debut = String(a.depuis || '').slice(0, 4);
+  let p = `Depuis ${debut}, allumée, la chute a suivi ${tauxNum(a.allumee.taux)} du temps ; `
+    + `éteinte, ${tauxNum(a.eteinte.taux)}.`;
+  if (a.trop_peu) {
+    p += ` Allumée seulement <span class="num">${a.allumee.mois}</span> mois : trop peu pour conclure.`;
+  } else if (Math.abs(a.allumee.taux - a.eteinte.taux) < 0.03) {
+    p += ' Presque aucune différence : pour une chute du S&amp;P 500, elle n\'apporte rien.';
+  }
+  return p;
+}
+
+/* Ce que l'alarme ne dit PAS : la suite sur 12 mois après une alarme,
+   face à n'importe quel mois. Chaque mot suit les chiffres du jour de la
+   mesure : si demain une alarme était suivie de baisses, la phrase
+   changerait d'elle-même. */
+function phraseApresAlarme(av) {
+  const a = av?.apres_alarme;
+  const t = av?.tous;
+  if (!a || !t) return '';
+  const moy = pctNum(a.moyenne, 1);
+  const moyTous = pctNum(t.moyenne, 1);
+  let p;
+  if (a.moyenne > 0) {
+    const comme = Math.abs(a.moyenne - t.moyenne) < 0.02 ? 'comme d\'habitude'
+      : a.moyenne > t.moyenne ? 'plus que d\'habitude' : 'moins que d\'habitude';
+    p = `Une alarme n'annonce pas une baisse : 12&nbsp;mois après un niveau 2 ou plus, `
+      + `le S&amp;P 500 a gagné en moyenne ${moy}, ${comme} (${moyTous}).`;
+  } else {
+    p = `12&nbsp;mois après un niveau 2 ou plus, le S&amp;P 500 a fait en moyenne ${moy}, contre ${moyTous} d'habitude.`;
+  }
+  const frequence = a.hausse_20 > t.hausse_20 ? 'plus fréquente'
+    : a.hausse_20 < t.hausse_20 ? 'moins fréquente' : 'aussi fréquente';
+  p += ` Une hausse de 20&nbsp;% ou plus y était ${frequence} (${tauxNum(a.hausse_20)} contre ${tauxNum(t.hausse_20)}).`;
+  if (a.ecart_type > t.ecart_type * 1.15) {
+    p += a.moyenne > 0 ? ' Ce qui change surtout, c\'est la taille des mouvements, dans les deux sens.'
+      : ' Les mouvements y étaient aussi plus grands.';
+  }
+  return `<p class="thermo-phrase thermo-nedit">${p}</p>`;
+}
+
+/* Les chutes « vues », y compris aucune ou une seule. */
+function phraseVues(al) {
+  const v = al.episodes_vus;
+  const n = `<span class="num">${al.episodes_chute}</span>`;
+  const fin = 'pendant qu\'il restait au moins 20&nbsp;% à perdre.';
+  if (!v) return `Aucune des ${n} chutes n'a eu d'alarme ${fin}`;
+  return `<span class="num">${v}</span> ${v > 1 ? 'chutes' : 'chute'} sur ${n} ${v > 1 ? 'ont' : 'a'} eu une alarme ${fin}`;
+}
+
+/* Les fausses alarmes, au singulier comme au pluriel, et « baisse déjà
+   commencée » seulement si c'est vrai (au moins 3 % sous le plus haut). */
+function phraseFausses(al) {
+  const n = al.fausses_alarmes;
+  if (!n) return 'Aucune alarme n\'a sonné pour rien.';
+  let p = n === 1 ? '<span class="num">1</span> alarme n\'a été suivie d\'aucune chute'
+    : `<span class="num">${n}</span> alarmes n'ont été suivies d'aucune chute`;
+  const dp = al.fausses_deja_perdu;                    // [le plus bas, le plus proche de 0]
+  if (dp) {
+    const plage = dp[0] === dp[1] ? pctNum(dp[0]) : `de ${pctNum(dp[1])} à ${pctNum(dp[0])}`;
+    p += dp[1] <= -0.03
+      ? `${n === 1 ? ' ; elle a sonné' : ' ; elles ont toutes sonné'} après une baisse déjà commencée (${plage} depuis le plus haut d'un an)`
+      : ` (le S&amp;P 500 était alors entre ${tauxNum(Math.abs(dp[1]))} et ${tauxNum(Math.abs(dp[0]))} sous son plus haut d'un an)`;
+  }
+  return `${p}.`;
+}
+
+/* L'essai de la règle, en points de rendement par an (« point » au
+   singulier sous 2), pour chaque comparaison équitable disponible. */
+function phraseRegle(r, seuil) {
+  const ecart = (v) => v.regle.par_an - v.toujours.par_an;
+  const decrire = (x) => {
+    const n = Number((Math.abs(x) * 100).toFixed(1));        // le pluriel suit le nombre AFFICHÉ
+    if (n < 0.05) return 'le même rendement par an';
+    const pts = `<span class="num">${PP.nombre(n, 1)}</span>&nbsp;point${n >= 2 ? 's' : ''}`;
+    return x < 0 ? `${pts} de moins par an` : `${pts} de plus par an`;
+  };
+  const v1 = r.prix_seul;
+  const v2 = r.avec_revenus;
+  let p = `Être à l'abri dès le niveau ${seuil} (décidé à la fin du mois, fait à la première séance du mois suivant), `
+    + `sinon investi : depuis ${esc(String(v1.debut).slice(0, 4))}, sans compter aucun revenu, ${decrire(ecart(v1))}`;
+  if (v2) {
+    p += ` ; depuis ${esc(String(v2.debut).slice(0, 4))}, en comptant les dividendes quand on est investi `
+      + `et les intérêts à l'abri, ${decrire(ecart(v2))}`;
+  }
+  p += `. Sa pire baisse : ${pctNum(v1.regle.pire_baisse)} au lieu de ${pctNum(v1.toujours.pire_baisse)}. `
+    + `Investi ${tauxNum(r.temps_investi)} du temps, <span class="num">${r.changements}</span> changements.`;
+  return p;
+}
+
+/* Le dernier contenu affiché : s'il n'a pas changé, on ne touche à rien
+   (le cache du serveur dure une heure, la page se rafraîchit chaque
+   minute : sans ça, les <details> ouverts se refermaient sous les yeux). */
+let thermoDernierHtml = '';
+
+function htmlThermometre(t) {
+  const l = t.lecture;
+  const m = t.mesure;
+  const niveau = l.niveau;
+  const echelle = [1, 2, 3].map((n) => `<i class="${n <= niveau ? 'on' : ''}"></i>`).join('');
+  const parNiveau = m?.niveaux?.[niveau];
+  const base = m?.base_complet;
+  const al = m?.alarme;
+  const depuis = String(m?.periode?.debut_complet || '').slice(0, 4);
+  const chute = 'le S&amp;P 500 qui perd au moins 20&nbsp;% dans les 12&nbsp;mois suivants';
+
+  let resume;
+  const suivant = m?.niveaux?.[niveau + 1];
+  if (l.niveau_minimum && parNiveau && base && suivant) {
+    /* Une aiguille est inconnue : le vrai niveau est celui-ci ou le
+       suivant. On donne les deux mesures, jamais une seule. */
+    const dire = (n) => (n.trop_rare ? 'trop rare pour compter' : `${tauxNum(n.taux)} du temps`);
+    resume = `<p class="thermo-phrase">Une aiguille est inconnue : le vrai niveau est ${niveau} ou ${niveau + 1}.
+        Depuis ${depuis}, ${chute.replace('qui perd', 'a perdu')} : au niveau ${niveau}, ${dire(parNiveau)} ;
+        au niveau ${niveau + 1}, ${dire(suivant)}. Sur tous les mois : ${tauxNum(base.taux)}.</p>`;
+  } else if (!parNiveau || !base) {
+    resume = '<p class="thermo-phrase">La mesure sur le passé n\'est pas encore faite (python3 thermometre.py --mesurer).</p>';
+  } else if (parNiveau.trop_rare) {
+    /* Un niveau trop rare ne dit rien : on le dit, avec la chute mesurée
+       et, s'il s'agit d'une alarme, le chiffre de toutes les alarmes. */
+    resume = `<p class="thermo-phrase">La chute mesurée : ${chute}. Le niveau ${niveau} est trop rare pour en
+        tirer quoi que ce soit : <span class="num">${parNiveau.mois}</span> mois depuis ${depuis}${parNiveau.annees?.length
+          ? `, tous en ${esc(parNiveau.annees.join(', '))}` : ''}.${al && niveau >= al.seuil && al.chute_apres?.taux != null
+          ? ` Pour tous les mois d'alarme (niveau ${al.seuil} ou plus), la chute a suivi ${tauxNum(al.chute_apres.taux)} du temps.` : ''}
+        Sur tous les mois : ${tauxNum(base.taux)}.</p>`;
+  } else {
+    resume = `<p class="thermo-phrase">Depuis ${depuis}, quand il était au niveau ${niveau}, ${chute.replace('qui perd', 'a perdu')}
+        ${tauxNum(parNiveau.taux)} du temps (<span class="num">${parNiveau.chutes}</span> mois sur
+        <span class="num">${parNiveau.mois}</span>). Sur tous les mois : ${tauxNum(base.taux)}.</p>`;
+  }
+
+  const env = l.envolee;
+  const manquants = env.manquants || [];
+  const absents = manquants.length
+    ? `${manquants.length === 1 ? 'Un secteur n\'a' : `${manquants.length} secteurs n'ont`} pas répondu (${esc(manquants.join(', '))})`
+    : '';
+  const faitEnvolee = env.inconnue
+    ? `${absents} : impossible de dire si elle est éteinte, un seul secteur suffit à l'allumer.`
+      + (env.secteur ? ` Parmi les autres, ${esc(env.secteur)} : ${pctNum(env.net)} de plus que le marché en deux ans.` : '')
+    : `${env.secteur ? esc(env.secteur) : '—'} : ${env.net == null ? '—' : pctNum(env.net)} de plus que le marché en deux ans,
+        le plus fort des secteurs. Elle s'allume à +100&nbsp;%, le seuil d'une étude de Harvard sur la chute du secteur
+        lui-même, pas du marché.${absents ? ` ${absents}.` : ''}`;
+
+  const aiguilles = [
+    { nom: 'La tendance', etat: l.tendance.allumee ? 'allumée' : 'éteinte',
+      fait: `Le S&amp;P 500 est à ${pctNum(l.tendance.ecart, 1)} de sa moyenne des 200 dernières séances.
+        Elle s'allume quand il passe dessous.`,
+      mesure: m?.aiguilles?.tendance },
+    { nom: 'L\'agitation', etat: l.agitation.allumee ? 'allumée' : 'éteinte',
+      fait: `La volatilité du dernier mois est de <span class="num">${PP.pct(l.agitation.vol, { signe: false, decimales: 1 })}</span>.
+        Elle s'allume au-dessus de <span class="num">${PP.pct(l.agitation.seuil, { signe: false, decimales: 1 })}</span>
+        (plus haut que 80&nbsp;% de tout le passé connu).`,
+      mesure: m?.aiguilles?.agitation },
+    { nom: 'L\'envolée', etat: env.allumee ? 'allumée' : env.inconnue ? 'inconnue' : 'éteinte',
+      fait: faitEnvolee, mesure: m?.aiguilles?.envolee },
+  ];
+  const listeAiguilles = aiguilles.map((a) => `
+      <li class="thermo-aiguille">
+        <p class="thermo-aiguille-tete"><span class="thermo-nom">${a.nom}</span>
+          <span class="badge ${a.etat === 'allumée' ? '' : 'muted'} thermo-badge">${a.etat}</span></p>
+        <p>${a.fait}</p>
+        <p class="thermo-mesure">${phraseAiguille(a.mesure)}</p>
+      </li>`).join('');
+
+  const alarmes = al ? `
+      <details class="thermo-details" data-cle="alarmes">
+        <summary>Ses alarmes depuis ${depuis} (niveau ${al.seuil} ou plus)</summary>
+        <p>Après un mois d'alarme, une chute de 20&nbsp;% a suivi ${tauxNum(al.chute_apres.taux)} du temps.${al.intervalle
+          ? ` Avec si peu de chutes, ce chiffre est fragile : il pourrait aussi bien valoir ${tauxNum(al.intervalle[0])}
+            que ${tauxNum(al.intervalle[1])} (marge d'incertitude à 90&nbsp;%).` : ''}</p>
+        <p>${phraseVues(al)} ${phraseFausses(al)}</p>
+        <div class="thermo-table">
+          <table>
+            <thead><tr>
+              <th scope="col">Creux de la chute</th>
+              <th scope="col">Alarme</th>
+              <th scope="col" class="num-cell">Déjà perdu</th>
+              <th scope="col" class="num-cell">Puis encore</th>
+            </tr></thead>
+            <tbody>${(al.chutes || []).map((c) => `
+              <tr>
+                <td>${esc(moisAnnee(c.creux))}</td>
+                <td>${c.vue ? esc(moisAnnee(c.alarme)) : 'manquée'}</td>
+                <td class="num-cell num">${c.vue ? PP.pct(c.deja_perdu, { decimales: 0 }) : '—'}</td>
+                <td class="num-cell num">${c.vue ? PP.pct(c.encore_perdu, { decimales: 0 }) : '—'}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+        <p class="thermo-note">« Déjà perdu » : ce que le S&amp;P 500 avait perdu depuis son plus haut
+          d'un an quand l'alarme a sonné. « Puis encore » : la suite, dans les 12&nbsp;mois.</p>
+      </details>` : '';
+
+  const r = m?.regle;
+  const regle = r?.prix_seul ? `
+      <details class="thermo-details" data-cle="essai">
+        <summary>Un essai sur le passé, pour juger le thermomètre</summary>
+        <p>${phraseRegle(r, al ? al.seuil : 2)}</p>
+        <p class="thermo-note">Ce n'est pas une règle à suivre : sans frais ni impôts (chaque vente gagnante
+          est imposée). Elle sert seulement à mesurer ce que vaut le thermomètre.</p>
+      </details>` : '';
+
+  return `
+    <div class="thermo-tete">
+      <span class="thermo-echelle" aria-hidden="true">${echelle}</span>
+      <p class="thermo-niveau">Niveau <span class="num">${niveau}</span>${l.niveau_minimum ? ' au moins' : ''} sur 3 :
+        <strong>${NIVEAUX_THERMO[niveau]}</strong></p>
+    </div>
+    ${resume}
+    ${phraseApresAlarme(m?.a_venir)}
+    <ul class="thermo-aiguilles">${listeAiguilles}</ul>
+    ${alarmes}
+    ${regle}
+    <p class="thermo-avertissement">${esc(t.avertissement)}${m?.maj ? ` Mesure du ${esc(PP.jour(m.maj.slice(0, 10)))}.` : ''}</p>`;
+}
+
+async function renderThermometre() {
+  const section = $('#section-thermometre');
+  const zone = $('#thermometre');
+  const etat = $('#thermo-etat');
+  if (!section || !zone || !window.PP) return;
+  let t;
+  let html;
+  try {
+    t = await api('/api/thermometre');
+    html = htmlThermometre(t);
+  } catch (e) {
+    /* Une panne de Yahoo ne doit ni effacer la dernière lecture, ni
+       passer au rouge (le rouge dit « baisse » dans cette appli). */
+    if (thermoDernierHtml) {
+      if (etat) etat.textContent = `Mise à jour impossible pour l'instant (${e.message}) : la lecture affichée est la dernière connue.`;
+    } else {
+      zone.innerHTML = `<p class="thermo-attente">Thermomètre indisponible pour l'instant (${esc(e.message)}). Nouvel essai dans une minute.</p>`;
+    }
+    return;
+  }
+  if (etat) etat.textContent = '';
+  $('#thermo-date').textContent = `lecture du ${PP.jour(t.lecture.date)}${t.lecture.provisoire ? ', en séance (cours provisoire)' : ''}`;
+  if (html === thermoDernierHtml) return;            // rien n'a changé : on ne touche à rien
+
+  // On garde ce que tu as ouvert, et la place du clavier.
+  const ouverts = [...zone.querySelectorAll('details[data-cle]')].filter((d) => d.open).map((d) => d.dataset.cle);
+  const actif = document.activeElement;
+  const focusCle = actif && actif.tagName === 'SUMMARY' ? actif.closest('#thermometre details[data-cle]')?.dataset.cle : null;
+  zone.innerHTML = html;
+  thermoDernierHtml = html;
+  zone.classList.remove('thermo-charge');
+  ouverts.forEach((cle) => { const d = zone.querySelector(`details[data-cle="${cle}"]`); if (d) d.open = true; });
+  if (focusCle) zone.querySelector(`details[data-cle="${focusCle}"] > summary`)?.focus({ preventScroll: true });
+}
+
+/* ------------------------------------------------------------
    CYCLE DE VIE
    ------------------------------------------------------------ */
 
@@ -733,6 +1012,7 @@ function refresh() {
   renderStatus();
   renderQuality();
   renderSemaine();
+  renderThermometre();
   renderStocks();
   renderPositions();   // à part : la position n'attend pas le scan des 49 valeurs
   renderHistory();

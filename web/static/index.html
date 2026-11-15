@@ -130,6 +130,22 @@
     <div class="card semaine" id="semaine"></div>
   </section>
 
+  <!-- Le thermomètre du marché (thermometre.py) : trois aiguilles lues avec
+       le seul passé connu, et ce qu'il a valu depuis 1973. Un thermomètre,
+       pas une boule de cristal : jamais de date de chute, jamais de conseil.
+       Absent de la vue baie. Sa place est gardée dès l'ouverture (la
+       première lecture prend quelques secondes) : la page ne saute pas. -->
+  <section class="section" id="section-thermometre">
+    <div class="section-head">
+      <span class="eyebrow">Le thermomètre du marché</span>
+      <span class="badge muted" id="thermo-date"></span>
+    </div>
+    <div class="card thermo thermo-charge" id="thermometre">
+      <p class="thermo-attente">Lecture du thermomètre…</p>
+    </div>
+    <p class="thermo-etat" id="thermo-etat" aria-live="polite"></p>
+  </section>
+
   <!-- Fiabilité mesurée du score : la première chose à savoir avant de
        lire une recommandation. -->
   <section class="section" id="quality-section">

@@ -1485,3 +1485,61 @@ body.vue3d-active { overflow: hidden; }
   font-size: 12px;
   color: var(--text-muted);
 }
+
+/* ============================================================
+   LE THERMOMÈTRE DU MARCHÉ
+   ============================================================
+   Sobre comme le reste : l'encre pour les aiguilles allumées, jamais
+   de rouge. Le rouge et le vert restent aux écarts chiffrés : ici, rien
+   ne doit ressembler à une alarme ou à un ordre. */
+.thermo { padding: var(--space-3) var(--space-4) var(--space-4); }
+/* La place gardée pendant la première lecture (quelques secondes). */
+.thermo-charge { min-height: 520px; }
+.thermo-attente { margin: 0; color: var(--text-muted); font-size: 14px; }
+.thermo-etat { margin: var(--space-2) 0 0; font-size: 12px; color: var(--text-muted); }
+.thermo-etat:empty { display: none; }
+.thermo-tete { display: flex; align-items: center; gap: var(--space-3); }
+.thermo-echelle { display: inline-flex; gap: 4px; }
+.thermo-echelle i {
+  width: 22px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--bg-sunken);
+}
+.thermo-echelle i.on { background: var(--accent); }
+.thermo-niveau { margin: 0; font-size: 16px; }
+.thermo-phrase { margin: var(--space-2) 0 0; color: var(--text-muted); max-width: 75ch; line-height: 1.5; }
+.thermo-phrase strong, .thermo-phrase .num { color: var(--text); }
+.thermo-nedit { margin-top: var(--space-1); }
+
+.thermo-aiguilles {
+  list-style: none;
+  margin: var(--space-4) 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--space-4);
+}
+.thermo-aiguille p { margin: 0; line-height: 1.5; font-size: 14px; }
+.thermo-aiguille p + p { margin-top: var(--space-1); }
+.thermo-aiguille-tete { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.thermo-nom { font-weight: 600; }
+.thermo-badge { font-size: 11px; }
+.thermo-mesure { color: var(--text-muted); font-size: 13px; }
+
+.thermo-details { margin-top: var(--space-4); border-top: 1px solid var(--border); padding-top: var(--space-3); }
+.thermo-details summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+.thermo-details summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.thermo-details p { font-size: 14px; line-height: 1.5; max-width: 80ch; }
+.thermo-table { overflow-x: auto; margin-top: var(--space-2); }
+.thermo-table table { width: auto; min-width: min(100%, 640px); border: 1px solid var(--border);
+  border-radius: var(--radius-md); background: var(--bg-elevated); }
+.thermo-note { color: var(--text-muted); font-size: 13px; }
+.thermo-table thead th { position: static; }
+
+.thermo-avertissement {
+  margin: var(--space-4) 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+

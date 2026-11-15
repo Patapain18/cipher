@@ -331,6 +331,31 @@ def bots_status():
 #  ROUTES
 # ══════════════════════════════════════════════════════════════════
 
+_thermo_verrou = threading.Lock()
+_thermo_recent = {"valeur": None, "quand": 0.0}
+
+
+def thermometre_du_marche():
+    """
+    Le thermomètre du marché (thermometre.py) : la lecture du jour, et sa
+    mesure honnête sur le passé (data/thermometre.json, écrit par
+    `python3 thermometre.py --mesurer`). Un thermomètre, pas une boule de
+    cristal : jamais de date de chute, jamais de conseil.
+
+    Deux requêtes en même temps (le rafraîchissement de la page et un
+    retour de focus) ne font pas deux fois les mêmes demandes à Yahoo :
+    la seconde attend la première et reprend son résultat (relu le
+    15/11/2026).
+    """
+    import thermometre
+    with _thermo_verrou:
+        if _thermo_recent["valeur"] is not None and time.time() - _thermo_recent["quand"] < 120:
+            return _thermo_recent["valeur"]
+        valeur = thermometre.thermometre()
+        _thermo_recent.update(valeur=valeur, quand=time.time())
+        return valeur
+
+
 def point_de_la_semaine():
     """
     Le dernier point de la semaine, préparé par le bot chaque dimanche à
@@ -432,6 +457,7 @@ GRAPHIQUE_CACHE = {"1j": 60, "1m": 600, "1a": 3600}
 ROUTES = {
     # chemin              → (fonction, durée de cache en secondes)
     "/api/semaine":        (point_de_la_semaine, 30),
+    "/api/thermometre":    (thermometre_du_marche, 3600),   # des cours de clôture : une heure suffit
     "/api/position":       (ma_position_en_direct, 60),
     "/api/journal":        (mon_journal, 0),      # recalculé à chaque fois, sur la position en cache (60 s)
     "/api/status":         (bots_status,    5),
