@@ -590,6 +590,10 @@ tbody tr:hover .secondary-col .gauge { opacity: 1; }
 
 .rank { font-weight: 600; }
 
+/* « Sans les frais », dans le résumé de Ma position : en retrait, sans
+   couleur (le chiffre qui compte, frais compris, est juste à gauche). */
+td.sans-frais { color: var(--text-muted); }
+
 .rank-total {
   display: block;
   font-size: 11px;

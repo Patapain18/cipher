@@ -458,6 +458,12 @@ html.pc-carnet-ouvert .shell { display: none; }
 .pc-valeur-dollars .num { font-size: 17px; color: var(--text-muted); }
 .pc-gain-ligne { margin-top: 4px; font-size: 14px; color: var(--text-muted); }
 .pc-gain-ligne > span { font-weight: 600; }
+/* Le chiffre « sans les frais » (celui de l'appli du courtier) : en
+   retrait, sans couleur. Le chiffre qui compte reste celui du dessus,
+   frais compris : un vert et un rouge côte à côte se contrediraient. */
+.pc-sans-frais-ligne { margin-top: 2px; font-size: 14px; color: var(--text-muted); }
+.pc-sans-frais, .pc-sans-frais .num,
+.pc-sans-frais-ligne .num { color: var(--text-muted); }
 .pc-cours-ligne { margin-top: 2px; font-size: 14px; color: var(--text-muted); }
 .pc-cours-ligne .num { color: var(--text); }
 

@@ -211,6 +211,22 @@ window.PP = (() => {
     });
   }
 
+  /* ── Sans les frais ────────────────────────────────────────
+     Le chiffre que montre l'appli du courtier : la valeur comparée à
+     ce que les actions ont coûté SANS les frais (le prix moyen
+     d'achat). Le chiffre principal, lui, compte les frais : ce sont
+     les euros vraiment sortis du compte. Avec le même cours, ce calcul
+     redonne le pourcentage du courtier (vérifié le 15/11/2026). */
+  const sansFrais = (l) => ({
+    eur: l.valeur_eur - l.montant_eur,
+    pct: l.montant_eur ? l.valeur_eur / l.montant_eur - 1 : null,
+  });
+  /** Le même calcul pour toutes les lignes d'une réponse de /api/position. */
+  const sansFraisTotal = (position) => sansFrais({
+    valeur_eur: position.lignes.reduce((somme, l) => somme + l.valeur_eur, 0),
+    montant_eur: position.lignes.reduce((somme, l) => somme + l.montant_eur, 0),
+  });
+
   /* ── Les phrases communes ──────────────────────────────────
      Des faits, jamais un conseil : aucune ne dit « achète »,
      « vends », « garde », ni ne laisse entendre ce qui va se passer. */
@@ -240,6 +256,11 @@ window.PP = (() => {
         : n > 1 ? ` (dans ${n} jours)` : '';
       return `Prochains résultats ${de(l.ticker)} : ${jour(l.resultats)}${quand}.`;
     },
+    /** « +2,10 € (+3,50 %) sans les frais, comme le calcule ton courtier » ;
+        avec { court: true }, sans la fin. */
+    sansFrais: (sf, { court = false } = {}) =>
+      `${euros(sf.eur, { signe: true })} (${pct(sf.pct)}) sans les frais`
+      + (court ? '' : ', comme le calcule ton courtier'),
     /** Le duel d'une décision d'achat avec le S&P 500. */
     duel: (d) => (d.valeur_indice_eur == null ? null
       : `La même somme mise dans le S&P 500 le même jour vaudrait ${euros(d.valeur_indice_eur)}. `
@@ -257,5 +278,5 @@ window.PP = (() => {
 
   return { esc, nombre, ordinal, de, euros, dollars, pct, sens, nombreSaisi, dateHeure, jour, heure,
            joursAvant, bourse, BOURSE, lire, position, journal, graphique, ajouterDecision,
-           decisionDepuis, surveiller, indicateursEnEuros, TEXTES };
+           decisionDepuis, surveiller, indicateursEnEuros, sansFrais, sansFraisTotal, TEXTES };
 })();

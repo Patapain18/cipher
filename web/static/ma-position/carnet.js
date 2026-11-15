@@ -330,6 +330,8 @@
           <span><span class="${PP.sens(t.gain_eur)}">${num(PP.euros(t.gain_eur, { signe: true }))}
             (${num(PP.pct(t.gain_pct))})</span> depuis l'achat, frais compris</span>
           <span class="pc-sep" aria-hidden="true">·</span>
+          <span class="pc-sans-frais">${habiller(T.sansFrais(PP.sansFraisTotal(p), { court: true }))}</span>
+          <span class="pc-sep" aria-hidden="true">·</span>
           <span>cours de ${num(heureDuCours(dernierCours))}</span>
           <span class="pc-sep" aria-hidden="true">·</span>
           <span>${PP.esc(PP.BOURSE[PP.bourse()])}</span>
@@ -522,6 +524,7 @@
             </p>
             <p class="pc-gain-ligne"><span class="${PP.sens(l.gain_eur)}">${num(PP.euros(l.gain_eur, { signe: true }))}
               (${num(PP.pct(l.gain_pct))})</span> depuis l'achat, frais compris</p>
+            <p class="pc-sans-frais-ligne">${habiller(T.sansFrais(PP.sansFrais(l)))}</p>
             <p class="pc-cours-ligne">Cours ${num(PP.euros(l.prix_eur))} à ${num(heureDuCours(l.cours_a))}
               <span class="pc-sep" aria-hidden="true">·</span>
               ${num(PP.pct(l.variation_prix_pct))} depuis ton prix d'achat (${num(PP.euros(l.prix_achat_eur))})</p>

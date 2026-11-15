@@ -497,7 +497,8 @@ function dessinerCartePosition() {
     <div class="label">Ma position</div>
     <div class="value">${PP.euros(total.valeur_eur)}</div>
     <div class="foot"><span class="${PP.sens(total.gain_eur)}">${PP.euros(total.gain_eur, { signe: true })}</span>
-      depuis l'achat, frais compris</div>`;
+      depuis l'achat, frais compris</div>
+    <div class="foot">${PP.euros(PP.sansFraisTotal(maPosition).eur, { signe: true })} sans les frais</div>`;
 }
 
 async function renderPositions() {
@@ -518,6 +519,9 @@ async function renderPositions() {
         se note dans <strong>Ma position</strong> (touche <kbd>P</kbd>).</p>`;
     return;
   }
+  /* « Sans les frais » : le chiffre de l'appli du courtier, en retrait. */
+  const sansFrais = (sf) => `${PP.euros(sf.eur, { signe: true })}
+        <span class="rank-total">${PP.pct(sf.pct)}</span>`;
   const ligne = (l) => `
     <tr>
       <td class="ticker">${esc(l.ticker)}</td>
@@ -527,6 +531,7 @@ async function renderPositions() {
       <td class="num-cell num">${PP.euros(l.valeur_eur)}</td>
       <td class="num-cell num ${PP.sens(l.gain_eur)}">${PP.euros(l.gain_eur, { signe: true })}
         <span class="rank-total">${PP.pct(l.gain_pct)}</span></td>
+      <td class="num-cell num sans-frais">${sansFrais(PP.sansFrais(l))}</td>
     </tr>`;
   zone.innerHTML = `
     <div class="table-wrap" style="box-shadow:none">
@@ -538,6 +543,7 @@ async function renderPositions() {
           <th class="num-cell">Cours</th>
           <th class="num-cell">Valeur</th>
           <th class="num-cell">Depuis l'achat, frais compris</th>
+          <th class="num-cell">Sans les frais</th>
         </tr></thead>
         <tbody>${lignes.map(ligne).join('')}</tbody>
         ${lignes.length > 1 ? `
@@ -546,6 +552,7 @@ async function renderPositions() {
           <td class="num-cell num">${PP.euros(total.valeur_eur)}</td>
           <td class="num-cell num ${PP.sens(total.gain_eur)}">${PP.euros(total.gain_eur, { signe: true })}
             <span class="rank-total">${PP.pct(total.gain_pct)}</span></td>
+          <td class="num-cell num sans-frais">${sansFrais(PP.sansFraisTotal(maPosition))}</td>
         </tr></tfoot>` : ''}
       </table>
     </div>`;
