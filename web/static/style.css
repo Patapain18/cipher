@@ -544,6 +544,30 @@ tbody td {
 }
 
 tbody tr:last-child td { border-bottom: 0; }
+
+/* Le résumé de Ma position tient dans SA carte. (Il prenait la classe
+   .table-wrap du grand tableau des valeurs, qui occupe toute la largeur
+   de la fenêtre : il dépassait de la carte des deux côtés.) */
+.position-table { overflow-x: auto; }
+.position-table > table {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+
+/* La ligne « Total » du résumé de Ma position (dès deux actions) : les
+   mêmes marges que les lignes du dessus, le libellé à gauche, un filet
+   au-dessus. Sans ces règles, le navigateur centrait « Total » et collait
+   les chiffres au bord du tableau. */
+tfoot th,
+tfoot td {
+  padding: 0.75rem var(--space-2);
+  border-top: 1px solid var(--border-strong);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+tfoot th { text-align: left; font-weight: 600; }
+
 tbody tr { transition: background var(--transition); }
 tbody tr:hover { background: var(--accent-soft); }
 

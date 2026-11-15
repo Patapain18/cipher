@@ -534,7 +534,7 @@ async function renderPositions() {
       <td class="num-cell num sans-frais">${sansFrais(PP.sansFrais(l))}</td>
     </tr>`;
   zone.innerHTML = `
-    <div class="table-wrap" style="box-shadow:none">
+    <div class="position-table">
       <table>
         <thead><tr>
           <th>Action</th>
