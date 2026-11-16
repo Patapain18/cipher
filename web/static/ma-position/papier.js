@@ -60,6 +60,10 @@
     }
     return html + PP.esc(texte.slice(fin));
   };
+  /* Une requête qui n'aboutit pas : le navigateur dit « Failed to fetch »
+     (Chrome) ou « Load failed » (Safari). On le dit en français. */
+  const lisible = (e) => (e instanceof TypeError || /fetch|load failed|network/i.test(String(e?.message))
+    ? 'le serveur ne répond pas' : String(e?.message || e));
 
   /* ------------------------------------------------------------
      L'INTERRUPTEUR ET LE CADRE, écrits une fois
@@ -224,7 +228,7 @@
       etat.erreur = null;
     } catch (e) {
       if (n !== ticket) return;
-      etat.erreur = e.message;
+      etat.erreur = lisible(e);
     }
     dessiner();
   }
@@ -257,7 +261,7 @@
           : `<strong>Jour ${num(String(d.jour))}</strong><br>sur ${num(String(d.jours))}`;
       const total = d.total_eur == null ? num('—') : fictif(d.total_eur);
       const gain = d.gain_eur == null || !d.debut ? ''
-        : `<p class="pc-gain-ligne"><span class="${PP.sens(d.gain_eur)}">${num(PP.euros(d.gain_eur, { signe: true }))}
+        : `<p class="pc-gain-ligne"><span class="${PP.sens(d.gain_eur)}">${fictif(d.gain_eur, { signe: true })}
             (${num(PP.pct(d.gain_pct))})</span> depuis le départ, à ${fictif(d.capital_eur)}</p>`;
       const valeurPositions = d.positions.every((p) => p.valeur_eur != null)
         ? d.positions.reduce((s, p) => s + p.valeur_eur, 0) : null;
@@ -270,7 +274,9 @@
         </dl>
         <p class="pa-note">${habiller(`Les frais payés font ${PP.pct(d.frais_payes_pct, { signe: false })} du capital de départ.`)}</p>`;
       const regle = d.debut
-        ? `<p class="pa-note">${habiller(`Fin du défi : ${PP.jour(d.fin)}, à la clôture de la dernière séance de New York.`)}</p>`
+        ? `<p class="pa-note">${habiller(`Dernier jour du défi : ${PP.jour(d.fin)} (jour ${d.jours}). Son résultat sera `
+            + `compté à la clôture de la dernière séance de New York d'ici là, le ${PP.jour(d.derniere_seance)} `
+            + '(sauf jour férié).')}</p>`
         : `<p class="pa-regle">${habiller(`Le défi commence à ton premier ordre. Au même instant, l'adversaire met ses `
             + `${PP.euros(d.capital_eur)} dans le S&P 500, avec le même ${PP.euros(d.frais_ordre_eur)} de frais. `
             + `Il dure ${d.jours} jours : le jour 1 est celui du premier ordre.`)}</p>`;
@@ -306,7 +312,7 @@
           <td>${num(PP.euros(p.prix_moyen_eur))}</td>
           <td>${p.prix_eur == null ? num('—') : num(PP.euros(p.prix_eur))}</td>
           <td>${p.valeur_eur == null ? num('—') : fictif(p.valeur_eur)}</td>
-          <td>${p.gain_eur == null ? num('—') : `<span class="${PP.sens(p.gain_eur)}">${num(PP.euros(p.gain_eur, { signe: true }))}
+          <td>${p.gain_eur == null ? num('—') : `<span class="${PP.sens(p.gain_eur)}">${fictif(p.gain_eur, { signe: true })}
             (${num(PP.pct(p.gain_pct))})</span>`}</td>
         </tr>`).join('');
       html = `
@@ -401,32 +407,42 @@
   function majAide() {
     const d = etat.donnees;
     const frais = d?.frais_ordre_eur ?? 1;
-    let texte;
+    const minimum = d?.achat_min_eur ?? 1;
+    const e = (v, o) => num(PP.euros(v, o));      // une règle (les frais), pas un montant du défi
+    let html;
     if (sens() === 'achat') {
       const m = PP.nombreSaisi(form.elements.montant_eur.value);
-      texte = Number.isFinite(m) && m > 0
-        ? `Un aller-retour (cet achat, puis sa vente) coûte ${PP.euros(2 * frais)} de frais : sur `
-          + `${PP.euros(m)}, il faut ${PP.pct(2 * frais / m)} pour retrouver ta mise.`
-        : `Un aller-retour (un achat, puis sa vente) coûte ${PP.euros(2 * frais)} de frais.`;
+      html = Number.isFinite(m) && m > 0
+        ? `Un aller-retour (cet achat, puis sa vente) coûte ${e(2 * frais)} de frais : sur ${fictif(m)}, `
+          + `il faut ${num(PP.pct(2 * frais / m))} pour retrouver ta mise.`
+        : `Un aller-retour (un achat, puis sa vente) coûte ${e(2 * frais)} de frais.`;
       if (d) {
-        texte += ` Il te reste ${PP.euros(d.liquidites_eur)} : avec le ${PP.euros(frais)} de frais, `
-          + `tu peux acheter pour ${PP.euros(Math.max(0, d.liquidites_eur - frais))} au plus.`;
+        const possible = d.liquidites_eur - frais;
+        html += possible >= minimum
+          ? ` Il te reste ${fictif(d.liquidites_eur)} : avec le ${e(frais)} de frais, tu peux acheter pour `
+            + `${fictif(possible)} au plus.`
+          : ` Il te reste ${fictif(d.liquidites_eur)} : pas assez pour un achat (au moins ${e(minimum)}, `
+            + `plus ${e(frais)} de frais).`;
       }
     } else {
       const p = ligneDetenue();
       const q = form.elements.tout.checked ? p?.quantite : PP.nombreSaisi(form.elements.quantite.value);
-      texte = `Une vente coûte ${PP.euros(frais)} de frais, retenu sur ce qu'elle rapporte.`;
+      html = `Une vente coûte ${e(frais)} de frais, retenu sur ce qu'elle rapporte.`;
       if (p) {
-        texte += ` Tu détiens ${quantite(p.quantite)} ${p.ticker}.`;
+        html += ` Tu détiens ${num(quantite(p.quantite))} ${PP.esc(p.ticker)}.`;
         if (Number.isFinite(q) && q > 0 && p.prix_eur != null) {
-          texte += ` Au dernier cours de séance (${PP.euros(p.prix_eur)}, ${heureDuCours(p.minute)}), cette `
-            + `vente rapporterait environ ${PP.euros(q * p.prix_eur - frais)}, frais déduits.`;
+          const net = q * p.prix_eur - frais;
+          const auCours = `Au dernier cours de séance (${e(p.prix_eur)}, ${num(heureDuCours(p.minute))})`;
+          html += net >= 0
+            ? ` ${auCours}, cette vente rapporterait environ ${fictif(net)}, frais déduits.`
+            : ` ${auCours}, cette vente te coûterait environ ${fictif(-net)} : son ${e(frais)} de frais `
+              + 'dépasse ce qu\'elle rapporte.';
         }
       } else if (d) {
-        texte += ' Tu ne détiens aucune action dans ce défi.';
+        html += ' Tu ne détiens aucune action dans ce défi.';
       }
     }
-    $('#pa-aide').innerHTML = habiller(texte);
+    $('#pa-aide').innerHTML = html;
   }
 
   /* Le bouton d'envoi : fermé hors séance (ou défi fini), avec la raison
@@ -434,8 +450,9 @@
   function dessinerGuichet() {
     const d = etat.donnees;
     let ferme = '';
-    if (!d) ferme = etat.erreur ? 'Défi indisponible pour l\'instant : ordres impossibles.' : 'Chargement du défi…';
+    if (!d) ferme = etat.erreur ? `Défi indisponible pour l'instant (${etat.erreur}) : ordres impossibles.` : 'Chargement du défi…';
     else if (!d.ordres_ouverts) ferme = d.ordres_message || 'Ordres impossibles pour l\'instant.';
+    else if (sens() === 'vente' && !d.positions.length) ferme = 'Tu ne détiens aucune action dans ce défi : rien à vendre.';
     const envoyer = $('#pa-envoyer');
     const avaitLeFocus = document.activeElement === envoyer;
     envoyer.disabled = !!ferme || etat.envoi;
@@ -456,6 +473,7 @@
     form.elements.quantite.disabled = vente && form.elements.tout.checked;
     remplirValeurs();
     majAide();
+    dessinerGuichet();
   }
 
   const majCompte = () => { $('#pa-raison-n').textContent = String(form.elements.raison.value.length); };
@@ -530,14 +548,22 @@
     try {
       o = await envoyerOrdre(ordre);
     } catch (err) {
-      message(err.message, 'error');
+      message(lisible(err) === 'le serveur ne répond pas'
+        ? 'Pas de réponse du serveur : l\'ordre n\'est peut-être pas passé. Regarde tes ordres fictifs ci-dessous avant de réessayer.'
+        : err.message, 'error');
     }
     etat.envoi = false;
     dessinerGuichet();
     if (document.activeElement === document.body || !document.activeElement) {
       (envoyer.disabled ? form.elements.raison : envoyer).focus({ preventScroll: true });
     }
-    if (!o) return;
+    if (!o) {
+      /* Refusé, ou sans réponse : on relit le défi. Il dit peut-être
+         pourquoi (la séance vient de finir), ou montre l'ordre passé
+         malgré la panne. Le message du refus reste affiché. */
+      await tour();
+      return;
+    }
 
     const phrase = phraseOrdre(o);
     message(`${phrase} Mise à jour du défi…`, 'ok');
@@ -548,7 +574,14 @@
     majCompte();
     majChamps();
     await tour();
-    if ($('#pa-msg').textContent.startsWith(phrase)) message(`${phrase} Il est en haut de tes ordres fictifs.`, 'ok');
+    /* « En haut de tes ordres » seulement si la relecture le montre
+       vraiment ; et rien ne change si un autre message a pris la place. */
+    if (!$('#pa-msg').textContent.startsWith(phrase)) return;
+    const present = etat.donnees?.ordres.some((x) => x.date === o.date && x.ticker === o.ticker
+      && x.sens === o.sens && x.quantite === o.quantite);
+    message(present ? `${phrase} Il est en haut de tes ordres fictifs.`
+      : etat.erreur ? `${phrase} L'affichage n'a pas pu se mettre à jour (${etat.erreur}) : il se rafraîchira dans une minute.`
+        : `${phrase} Il apparaîtra dans tes ordres fictifs au prochain rafraîchissement.`, 'ok');
   });
 
   majChamps();

@@ -460,15 +460,12 @@ def mon_defi_papier():
 
 def ordre_papier(payload):
     """
-    Un ordre FICTIF. Seul le cache du défi est vidé : celui de
-    /api/stocks ne bouge pas (sinon chaque ordre relancerait le scan des
-    49 valeurs, et Yahoo refuse les rafales).
+    Un ordre FICTIF. Le cache de /api/stocks ne bouge pas (sinon chaque
+    ordre relancerait le scan des 49 valeurs, et Yahoo refuse les
+    rafales) ; /api/papier, lui, n'est jamais gardé en cache.
     """
     import papier
-    ordre = papier.passer_ordre(payload)
-    with _cache_lock:
-        _cache.pop("/api/papier", None)
-    return ordre
+    return papier.passer_ordre(payload)
 
 
 # Le graphique dépend de sa période : une minute pour la journée, plus
@@ -482,7 +479,8 @@ ROUTES = {
     "/api/thermometre":    (thermometre_du_marche, 3600),   # des cours de clôture : une heure suffit
     "/api/position":       (ma_position_en_direct, 60),
     "/api/journal":        (mon_journal, 0),      # recalculé à chaque fois, sur la position en cache (60 s)
-    "/api/papier":         (mon_defi_papier, 30), # vidé à chaque ordre fictif
+    "/api/papier":         (mon_defi_papier, 0),  # recalculé à chaque fois : papier.py garde déjà les cours 30 s.
+                                                  # Un cache ici pouvait ranger, après un ordre, un état lu avant lui.
     "/api/status":         (bots_status,    5),
     "/api/stocks":         (scan_stocks,    180),   # 3 min : yfinance est lent
     "/api/stocks/history": (stocks_history, 10),    # simple lecture de fichier

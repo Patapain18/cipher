@@ -230,6 +230,9 @@ html.pc-carnet-ouvert .shell { display: none; }
 
 /* La raison, en titre : c'est elle qu'on relira dans six mois. */
 .pc-raison {
+  /* Une raison peut contenir un lien ou un long mot sans espace : il
+     passe à la ligne au lieu d'élargir la page. */
+  overflow-wrap: anywhere;
   font-size: 30px;
   font-weight: 500;
   line-height: 1.2;
