@@ -1,0 +1,169 @@
+/* ============================================================
+   ma-position/papier.css — le défi papier, dans le carnet de bord
+   ============================================================
+   La matière du carnet (ses rubriques, ses lignes, son formulaire),
+   plus trois signes qui disent « argent fictif » sans rien faire
+   clignoter : un cadre pointillé, une étiquette posée sur son bord, et
+   le mot « fictif » après chaque montant.
+   ============================================================ */
+
+/* ── L'interrupteur, sous le titre ─────────────────────────── */
+.pa-mode {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin-top: var(--space-3);
+}
+.pa-mode-aide { margin: 0; font-size: 13px; color: var(--text-muted); }
+
+/* En mode papier, les parties réelles du carnet sont retirées : ni le
+   clavier ni un lecteur d'écran ne peuvent s'y égarer, et les deux
+   formulaires ne sont jamais visibles ensemble. Une règle de feuille
+   (pas l'attribut hidden) : le carnet remet hidden à jour seul, chaque
+   minute, sur certaines de ses parties. */
+.pc-vue.pa-papier #pc-avertissement,
+.pc-vue.pa-papier #pc-direct,
+.pc-vue.pa-papier .pc-colonne > .pc-section { display: none; }
+
+/* ── Le cadre du défi ──────────────────────────────────────── */
+.pa-zone { margin-top: var(--space-5); }
+.pa-cadre {
+  position: relative;
+  padding: var(--space-5) var(--space-5) var(--space-6);
+  border: 1.5px dashed color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-radius: var(--radius-md);
+}
+/* L'étiquette posée sur le bord du cadre, comme sur une chemise de
+   dossier. Elle double ce que dit le titre : aria-hidden. */
+.pa-tampon {
+  position: absolute;
+  top: 0;
+  right: var(--space-5);
+  margin: 0;
+  padding: 2px 10px;
+  transform: translateY(-50%);
+  background: var(--bg);
+  border: 1.5px dashed color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.pa-section + .pa-section { margin-top: var(--space-6); }
+.pa-avertissement {
+  margin-top: var(--space-3);
+  max-width: 44em;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+/* Le mot « fictif » après chaque montant du défi. Petit, à l'encre de
+   l'appli, jamais en couleur de hausse ou de baisse. Le texte affiché
+   suffit aux yeux ; un lecteur d'écran l'entend déjà dans les titres
+   (« Le défi papier », « Tes ordres fictifs »). */
+.pa-somme::after {
+  content: 'fictif';
+  margin-left: 0.4em;
+  font-family: var(--font-sans);
+  font-size: clamp(9px, 0.42em, 12px);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  vertical-align: 0.2em;
+  color: var(--accent);
+}
+
+/* ── Le défi en chiffres ───────────────────────────────────── */
+.pa-chiffres { padding-top: var(--space-4); }
+.pa-jour { padding-top: 12px; }
+.pa-jour strong { font-size: 15px; color: var(--text); }
+.pa-registre { margin-top: var(--space-3); max-width: 30rem; }
+.pa-note,
+.pa-regle {
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.pa-regle { max-width: 36em; font-size: 15px; }
+.pa-note .num, .pa-regle .num { color: var(--text); }
+
+/* ── Les positions ─────────────────────────────────────────── */
+/* Sous 700 px, le tableau défile à l'horizontale : le cadre prend
+   alors le focus clavier (tabindex), comme le tableau de la vue plan. */
+.pa-table-cadre { margin-top: var(--space-4); overflow-x: auto; }
+.pa-table-cadre:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pa-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.pa-table caption {
+  padding-bottom: 6px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.pa-table th,
+.pa-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+  white-space: nowrap;
+}
+.pa-table th:first-child { padding-left: 0; text-align: left; }
+.pa-table td:last-child { padding-right: 0; }
+.pa-table thead th {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border-bottom-color: var(--border-strong);
+}
+.pa-table tbody th { font-weight: 600; }
+/* Les règles des tableaux de la vue plan (en-tête collant sur fond
+   clair aux coins arrondis, ligne survolée) n'ont rien à faire dans
+   une page de carnet. */
+.pa-table thead th { position: static; background: transparent; border-radius: 0; }
+.pa-table tbody tr:hover { background: transparent; }
+.pa-table tbody tr:last-child > * { border-bottom: 0; }
+
+/* ── Le formulaire ─────────────────────────────────────────── */
+/* « Tout vendre » s'aligne sur le bas des champs voisins. */
+.pa-champ-tout { display: flex; align-items: flex-end; }
+.pa-case {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 2.4rem;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+.pa-case input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.pa-case input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Hors séance : la raison du refus, juste au-dessus du bouton fermé.
+   À l'encre, sans rouge : ce n'est pas une erreur, c'est l'heure. */
+.pa-ferme {
+  margin-top: var(--space-3);
+  padding: 8px 12px;
+  border-left: 2px solid var(--border-strong);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.pa-ferme .num { color: var(--text); }
+.pa-form .btn:disabled { cursor: not-allowed; opacity: 0.55; }
+
+/* ── Fenêtre étroite ───────────────────────────────────────── */
+@media (max-width: 700px) {
+  .pa-cadre { padding: var(--space-4) var(--space-3) var(--space-5); }
+  .pa-tampon { right: var(--space-3); }
+}

@@ -8,6 +8,8 @@
   <link rel="stylesheet" href="style.css">
   <!-- « Ma position », le carnet de bord (touche P) -->
   <link rel="stylesheet" href="ma-position/carnet.css">
+  <!-- Le défi papier, dans le carnet (interrupteur « Réel / Papier ») -->
+  <link rel="stylesheet" href="ma-position/papier.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23f4f1ea'/><path d='M6 22 L13 14 L18 18 L26 8' stroke='%2324476e' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
 </head>
 <body>
@@ -242,7 +244,7 @@
   </section>
 
   <footer>
-    <span id="footer-note">Serveur local — aucun ordre, aucune clé d'API. Il n'écrit qu'une chose : ton journal.</span>
+    <span id="footer-note">Serveur local — aucun ordre réel, aucune clé d'API. Il n'écrit que deux choses : ton journal et ton défi papier, fictif.</span>
   </footer>
 
 </main>
@@ -256,5 +258,7 @@
 <!-- Le carnet de bord de « Ma position », après app.js et vue3d.js : il
      range son bouton dans l'en-tête et sa note sous le résumé. -->
 <script src="ma-position/carnet.js"></script>
+<!-- Le défi papier, après le carnet : il s'y range (interrupteur « Réel / Papier »). -->
+<script src="ma-position/papier.js"></script>
 </body>
 </html>

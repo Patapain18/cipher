@@ -974,6 +974,9 @@
        marché. */
     if (!surveillance) surveillance = PP.surveiller(tour);
     else surveillance.maintenant();
+    /* Le défi papier (papier.js) se range dans cette vue : il apprend
+       ainsi qu'elle vient de s'ouvrir. */
+    document.dispatchEvent(new CustomEvent('carnet:ouvert'));
   }
 
   function fermer() {
@@ -984,6 +987,7 @@
     racine.classList.remove('pc-carnet-ouvert');
     window.scrollTo(0, defilementAvant);
     bouton.focus({ preventScroll: true });
+    document.dispatchEvent(new CustomEvent('carnet:ferme'));
   }
 
   bouton.addEventListener('click', ouvrir);

@@ -404,14 +404,17 @@ def mon_journal():
 
 
 # ══════════════════════════════════════════════════════════════════
-#  LE JOURNAL  —  la seule écriture du serveur
+#  LES DEUX ÉCRITURES DU SERVEUR : LE JOURNAL ET LE DÉFI PAPIER
 # ══════════════════════════════════════════════════════════════════
 #
-#  Le serveur était jusqu'ici en lecture pure. Sa seule écriture est
-#  l'ajout d'une décision au journal (`ma_position.ajouter_decision`),
-#  qui tient aussi à jour `data/stock_positions.json`, le carnet du bot.
-#  Aucun ordre n'est émis, aucune clé d'API n'entre en jeu — on note ce
-#  qui a déjà eu lieu chez le courtier, rien de plus.
+#  Le serveur était jusqu'ici en lecture pure. Il écrit deux choses :
+#    - le journal : l'ajout d'une décision déjà passée chez le courtier
+#      (`ma_position.ajouter_decision`), qui tient aussi à jour
+#      `data/stock_positions.json`, le carnet du bot ;
+#    - le défi papier (`papier.passer_ordre`) : un ordre FICTIF, ajouté
+#      à `data/papier.json` et à rien d'autre. Il ne touche ni le
+#      journal ni le carnet du bot.
+#  Aucun ordre réel n'est émis, aucune clé d'API n'entre en jeu.
 #
 #  Les anciennes routes /api/positions/add et /remove écrivaient le
 #  carnet SANS le journal : retirées le 13/11/2026, quand le carnet de
@@ -449,6 +452,25 @@ def ajouter_au_journal(payload):
     return decision
 
 
+def mon_defi_papier():
+    """Le défi papier (papier.py) : liquidités, positions, ordres, séance, tout en FICTIF."""
+    import papier
+    return papier.etat()
+
+
+def ordre_papier(payload):
+    """
+    Un ordre FICTIF. Seul le cache du défi est vidé : celui de
+    /api/stocks ne bouge pas (sinon chaque ordre relancerait le scan des
+    49 valeurs, et Yahoo refuse les rafales).
+    """
+    import papier
+    ordre = papier.passer_ordre(payload)
+    with _cache_lock:
+        _cache.pop("/api/papier", None)
+    return ordre
+
+
 # Le graphique dépend de sa période : une minute pour la journée, plus
 # longtemps pour le mois et l'année, qui ne bougent qu'une fois par barre.
 GRAPHIQUE_CACHE = {"1j": 60, "1m": 600, "1a": 3600}
@@ -460,6 +482,7 @@ ROUTES = {
     "/api/thermometre":    (thermometre_du_marche, 3600),   # des cours de clôture : une heure suffit
     "/api/position":       (ma_position_en_direct, 60),
     "/api/journal":        (mon_journal, 0),      # recalculé à chaque fois, sur la position en cache (60 s)
+    "/api/papier":         (mon_defi_papier, 30), # vidé à chaque ordre fictif
     "/api/status":         (bots_status,    5),
     "/api/stocks":         (scan_stocks,    180),   # 3 min : yfinance est lent
     "/api/stocks/history": (stocks_history, 10),    # simple lecture de fichier
@@ -562,6 +585,7 @@ class Handler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         actions = {
             "/api/journal/ajouter": ajouter_au_journal,
+            "/api/papier/ordre":    ordre_papier,
         }
         if path not in actions:
             self.send_error(404)
@@ -586,16 +610,17 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(500, {"ok": False, "error": str(e)})
             return
 
-        # Les positions viennent de changer : le prochain appel à
-        # /api/stocks doit les refléter, pas resservir un scan calculé
-        # avant l'ajout.
-        with _cache_lock:
-            ancien = _cache.pop("/api/stocks", None)
-            if ancien:
-                # Le classement, lui, ne dépend pas du carnet : on le garde
-                # pour le rang de « Ma position » jusqu'au prochain scan
-                # (sinon le rang reste « en attente » une minute).
-                _cache["/api/stocks:classement"] = ancien
+        # Une vraie décision change les positions du bot : le prochain appel
+        # à /api/stocks doit les refléter, pas resservir un scan calculé
+        # avant l'ajout. Un ordre fictif, lui, ne change rien au bot.
+        if path == "/api/journal/ajouter":
+            with _cache_lock:
+                ancien = _cache.pop("/api/stocks", None)
+                if ancien:
+                    # Le classement, lui, ne dépend pas du carnet : on le garde
+                    # pour le rang de « Ma position » jusqu'au prochain scan
+                    # (sinon le rang reste « en attente » une minute).
+                    _cache["/api/stocks:classement"] = ancien
 
         self._json(200, {"ok": True, "data": result})
 
