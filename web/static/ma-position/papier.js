@@ -431,12 +431,29 @@
       if (p) {
         html += ` Tu détiens ${num(quantite(p.quantite))} ${PP.esc(p.ticker)}.`;
         if (Number.isFinite(q) && q > 0 && p.prix_eur != null) {
-          const net = q * p.prix_eur - frais;
+          /* Les mêmes règles que le serveur (papier.py) : une quantité égale
+             à tout ce qu'on détient vaut « Tout vendre » ; une vente
+             partielle doit rapporter plus que son frais et laisser au moins
+             le minimum. Seule « Tout vendre » peut coûter plus qu'elle ne
+             rapporte. */
+          const tout = form.elements.tout.checked || Math.abs(q - p.quantite) <= 1e-9;
+          const brut = q * p.prix_eur;
+          const reste = (p.quantite - q) * p.prix_eur;
           const auCours = `Au dernier cours de séance (${e(p.prix_eur)}, ${num(heureDuCours(p.minute))})`;
-          html += net >= 0
-            ? ` ${auCours}, cette vente rapporterait environ ${fictif(net)}, frais déduits.`
-            : ` ${auCours}, cette vente te coûterait environ ${fictif(-net)} : son ${e(frais)} de frais `
+          if (!tout && q > p.quantite) {
+            html += ' C\'est plus que ce que tu détiens.';
+          } else if (!tout && brut <= frais) {
+            html += ` ${auCours}, cette vente rapporterait environ ${fictif(brut)}, pas plus que son ${e(frais)} `
+              + 'de frais : coche « Tout vendre » pour fermer la ligne.';
+          } else if (!tout && reste < minimum) {
+            html += ` ${auCours}, il ne resterait qu'environ ${fictif(reste)} ${PP.esc(PP.de(p.ticker))} : `
+              + 'vends tout, ou une plus petite part.';
+          } else if (brut - frais >= 0) {
+            html += ` ${auCours}, cette vente rapporterait environ ${fictif(brut - frais)}, frais déduits.`;
+          } else {
+            html += ` ${auCours}, cette vente te coûterait environ ${fictif(frais - brut)} : son ${e(frais)} de frais `
               + 'dépasse ce qu\'elle rapporte.';
+          }
         }
       } else if (d) {
         html += ' Tu ne détiens aucune action dans ce défi.';

@@ -281,19 +281,37 @@ def fraiche(minute, maintenant, age_max=AGE_MAX_S):
     return -AVANCE_TOLEREE_S <= age <= age_max
 
 
+def _seances(periode):
+    """
+    Ce que Yahoo dit de la séance, tel qu'un lecteur de cours le rend :
+    None, une séance (début, fin), ou {"jour": …, "courante": …}. Renvoie
+    (la séance du jour de la minute, la séance courante ou à venir).
+    """
+    if not periode:
+        return None, None
+    if isinstance(periode, dict):
+        return periode.get("jour"), periode.get("courante")
+    return periode, periode
+
+
 def en_seance(minute, maintenant, periode=None):
     """
-    Un ordre est-il possible maintenant ? La minute est fraîche ET on est
-    dans la séance : celle que donne Yahoo (jours fériés et séances
-    raccourcies compris), sinon 9 h 30 – 16 h à New York, en semaine.
+    Un ordre est-il possible maintenant ? La minute est fraîche, on est en
+    semaine, ET dans la séance : celle que Yahoo donne pour ce jour (jours
+    fériés et séances raccourcies compris), jamais au-delà de 16 h à New
+    York ; sans Yahoo, 9 h 30 – 16 h.
     """
     if not fraiche(minute, maintenant):
         return False
-    if periode:
-        return periode[0] <= maintenant < periode[1]
     ny = maintenant.astimezone(NEW_YORK)
+    if ny.weekday() >= 5:
+        return False
     ouverture, cloture = seance_du_jour(ny.date())
-    return ny.weekday() < 5 and ouverture <= maintenant < cloture
+    jour, courante = _seances(periode)
+    seance = jour or courante
+    if seance:
+        return seance[0] <= maintenant < min(seance[1], cloture)
+    return ouverture <= maintenant < cloture
 
 
 # ── Les mots ──────────────────────────────────────────────────────
@@ -354,28 +372,39 @@ def message_fermee(maintenant, symbole=None, minute=None, periode=None):
 
     ny = maintenant.astimezone(NEW_YORK)
     ouverture, cloture = seance_du_jour(ny.date())
-    jour_de_semaine = ny.weekday() < 5
-    if periode and periode[0] > maintenant:
-        # Yahoo annonce déjà la prochaine séance : jour férié et séance raccourcie compris.
-        if jour_de_semaine and ouverture <= maintenant < cloture and jour_paris(periode[0]) != jour_paris(maintenant):
-            return f"Pas de séance à New York aujourd'hui. {annonce(*periode, sur=True)}"
-        if ny.weekday() >= 5:
-            return f"La Bourse de New York est fermée le week-end. {annonce(*periode, sur=True)}"
-        debut = "La séance de New York n'a pas commencé" if maintenant < ouverture or \
-            jour_paris(periode[0]) == jour_paris(maintenant) else "La séance de New York est finie"
-        return f"{debut}. {annonce(*periode, sur=True)}"
-    if periode and periode[0] <= maintenant and periode[1] <= maintenant and periode[1] < cloture \
-            and jour_paris(periode[1]) == jour_paris(maintenant):
-        return (f"La séance de New York a fermé plus tôt aujourd'hui, à {heure_fr(periode[1])} "
-                f"(heure de Paris). {annonce(*prochaine_seance(maintenant, des_demain=True))}")
-    if not jour_de_semaine:
+    en_semaine = ny.weekday() < 5
+    aujourd_hui = jour_paris(maintenant)
+    jour, courante = _seances(periode)
+    pour = f" pour {nom(symbole)}" if symbole else ""
+    depuis = f" (le dernier date de {quand_fr(minute, maintenant)})" if minute else ""
+
+    # 1. La séance du jour a fermé plus tôt (séance raccourcie, d'après Yahoo).
+    for s in (jour, courante):
+        if s and s[1] <= maintenant and s[1] < cloture and jour_paris(s[1]) == aujourd_hui:
+            return (f"La séance de New York a fermé plus tôt aujourd'hui, à {heure_fr(s[1])} "
+                    f"(heure de Paris). {annonce(*prochaine_seance(maintenant, des_demain=True))}")
+    # 2. Yahoo annonce la prochaine séance : ses horaires exacts.
+    if courante and courante[0] > maintenant:
+        if not en_semaine:
+            debut = "La Bourse de New York est fermée le week-end"
+        elif jour_paris(courante[0]) == aujourd_hui:
+            debut = "La séance de New York n'a pas commencé"
+        elif maintenant < cloture:
+            debut = "Pas de séance à New York aujourd'hui"
+        else:
+            debut = "La séance de New York est finie"
+        return f"{debut}. {annonce(*courante, sur=True)}"
+    # 3. Yahoo dit la séance ouverte, mais la minute est vieille.
+    if courante and courante[0] <= maintenant < courante[1]:
+        return (f"Pas de cours récent{pour}{depuis} : Yahoo est peut-être en retard, ou la valeur "
+                "est suspendue. Réessaie dans une minute.")
+    # 4. Sans Yahoo : la semaine de New York, sous réserve des jours fériés.
+    if not en_semaine:
         return f"La Bourse de New York est fermée le week-end. {annonce(*prochaine_seance(maintenant))}"
     if maintenant < ouverture:
         return f"La séance de New York n'a pas commencé. {annonce(ouverture, cloture)}"
     if maintenant >= cloture:
         return f"La séance de New York est finie. {annonce(*prochaine_seance(maintenant))}"
-    pour = f" pour {nom(symbole)}" if symbole else ""
-    depuis = f" (le dernier date de {quand_fr(minute, maintenant)})" if minute else ""
     return (f"Pas de cours de séance récent{pour}{depuis} : jour férié à New York, fin d'une "
             "séance raccourcie, ou Yahoo en retard. Ordres impossibles pour l'instant.")
 
@@ -384,18 +413,41 @@ def message_fermee(maintenant, symbole=None, minute=None, periode=None):
 #  LES COURS (réseau)
 # ══════════════════════════════════════════════════════════════════
 
-_memo = {}   # symbole → (instant de lecture, cours, minute en UTC, séance de Yahoo ou None)
+_memo = {}   # symbole → (instant de lecture, cours, minute en UTC, séances de Yahoo)
 
 
-def _seance_de_yahoo(meta):
-    """La séance régulière que Yahoo annonce (jours fériés et séances raccourcies compris), ou None."""
+def _seances_de_yahoo(meta, minute):
+    """
+    Ce que Yahoo dit de la séance régulière :
+    - "jour" : la séance du jour de la minute, dans sa liste par jour
+      (tradingPeriods ; vérifié le 16/11/2026 sur la séance raccourcie du
+      28/11/2025, de 9 h 30 à 13 h). Elle n'y est qu'une fois la séance
+      commencée ;
+    - "courante" : la séance en cours ou à venir (currentTradingPeriod),
+      qui sert à annoncer la prochaine.
+    """
+    meta = meta or {}
+    jour = None
     try:
-        reg = (meta or {})["currentTradingPeriod"]["regular"]
+        tp = meta.get("tradingPeriods")
+        date_minute = minute.astimezone(NEW_YORK).date()
+        if tp is not None and hasattr(tp, "iterrows"):
+            for _, ligne in tp.iterrows():
+                debut = pd.Timestamp(ligne["start"]).tz_convert("UTC").to_pydatetime()
+                fin = pd.Timestamp(ligne["end"]).tz_convert("UTC").to_pydatetime()
+                if debut.astimezone(NEW_YORK).date() == date_minute and debut < fin:
+                    jour = (debut, fin)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        jour = None
+    courante = None
+    try:
+        reg = meta["currentTradingPeriod"]["regular"]
         debut = datetime.fromtimestamp(int(reg["start"]), UTC)
         fin = datetime.fromtimestamp(int(reg["end"]), UTC)
+        courante = (debut, fin) if debut < fin else None
     except (KeyError, TypeError, ValueError, OverflowError):
-        return None
-    return (debut, fin) if debut < fin else None
+        courante = None
+    return {"jour": jour, "courante": courante}
 
 
 def minute_de_seance(symbole, relire=False):
@@ -419,7 +471,7 @@ def minute_de_seance(symbole, relire=False):
     minute = pd.Timestamp(c.index[-1]).tz_convert("UTC").to_pydatetime()
     if not math.isfinite(cours) or cours <= 0:
         raise ValueError(f"cours illisible pour {symbole}")
-    periode = _seance_de_yahoo(getattr(t, "history_metadata", None))
+    periode = _seances_de_yahoo(getattr(t, "history_metadata", None), minute)
     _memo[symbole] = (time.monotonic(), cours, minute, periode)
     return cours, minute, periode
 
@@ -744,7 +796,13 @@ def verifier():
         def __init__(self, symbole):
             self.symbole = symbole
             debut = int(datetime(2026, 11, 27, 14, 30, tzinfo=UTC).timestamp())
-            self.history_metadata = {"currentTradingPeriod": {"regular": {"start": debut, "end": debut + 3.5 * 3600}}}
+            # La liste par jour, comme Yahoo la rend : la séance raccourcie du 27/11 (9 h 30 – 13 h à New York).
+            par_jour = pd.DataFrame({"start": [pd.Timestamp("2026-11-25 09:30", tz="America/New_York"),
+                                               pd.Timestamp("2026-11-27 09:30", tz="America/New_York")],
+                                     "end": [pd.Timestamp("2026-11-25 16:00", tz="America/New_York"),
+                                             pd.Timestamp("2026-11-27 13:00", tz="America/New_York")]})
+            self.history_metadata = {"currentTradingPeriod": {"regular": {"start": debut, "end": debut + 3.5 * 3600}},
+                                     "tradingPeriods": par_jour}
 
         def history(self, **kw):
             FauxTicker.appels.append(kw)
@@ -765,9 +823,11 @@ def verifier():
         kw = FauxTicker.appels[0]
         ok("lecture : séance normale seulement (prepost=False), en minutes",
            kw.get("prepost") is False and kw.get("interval") == "1m")
-        ok("lecture : la dernière minute (102,5 $ à 17:59 UTC) et la séance raccourcie de Yahoo (fin 18:00 UTC)",
+        ok("lecture : la dernière minute (102,5 $ à 17:59 UTC) et la séance raccourcie du jour (fin 18:00 UTC), "
+           "prise dans la liste par jour de Yahoo",
            c1[0] == 102.5 and c1[1] == datetime(2026, 11, 27, 17, 59, tzinfo=UTC)
-           and c1[2][1] == datetime(2026, 11, 27, 18, 0, tzinfo=UTC))
+           and c1[2]["jour"] == (datetime(2026, 11, 27, 14, 30, tzinfo=UTC), datetime(2026, 11, 27, 18, 0, tzinfo=UTC))
+           and c1[2]["courante"][1] == datetime(2026, 11, 27, 18, 0, tzinfo=UTC))
         ok("lecture : gardée 30 s pour l'affichage, relue pour un ordre",
            len(FauxTicker.appels) == 2 and c2 == c1 and c3 == c1)
     finally:
@@ -870,6 +930,40 @@ def _verifier_defi(dossier, ok, faux, refus, empreinte, cours, T0, m, proche):
        "lundi 15 mars, de 14 h 30 à 21 h" in message_fermee(datetime(2027, 3, 13, 12, 0, tzinfo=UTC_)))
     ok("samedi 0 h 30 à Paris, c'est encore vendredi soir à New York : « finie », pas « week-end »",
        "est finie" in message_fermee(datetime(2026, 11, 20, 23, 30, tzinfo=UTC_)))
+
+    # Ce que dit Yahoo de la séance, quand il le dit (« jour » : la liste par jour ; « courante » : en cours ou à venir).
+    lundi = lambda h, mi=0: datetime(2026, 11, 23, h, mi, tzinfo=UTC_)
+    seance_lundi = (lundi(14, 30), lundi(21))
+    seance_mardi = (datetime(2026, 11, 24, 14, 30, tzinfo=UTC_), datetime(2026, 11, 24, 21, 0, tzinfo=UTC_))
+    mercredi = (datetime(2026, 11, 25, 14, 30, tzinfo=UTC_), datetime(2026, 11, 25, 21, 0, tzinfo=UTC_))
+    msg = message_fermee(lundi(8), "SPY", vendredi_cloture, {"jour": None, "courante": seance_lundi})
+    ok(f"lundi 9 h, Yahoo annonce la séance du jour → « {msg} »",
+       "n'a pas commencé" in msg and "aujourd'hui, de 15 h 30 à 22 h, heure de Paris." in msg and "sauf" not in msg)
+    msg = message_fermee(lundi(21, 30), "SPY", lundi(20, 59), {"jour": seance_lundi, "courante": seance_mardi})
+    ok(f"lundi 22 h 30, Yahoo annonce déjà mardi → « {msg} »", "est finie" in msg and "demain" in msg)
+    msg = message_fermee(datetime(2026, 11, 26, 8, 0, tzinfo=UTC_), "SPY", mercredi[1],
+                         {"jour": mercredi, "courante": vendredi_court})
+    ok(f"matin de Thanksgiving, Yahoo annonce vendredi → « {msg} »",
+       "Pas de séance à New York aujourd'hui" in msg and "demain, de 15 h 30 à 19 h" in msg)
+    msg = message_fermee(datetime(2026, 11, 27, 18, 1, 30, tzinfo=UTC_), "SPY", datetime(2026, 11, 27, 17, 59, tzinfo=UTC_),
+                         {"jour": vendredi_court, "courante": (datetime(2026, 11, 30, 14, 30, tzinfo=UTC_),
+                                                             datetime(2026, 11, 30, 21, 0, tzinfo=UTC_))})
+    ok(f"vendredi 27/11 après 19 h, Yahoo annonce déjà lundi → « {msg} »",
+       "a fermé plus tôt aujourd'hui" in msg and "Pas de séance" not in msg)
+    msg = message_fermee(lundi(16), "NVDA", lundi(15, 50), {"jour": seance_lundi, "courante": seance_lundi})
+    ok(f"en pleine séance, une minute vieille de 10 min → « {msg} »",
+       "Yahoo est peut-être en retard, ou la valeur est suspendue" in msg and "jour férié" not in msg)
+    ok("en semaine seulement, même sans Yahoo : une minute « fraîche » un samedi ne vaut rien",
+       not en_seance(samedi - timedelta(seconds=60), samedi))
+    r_ok, texte = refus(lambda: ordre(achat(50), lundi(21), faux({"NVDA": (110.0, lundi(20, 59)),
+                                                                 "EURUSD=X": (1.10, lundi(20, 59)),
+                                                                 "SPY": (660.0, lundi(20, 59))})), "est finie")
+    ok(f"refusé : un ordre à 22 h pile (16 h à New York) → « {texte} »", r_ok and empreinte(f) is None)
+    r_ok, texte = refus(lambda: ordre(achat(50), lundi(21, 1), faux({"NVDA": (110.0, lundi(20, 59), (lundi(14, 30), lundi(23))),
+                                                                    "EURUSD=X": (1.10, lundi(20, 59)),
+                                                                    "SPY": (660.0, lundi(20, 59), (lundi(14, 30), lundi(23)))})))
+    ok("refusé : jamais après 16 h à New York, même si Yahoo annonçait une séance plus longue",
+       r_ok and empreinte(f) is None)
 
     r_ok, texte = refus(lambda: ordre(achat(50), T0, faux({"NVDA": (110.0, m(T0)), "EURUSD=X": (1.10, m(T0, 1200)),
                                                           "SPY": (660.0, m(T0))})), "dollar")
@@ -1064,11 +1158,19 @@ def _verifier_defi(dossier, ok, faux, refus, empreinte, cours, T0, m, proche):
                                   "SPY": (660.0, m(t_court), court)}), fichier=f4)
     ok("séance raccourcie : un ordre à 18 h 30 (heure de Paris) passe", len(lire(f4)["ordres"]) == 1)
 
+    # ── 10 bis. Une quantité tapée égale à tout ce qu'on détient ferme la ligne, comme « Tout vendre ».
+    f5 = os.path.join(dossier, "papier-5.json")
+    passer_ordre(achat(10), maintenant=T0, lire_cours=cours(T0), fichier=f5)
+    passer_ordre(vente(0.1), maintenant=T0, lire_cours=cours(T0), fichier=f5)
+    ok("vendre 0,1 quand on en détient 0,1 : la ligne est fermée, sans refus « miette »",
+       rejouer(lire(f5))["positions"] == [] and len(lire(f5)["ordres"]) == 2)
+
     # ── 11. Rien d'autre n'est écrit que les fichiers du défi et leur verrou.
     restes = sorted(n for n in os.listdir(dossier) if n not in ("journal.json", "stock_positions.json"))
     ok("le dossier ne contient que les défis et leurs verrous (aucun fichier temporaire oublié)",
        restes == ["papier-2.json", "papier-2.json.verrou", "papier-3.json", "papier-3.json.verrou",
-                  "papier-4.json", "papier-4.json.verrou", "papier.json", "papier.json.verrou"])
+                  "papier-4.json", "papier-4.json.verrou", "papier-5.json", "papier-5.json.verrou",
+                  "papier.json", "papier.json.verrou"])
 
     # ── 12. Un fichier abîmé, ou d'une autre forme, n'est jamais remplacé.
     for contenu, mots in [("{abîmé", ("illisible",)), ('{"ordres": [{"sens": "achat"}]}', ("pas la forme",)),
