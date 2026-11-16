@@ -386,7 +386,10 @@
 
   /* La liste des valeurs : les 49 pour un achat, celles qu'on détient
      pour une vente. Réécrite seulement quand elle change : une liste
-     réécrite sous le curseur perdrait le choix en cours. */
+     réécrite sous le curseur perdrait le choix en cours. Sans action
+     détenue, un mot court : la liste a la largeur d'un ticker (« Aucune
+     action détenue » s'y coupait), et la phrase sous le formulaire dit
+     déjà pourquoi il n'y a rien à vendre. */
   function remplirValeurs() {
     const d = etat.donnees;
     if (!d) return;
@@ -397,7 +400,7 @@
     const choisi = select.value;
     select.innerHTML = liste.length
       ? liste.map((v) => `<option value="${PP.esc(v)}">${PP.esc(v)}</option>`).join('')
-      : '<option value="">Aucune action détenue</option>';
+      : '<option value="">Aucune</option>';
     select.value = liste.includes(choisi) ? choisi : liste.includes('NVDA') ? 'NVDA' : (liste[0] || '');
     deja.options = cle;
   }
