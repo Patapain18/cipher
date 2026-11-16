@@ -51,6 +51,13 @@ PARIS = ZoneInfo("Europe/Paris")
 CHANGE = "EURUSD=X"
 INDICE = "SPY"            # le S&P 500, tel qu'un ETF le suit
 FRAIS_VENTE = 1.0         # € : ce que coûterait une vente chez le courtier (1 € par ordre)
+# Les valeurs détenues HORS des 49 du bot (ajoutées le 16/11/2026). Le
+# journal les note et le carnet de bord les suit comme les autres (cours,
+# gain, duel face au S&P 500). Le bot ne
+# les classe pas, et son carnet en dollars (data/stock_positions.json)
+# ne les reçoit pas : le bot, le point de la semaine et leurs mesures
+# restent sur les 49.
+HORS_DU_BOT = ("TSLA",)
 AVERTISSEMENT = ("Des faits sur ton argent. Aucune prédiction, "
                  "aucun conseil d'achat ou de vente.")
 AVERTISSEMENT_INDICATEURS = ("Le score technique du bot, qui combine ces indicateurs, a été "
@@ -208,6 +215,11 @@ def cours_a(symbole, quand_utc):
 #  LE JOURNAL
 # ══════════════════════════════════════════════════════════════════
 
+def valeurs_du_journal():
+    """Ce que le journal accepte : les 49 valeurs du bot, plus celles détenues hors du bot."""
+    return sorted(set(engine.UNIVERSE) | set(HORS_DU_BOT))
+
+
 def lire_journal():
     try:
         with open(JOURNAL) as f:
@@ -235,8 +247,9 @@ def ajouter_decision(payload):
     ticker = str(payload.get("ticker", "")).strip().upper()
     if sens not in ("achat", "vente"):
         raise ValueError("le sens est « achat » ou « vente »")
-    if ticker not in engine.UNIVERSE:
-        raise ValueError(f"{ticker} ne fait pas partie des 49 valeurs suivies")
+    if ticker not in valeurs_du_journal():
+        raise ValueError(f"{ticker[:12]} ne fait pas partie des valeurs suivies "
+                         f"(les 49 du bot, plus {', '.join(HORS_DU_BOT)})")
     try:
         quantite = float(payload.get("quantite"))
         prix_eur = float(payload.get("prix_eur"))
@@ -265,6 +278,9 @@ def ajouter_decision(payload):
         journal.append(decision)
         _ecrire(JOURNAL, journal)
 
+        # Le carnet du bot ne reçoit que ses 49 valeurs : il ne suit pas les autres.
+        if ticker not in engine.UNIVERSE:
+            return decision
         try:
             with open(CARNET) as f:
                 carnet = json.load(f)
@@ -303,6 +319,7 @@ def position(rang_de=None):
         c = calcul_ligne(l["quantite"], l["cout_eur"], l["montant_eur"], prix_usd, eurusd)
         rang, classees = rang_de(l["ticker"]) if rang_de else (None, None)
         lignes.append({**l, **c, "cours_a": heure.isoformat(), "rang": rang, "classees": classees,
+                       "suivie_par_le_bot": l["ticker"] in engine.UNIVERSE,
                        "resultats": engine.prochaine_publication(l["ticker"])})
         valeur += c["valeur_eur"]
         cout += l["cout_eur"]
@@ -325,7 +342,7 @@ def journal_compare(prix_actuels=None, fx_actuel=None):
     les mêmes, sinon l'écran montre deux valeurs pour la même action.
     """
     journal = sorted(lire_journal(), key=lambda d: d["date"])
-    valeurs = sorted(engine.UNIVERSE)    # pour la liste du formulaire
+    valeurs = valeurs_du_journal()    # pour la liste du formulaire
     if not journal:
         return {"decisions": [], "valeurs": valeurs, "avertissement": AVERTISSEMENT}
     indice_maintenant, _ = cours_actuel(INDICE)
@@ -357,8 +374,8 @@ def graphique(ticker, periode):
     """Le cours en dollars et en euros, la ligne d'achat, et pour 1a les indicateurs."""
     if periode not in PERIODES:
         raise ValueError("période : 1j, 1m ou 1a")
-    if ticker != INDICE and ticker not in engine.UNIVERSE:
-        raise ValueError(f"{ticker} ne fait pas partie des valeurs suivies")
+    if ticker != INDICE and ticker not in valeurs_du_journal():
+        raise ValueError(f"{ticker[:12]} ne fait pas partie des valeurs suivies")
     cours = _historique(ticker, **PERIODES[periode])
     fx = _historique(CHANGE, **PERIODES[periode]).reindex(cours.index, method="ffill").bfill()
     if periode == "1j":
@@ -398,6 +415,9 @@ def graphique(ticker, periode):
 # ══════════════════════════════════════════════════════════════════
 
 def verifier():
+    # Remplacés le temps des cas « hors des 49 » (fichiers jetables, cours
+    # inventés), puis remis : aucun réseau, rien de réel n'est touché.
+    global JOURNAL, CARNET, cours_a, cours_actuel, _historique
     proche = lambda a, b, tol=1e-9: abs(a - b) < tol
     cas = []
 
@@ -449,6 +469,66 @@ def verifier():
     ok("moyenne mobile de 1, 2, 3 sur 3 jours : 2", proche(moyenne_mobile(pd.Series([1.0, 2.0, 3.0]), 3).iloc[-1], 2.0))
     m, s = macd(pd.Series([100.0] * 60))
     ok("MACD d'un cours immobile : 0", proche(m.iloc[-1], 0.0) and proche(s.iloc[-1], 0.0))
+
+    # ── Une valeur détenue hors des 49 (TSLA) : notée dans le journal et
+    #    suivie par le carnet de bord, jamais écrite dans le carnet du bot.
+    import tempfile
+
+    def refus(fn):
+        try:
+            fn()
+        except ValueError:
+            return True
+        return False
+
+    def sans_reseau(*_a, **_k):
+        raise RuntimeError("pas de réseau dans les vérifications")
+
+    reel = (JOURNAL, CARNET, cours_a, cours_actuel, _historique)
+    with tempfile.TemporaryDirectory() as dossier:
+        JOURNAL = os.path.join(dossier, "journal.json")
+        CARNET = os.path.join(dossier, "stock_positions.json")
+        _ecrire(CARNET, {})
+        instant = datetime.now(timezone.utc)
+        cours_a = lambda _symbole, _quand: 1.10
+        cours_actuel = lambda symbole: (1.10 if symbole == CHANGE else 330.0, instant)
+        _historique = sans_reseau
+        try:
+            prime = {"date": "2026-03-02T15:45:00", "sens": "achat", "ticker": "tsla",
+                     "quantite": 0.03, "prix_eur": 300.0, "montant_eur": 9.0, "frais_eur": 0}
+            note = not refus(lambda: ajouter_decision(prime))
+            j = lire_journal()
+            ok("TSLA, hors des 49, se note dans le journal",
+               note and len(j) == 1 and j[0]["ticker"] == "TSLA")
+            with open(CARNET) as f:
+                ok("… mais pas dans le carnet du bot, qui ne la suit pas", json.load(f) == {})
+            ok("une ligne notée à 0 € de frais coûte son seul montant : 9 €",
+               note and proche(agreger(j)[0]["cout_eur"], 9.0))
+            ok("une valeur ni dans les 49 ni détenue hors du bot est refusée, et rien n'est écrit",
+               refus(lambda: ajouter_decision({**prime, "ticker": "ZZZZ"})) and len(lire_journal()) == len(j))
+            ajouter_decision({**achat, "date": "2026-03-03T15:45:00"})
+            with open(CARNET) as f:
+                ok("une valeur des 49 met toujours le carnet du bot à jour", "MSFT" in json.load(f))
+            lignes = {l["ticker"]: l for l in position()["lignes"]}
+            ok("la position dit TSLA hors du bot, MSFT dedans",
+               lignes.get("TSLA", {}).get("suivie_par_le_bot") is False
+               and lignes.get("MSFT", {}).get("suivie_par_le_bot") is True)
+            v = lignes.get("TSLA", {}).get("valeur_eur", 0.0)
+            ok(f"TSLA à 330 $ et 1 € = 1,10 $ : {v:.2f} € (0,03 × 330 / 1,10 = 9,00 €)", abs(v - 9.0) < 0.01)
+            ok("le formulaire propose les 49 et TSLA, soit 50 valeurs",
+               len(valeurs_du_journal()) == 50 and set(engine.UNIVERSE) | {"TSLA"} == set(valeurs_du_journal()))
+            ok("le graphique refuse une valeur inconnue, avant tout appel réseau",
+               refus(lambda: graphique("ZZZZ", "1j")))
+            try:
+                graphique("TSLA", "1j")
+                passe = False
+            except RuntimeError:
+                passe = True      # la garde l'a laissée passer : il ne manquait que le réseau
+            except ValueError:
+                passe = False
+            ok("le graphique accepte TSLA (il irait chercher ses cours)", passe)
+        finally:
+            JOURNAL, CARNET, cours_a, cours_actuel, _historique = reel
 
     print(f"\n{sum(cas)}/{len(cas)} vérifications réussies")
     return all(cas)

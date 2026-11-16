@@ -455,8 +455,8 @@
     remplirValeurs();
   }
 
-  /* La liste du formulaire vient du serveur (les 49 valeurs suivies),
-     NVDA par défaut. Remplie une seule fois : une liste réécrite sous
+  /* La liste du formulaire vient du serveur (les 49 valeurs du bot, plus
+     celles détenues hors du bot : ma_position.HORS_DU_BOT), NVDA par défaut. Remplie une seule fois : une liste réécrite sous
      le curseur perdrait le choix en cours. */
   function remplirValeurs() {
     const valeurs = etat.journal?.valeurs;

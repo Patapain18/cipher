@@ -240,17 +240,23 @@ window.PP = (() => {
       achat: `À ${euros(l.seuil_achat_eur)}, ta position vaut ce qu'elle t'a coûté, frais d'achat compris.`,
       vente: `À ${euros(l.seuil_vente_eur)}, elle couvre aussi le ${euros(1, { decimales: 0 })} d'une vente.`,
     }),
-    /** « 3ᵉ sur 49 au classement momentum du bot » */
-    rang: (l) => (l.rang == null
-      ? 'Rang au classement momentum : en attente du scan du bot.'
-      : `${ordinal(l.rang)} sur ${l.classees} au classement momentum du bot`),
+    /** « 3ᵉ sur 49 au classement momentum du bot » ; une valeur détenue
+        hors des 49 (TSLA) n'a pas de rang, et ne l'attend pas. */
+    rang: (l) => (l.suivie_par_le_bot === false
+      ? `${l.ticker} n'est pas dans les 49 valeurs du bot : pas de rang au classement momentum.`
+      : l.rang == null
+        ? 'Rang au classement momentum : en attente du scan du bot.'
+        : `${ordinal(l.rang)} sur ${l.classees} au classement momentum du bot`),
     /** Le fait « au-delà du 25ᵉ », ou null. */
     alerteRang: (l) => (l.rang != null && l.rang > 25
       ? `${l.ticker} n'est plus dans la première moitié du classement momentum (${ordinal(l.rang)} sur ${l.classees}).`
       : null),
     /** « Prochains résultats de MSFT : mardi 27 janvier (dans 4 jours) » */
     resultats: (l) => {
-      if (!l.resultats) return `Prochains résultats ${de(l.ticker)} : date inconnue.`;
+      if (!l.resultats) {
+        return `Prochains résultats ${de(l.ticker)} : date inconnue`
+          + `${l.suivie_par_le_bot === false ? ' (le bot ne suit pas cette valeur)' : ''}.`;
+      }
       const n = joursAvant(l.resultats);
       const quand = n == null ? '' : n === 0 ? ' (aujourd\'hui)' : n === 1 ? ' (demain)'
         : n > 1 ? ` (dans ${n} jours)` : '';
