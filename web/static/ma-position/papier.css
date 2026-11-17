@@ -134,6 +134,41 @@
 .pa-table tbody tr:hover { background: transparent; }
 .pa-table tbody tr:last-child > * { border-bottom: 0; }
 
+/* ── Face au S&P 500 ───────────────────────────────────────── */
+/* Le registre du carnet (pc-registre), puis deux phrases : la part du
+   hasard, en retrait comme le « ne prédit rien » du score technique ;
+   la première séance gardée, à taille de lecture, car c'est la vraie
+   question des allers-retours. Le tableau reprend celui des positions. */
+.pa-duel { max-width: 34rem; }
+.pa-hasard {
+  margin-top: 10px;
+  max-width: 44em;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.pa-hasard .num { color: var(--text); }
+.pa-premiere {
+  margin-top: var(--space-4);
+  max-width: 36em;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text);
+}
+/* Son titre, hors du cadre qui défile, à la façon des légendes de tableau. */
+.pa-table-titre {
+  margin-top: var(--space-5);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.pa-cadre-resultat { margin-top: 6px; }
+/* Le résultat net sous un trait plein, comme l'écart du registre. Les
+   bordures du tableau sont fusionnées : le trait se pose sur le bas de
+   la ligne d'avant (un haut de cellule perdrait face à elle). */
+.pa-table-resultat tbody tr:nth-last-child(2) > * { border-bottom-color: var(--text); }
+.pa-table-resultat tbody tr:last-child > * { font-weight: 600; }
+
 /* ── Le formulaire ─────────────────────────────────────────── */
 /* « Tout vendre » s'aligne sur le bas des champs voisins. */
 .pa-champ-tout { display: flex; align-items: flex-end; }

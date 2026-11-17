@@ -97,6 +97,11 @@
         <div id="pa-positions"></div>
       </section>
 
+      <section class="pa-section" id="pa-section-duel" aria-labelledby="pa-t-duel" hidden>
+        <h3 class="pc-rubrique" id="pa-t-duel">Face au S&amp;P&nbsp;500</h3>
+        <div id="pa-duel"></div>
+      </section>
+
       <section class="pa-section" aria-labelledby="pa-t-ordre">
         <h3 class="pc-rubrique" id="pa-t-ordre">Passer un ordre fictif</h3>
         <form class="pc-form pa-form" id="pa-form" autocomplete="off" novalidate>
@@ -175,7 +180,7 @@
   const etat = { mode: 'reel', donnees: null, erreur: null, envoi: false };
   /* Ce qu'on a déjà dessiné : un tour qui ramène les mêmes chiffres ne
      réécrit rien (le focus et la lecture d'un lecteur d'écran restent). */
-  const deja = { resume: '', positions: '', ordres: '', ferme: null, options: '' };
+  const deja = { resume: '', positions: '', duel: '', ordres: '', ferme: null, options: '' };
   let ticket = 0;
   let surveillance = null;
   let premiereOuverture = true;
@@ -236,6 +241,7 @@
   function dessiner() {
     dessinerResume();
     dessinerPositions();
+    dessinerDuel();
     dessinerOrdres();
     remplirValeurs();
     majAide();
@@ -333,6 +339,81 @@
       $('#pa-positions').innerHTML = html;
       deja.positions = html;
       if (focus) $('.pa-table-cadre')?.focus({ preventScroll: true });
+    }
+  }
+
+  /* ------------------------------------------------------------
+     2 bis. FACE AU S&P 500 — le duel de tout le portefeuille
+     ------------------------------------------------------------
+     Le registre (ton portefeuille, le S&P 500, l'écart), la part du
+     hasard juste dessous (comme le « ne prédit rien » du score
+     technique), la première séance gardée, puis le résultat en trois
+     morceaux si tu vendais tout. Les chiffres ET les phrases viennent du
+     serveur (papier.py), qui les vérifie à la main.
+
+     Un serveur d'avant cette partie n'envoie pas « duel » : la section
+     reste cachée, et la page est exactement celle d'avant. La vraie
+     appli relit ce fichier tout de suite, mais son Python seulement
+     quand on la relance. */
+  function dessinerDuel() {
+    const d = etat.donnees;
+    const duel = d?.duel;
+    let html = '';
+    if (duel) {
+      const ph = d.phrases || {};
+      const r = d.resultat;
+      /* Une ligne du tableau : les montants avec leur signe, et l'écart
+         (toi moins le S&P 500) coloré, comme tout écart du carnet. Les
+         lignes s'additionnent : avant frais − frais − impôt = net. */
+      const ligne = (titre, toi, indice) => `
+        <tr>
+          <th scope="row">${titre}</th>
+          <td>${fictif(toi, { signe: true })}</td>
+          <td>${fictif(indice, { signe: true })}</td>
+          <td><span class="${PP.sens(toi - indice)}">${fictif(toi - indice, { signe: true })}</span></td>
+        </tr>`;
+      /* Le titre du tableau est HORS du cadre qui défile : au téléphone, le
+         tableau défile à l'horizontale, et une légende posée dedans y
+         était coupée (elle prend la largeur du tableau, pas celle de
+         l'écran). */
+      const tableau = !r ? '' : `
+        <p class="pa-table-titre" id="pa-legende-resultat">Ton résultat en trois morceaux, si tu vendais tout maintenant</p>
+        <div class="pa-table-cadre pa-cadre-resultat" tabindex="0" role="region" aria-labelledby="pa-legende-resultat">
+          <table class="pa-table pa-table-resultat" aria-labelledby="pa-legende-resultat">
+            <thead><tr>
+              <th scope="col">Le résultat</th><th scope="col">Toi</th>
+              <th scope="col">S&amp;P&nbsp;500</th><th scope="col">Écart</th>
+            </tr></thead>
+            <tbody>
+              ${ligne('Avant frais', r.toi.avant_frais_eur, r.indice.avant_frais_eur)}
+              ${ligne('Les frais', -r.toi.frais_eur, -r.indice.frais_eur)}
+              ${ligne(`L'impôt (${num(PP.pct(r.taux_impot, { decimales: 1, signe: false }))})`,
+                -r.toi.impot_eur, -r.indice.impot_eur)}
+              ${ligne('Résultat net', r.toi.net_eur, r.indice.net_eur)}
+            </tbody>
+          </table>
+        </div>
+        ${ph.resultat ? `<p class="pa-note">${habiller(ph.resultat)}</p>` : ''}`;
+      html = `
+        <div class="pc-duel pa-duel">
+          <dl class="pc-registre">
+            <div><dt>Ton portefeuille</dt><dd>${fictif(duel.toi_eur)}</dd></div>
+            <div><dt>Le S&amp;P&nbsp;500</dt><dd>${fictif(duel.indice_eur)}</dd></div>
+            <div class="pc-registre-ecart"><dt>Écart</dt>
+              <dd><span class="${PP.sens(duel.ecart_eur)}">${fictif(duel.ecart_eur, { signe: true })}</span></dd></div>
+          </dl>
+          ${ph.duel ? `<p class="pc-duel-phrase">${habiller(ph.duel)}</p>` : ''}
+          ${ph.hasard ? `<p class="pa-hasard">${habiller(ph.hasard)}</p>` : ''}
+        </div>
+        ${ph.premiere_seance ? `<p class="pa-premiere">${habiller(ph.premiere_seance)}</p>` : ''}
+        ${tableau}`;
+    }
+    $('#pa-section-duel').hidden = !duel;
+    if (html !== deja.duel) {
+      const focus = $('#pa-duel').contains(document.activeElement);
+      $('#pa-duel').innerHTML = html;
+      deja.duel = html;
+      if (focus) $('#pa-duel .pa-table-cadre')?.focus({ preventScroll: true });
     }
   }
 

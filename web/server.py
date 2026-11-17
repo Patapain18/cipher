@@ -30,6 +30,7 @@ LANCEMENT
 """
 
 import json
+import math
 import os
 import sys
 import time
@@ -84,6 +85,29 @@ HOTES_AUTORISES = {f"localhost:{PORT}", f"127.0.0.1:{PORT}"}
 
 _cache = {}
 _cache_lock = threading.Lock()
+
+
+# ── Une réponse toujours lisible par la page ─────────────────────
+#  json.dumps écrit un nombre non fini « NaN » ou « Infinity », que
+#  JSON.parse refuse : toute la réponse deviendrait illisible pour la
+#  page (le défi papier ou le carnet afficheraient une erreur). Un tel
+#  nombre part donc en null, que la page sait montrer (« — »).
+def _sans_nan(valeur):
+    if isinstance(valeur, float) and not math.isfinite(valeur):
+        return None
+    if isinstance(valeur, dict):
+        return {k: _sans_nan(v) for k, v in valeur.items()}
+    if isinstance(valeur, (list, tuple)):
+        return [_sans_nan(v) for v in valeur]
+    return valeur
+
+
+def encoder_json(body):
+    """Le corps d'une réponse, en JSON valide (sans NaN), en octets."""
+    try:
+        return json.dumps(body, default=str, allow_nan=False).encode()
+    except ValueError:      # un NaN quelque part : on ne le cherche que dans ce cas
+        return json.dumps(_sans_nan(body), default=str).encode()
 
 
 def cached(key, ttl_seconds, producer):
@@ -623,7 +647,7 @@ class Handler(SimpleHTTPRequestHandler):
         self._json(200, {"ok": True, "data": result})
 
     def _json(self, status, body):
-        raw = json.dumps(body, default=str).encode()
+        raw = encoder_json(body)
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
