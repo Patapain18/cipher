@@ -230,14 +230,37 @@ def _cours_gardes():
 
 
 def _garder_cours(cle, v):
+    """Ajoute un cours au fichier : sous un verrou entre processus (l'appli et la ligne de commande), en
+    relisant d'abord le fichier pour ne rien perdre de ce qu'un autre a écrit, par un fichier temporaire unique."""
+    import fcntl
+    import tempfile
     with _verrou_passe:
         d = _cours_gardes()
-        if d["lisible"] and d["valeurs"].get(cle) != v:
-            d["valeurs"][cle] = v
-            try:
-                _ecrire(d["chemin"], d["valeurs"])
-            except OSError as e:
-                print(f"[ma_position] cours passés pas gardés : {e}", file=sys.stderr)
+        if not d["lisible"] or d["valeurs"].get(cle) == v:
+            return
+        d["valeurs"][cle] = v
+        try:
+            os.makedirs(os.path.dirname(d["chemin"]), exist_ok=True)
+            with open(d["chemin"] + ".verrou", "a") as verrou:
+                fcntl.flock(verrou.fileno(), fcntl.LOCK_EX)
+                try:
+                    with open(d["chemin"]) as f:
+                        sur_disque = json.load(f)
+                    for k, x in sur_disque.items():
+                        if k not in d["valeurs"] and isinstance(x, (int, float)) and math.isfinite(x) and x > 0:
+                            d["valeurs"][k] = float(x)
+                except FileNotFoundError:
+                    pass
+                except (ValueError, AttributeError) as e:
+                    print(f"[ma_position] {d['chemin']} abîmé entre-temps, gardé tel quel : {e}", file=sys.stderr)
+                    d["lisible"] = False
+                    return
+                fd, tmp = tempfile.mkstemp(dir=os.path.dirname(d["chemin"]), prefix=".cours-", suffix=".tmp")
+                with os.fdopen(fd, "w") as f:
+                    json.dump(d["valeurs"], f, indent=1)
+                os.replace(tmp, d["chemin"])
+        except OSError as e:
+            print(f"[ma_position] cours passés pas gardés : {e}", file=sys.stderr)
 
 
 def cours_a(symbole, quand_utc):
@@ -424,10 +447,21 @@ def journal_compare(prix_actuels=None, fx_actuel=None):
     fx_maintenant = fx_actuel or cours_actuel(CHANGE)[0]
     prix_maintenant = dict(prix_actuels or {})
     sortie, achats = [], {}
+    # Le bilan du portefeuille : l'argent des ventes reste en caisse et paie d'abord les achats suivants ;
+    # seul ce qui manque est de l'argent versé, que le jumeau du portefeuille place dans SPY et garde.
+    caisse = verse = parts_versees = 0.0
     for d in journal:
         ligne = dict(d)
         quand = en_utc(d["date"])
         ligne["date_utc"] = quand.isoformat()
+        if d["sens"] == "achat":
+            depot = max(0.0, d["montant_eur"] - caisse)
+            caisse = max(0.0, caisse - d["montant_eur"])
+            if depot > 0:
+                verse += depot
+                parts_versees += depot * cours_a(CHANGE, quand) / cours_a(INDICE, quand)
+        else:
+            caisse += d["montant_eur"]
         if d["sens"] == "achat":
             achats.setdefault(d["ticker"], []).append({
                 "ligne": ligne, "reste": 1.0, "encaisse_eur": 0.0, "vendu": False,
@@ -447,27 +481,32 @@ def journal_compare(prix_actuels=None, fx_actuel=None):
                 a["reste"] *= 1 - part
                 a["vendu"] = True
         sortie.append(ligne)
-    toi = indice = 0.0
+    positions = 0.0
     nombre = devant = 0
     for ticker, lots in achats.items():
         if ticker not in prix_maintenant:
             prix_maintenant[ticker] = cours_actuel(ticker)[0]
         for a in lots:
-            # Le total du bilan additionne les valeurs exactes et n'arrondit qu'une fois : sans vente, il
-            # tombe sur la valeur de « Ta position » au centime près (vu le 17/11 : 198,34 contre 198,33).
-            choix_brut = (a["ligne"]["quantite"] * a["reste"] * prix_maintenant[ticker] / fx_maintenant
-                          + a["encaisse_eur"])
+            # Les positions s'additionnent en valeurs exactes et ne s'arrondissent qu'une fois : le bilan
+            # tombe sur « Ta position » au centime près (vu le 17/11 : 198,34 contre 198,33).
+            reste_brut = a["ligne"]["quantite"] * a["reste"] * prix_maintenant[ticker] / fx_maintenant
+            choix_brut = reste_brut + a["encaisse_eur"]
             jumeau_brut = a["parts_spy"] * indice_maintenant / fx_maintenant + a["jumeau_encaisse_eur"]
             choix, jumeau = round(choix_brut, 2), round(jumeau_brut, 2)
             if math.isfinite(choix) and math.isfinite(jumeau):
                 a["ligne"].update({"valeur_choix_eur": choix, "valeur_indice_eur": jumeau,
                                    "ecart_eur": round(choix - jumeau, 2), "ventes_comprises": a["vendu"]})
-                toi, indice, nombre = toi + choix_brut, indice + jumeau_brut, nombre + 1
+                positions, nombre = positions + reste_brut, nombre + 1
                 devant += round(choix - jumeau, 2) > 0
-    toi, indice = round(toi, 2), round(indice, 2)
+    # Le bilan : ce que tu as (positions + ventes pas réinvesties) contre l'argent versé, placé dans le
+    # S&P 500 aux mêmes dates et gardé. Une vente rachetée n'est donc jamais comptée deux fois.
+    toi = round(positions + caisse, 2)
+    indice = round(parts_versees * indice_maintenant / fx_maintenant, 2)
     bilan = ({"toi_eur": toi, "indice_eur": indice, "ecart_eur": round(toi - indice, 2),
+              "positions_eur": round(positions, 2), "encaisse_eur": round(caisse, 2), "verse_eur": round(verse, 2),
               "achats": nombre, "devant": devant,
-              "ventes": any(a["vendu"] for lots in achats.values() for a in lots)} if nombre else None)
+              "ventes": any(a["vendu"] for lots in achats.values() for a in lots)}
+             if nombre and math.isfinite(toi) and math.isfinite(indice) else None)
     return {"decisions": sortie, "indice": "S&P 500 (SPY)", "valeurs": valeurs, "bilan": bilan,
             "avertissement": AVERTISSEMENT}
 
@@ -663,7 +702,7 @@ def _verifier_lot3(ok, proche):
             passes = {("SPY", "2026-03-02"): 600.0, ("SPY", "2026-03-03"): 640.0, ("SPY", "2026-03-04"): 660.0,
                       ("EURUSD=X", "2026-03-02"): 1.20, ("EURUSD=X", "2026-03-03"): 1.20, ("EURUSD=X", "2026-03-04"): 1.10}
             cours_a = lambda symbole, quand: passes[(symbole, quand.date().isoformat())]
-            cours_actuel = lambda symbole: ({"SPY": 702.9, "EURUSD=X": 1.10, "MSFT": 220.0}[symbole],
+            cours_actuel = lambda symbole: ({"SPY": 702.9, "EURUSD=X": 1.10, "MSFT": 220.0, "AAPL": 352.0}[symbole],
                                             datetime.now(timezone.utc))
             achat1 = {"date": "2026-03-02T15:45:00", "sens": "achat", "ticker": "MSFT", "quantite": 0.5,
                       "prix_eur": 120.0, "montant_eur": 60.0, "frais_eur": 1.0, "raison": "Un"}
@@ -687,9 +726,40 @@ def _verifier_lot3(ok, proche):
                and d1["ventes_comprises"] is True)
             ok("l'achat 2 : 0,125 action (25 €) + 1/3 des 75 € (25 €) = 50 € ; jumeau 0,0375 × 639 + 22,50 = 46,46 € ; +3,54 €",
                d2["valeur_choix_eur"] == 50.0 and d2["valeur_indice_eur"] == 46.46 and d2["ecart_eur"] == 3.54)
-            ok("le bilan du portefeuille : 150 € (positions + ventes encaissées) contre 120,80 €, écart +29,20 €, ventes comprises",
-               j["bilan"] == {"toi_eur": 150.0, "indice_eur": 120.8, "ecart_eur": 29.2, "achats": 2, "devant": 2,
-                              "ventes": True})
+            b = j["bilan"]
+            ok("le bilan du portefeuille : 75 € de positions + 75 € encaissés = 150 € ; les 100 € versés, placés dans SPY "
+               "et gardés : (0,12 + 0,075) × 639 = 124,605 €",
+               b["toi_eur"] == 150.0 and b["positions_eur"] == 75.0 and b["encaisse_eur"] == 75.0
+               and b["verse_eur"] == 100.0 and abs(b["indice_eur"] - 124.605) < 0.006
+               and b["ecart_eur"] == round(150.0 - b["indice_eur"], 2) and b["ventes"] is True and b["devant"] == 2)
+            # Une vente RACHETÉE : 45 € de MSFT, tout revendu 46 €, puis 46 € d'AAPL. Seuls 45 € ont été versés.
+            _ecrire(JOURNAL, [{**achat1, "quantite": 0.1, "prix_eur": 450.0, "montant_eur": 45.0},
+                              {**vente, "date": "2026-03-03T15:45:00", "quantite": 0.1, "prix_eur": 460.0,
+                               "montant_eur": 46.0},
+                              {**achat1, "date": "2026-03-04T15:45:00", "ticker": "AAPL", "quantite": 0.2,
+                               "prix_eur": 230.0, "montant_eur": 46.0}])
+            r = journal_compare()
+            ok("une vente rachetée n'est pas comptée deux fois : AAPL 0,2 × 320 = 64 € (comme « Ta position ») contre les "
+               "45 € versés, 0,09 part de SPY → 57,51 € ; écart +6,49 €",
+               r["bilan"]["toi_eur"] == 64.0 and r["bilan"]["indice_eur"] == 57.51 and r["bilan"]["ecart_eur"] == 6.49
+               and r["bilan"]["verse_eur"] == 45.0 and r["bilan"]["encaisse_eur"] == 0.0)
+            ok("… les duels par achat restent : MSFT tout vendu 46 € contre son jumeau vendu 48 € (−2,00 €), AAPL 64 € "
+               "contre 48,99 €",
+               [(x["valeur_choix_eur"], x["valeur_indice_eur"]) for x in r["decisions"] if x["sens"] == "achat"]
+               == [(46.0, 48.0), (64.0, 48.99)])
+            # Deux valeurs, deux ventes de MSFT : chaque vente ne touche que MSFT, la seconde prend la moitié du reste.
+            _ecrire(JOURNAL, [achat1,
+                              {**achat2, "ticker": "AAPL", "quantite": 0.205, "prix_eur": 200.0, "montant_eur": 41.0},
+                              {**vente, "quantite": 0.25, "montant_eur": 50.0},
+                              {**vente, "date": "2026-03-04T16:00:00", "quantite": 0.125, "montant_eur": 25.0}])
+            k = journal_compare()
+            km, ka = [x for x in k["decisions"] if x["sens"] == "achat"]
+            ok("deux ventes de MSFT : 0,125 restante (25 €) + 75 € encaissés = 100 € ; jumeau 0,03 × 639 + 54 = 73,17 € ; "
+               "AAPL intacte : 65,60 € contre 0,076875 × 639 = 49,12 €",
+               (km["valeur_choix_eur"], km["valeur_indice_eur"], ka["valeur_choix_eur"], ka["valeur_indice_eur"])
+               == (100.0, 73.17, 65.6, 49.12))
+            ok("… et le bilan : 25 + 65,60 + 75 = 165,60 € contre les 101 € versés, (0,12 + 0,076875) × 639 = 125,80 €",
+               k["bilan"]["toi_eur"] == 165.6 and k["bilan"]["indice_eur"] == 125.8 and k["bilan"]["ecart_eur"] == 39.8)
             ok("même règle que le prix moyen pondéré : il reste 0,375 MSFT, comme agreger",
                proche(agreger([achat1, achat2, vente])[0]["quantite"], 0.25 + 0.125))
             ok("chaque décision porte sa date en UTC (15 h 45 à Paris le 02/03 = 14 h 45 UTC)",

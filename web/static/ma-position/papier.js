@@ -543,9 +543,9 @@
         <tr>
           <th scope="row">${PP.esc(jourCourt(l.debut))}</th>
           <td class="pa-statut">${statut(l)}</td>
-          <td>${fictif(l.toi_eur)}</td>
-          <td>${fictif(l.indice_eur)}</td>
-          <td><span class="${PP.sens(l.ecart_eur)}">${fictif(l.ecart_eur, { signe: true })}</span></td>
+          <td>${l.toi_eur == null ? num('—') : fictif(l.toi_eur)}</td>
+          <td>${l.indice_eur == null ? num('—') : fictif(l.indice_eur)}</td>
+          <td><span class="${PP.sens(l.ecart_eur)}">${l.ecart_eur == null ? num('—') : fictif(l.ecart_eur, { signe: true })}</span></td>
         </tr>`).join('');
       html = `
         <p class="pa-regle">${habiller(d.phrases?.defis || '')}</p>

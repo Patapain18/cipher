@@ -412,11 +412,21 @@
     /* Le serveur compte tout le portefeuille (positions + ventes encaissées)
        contre le même argent passé par le S&P 500 aux mêmes dates. */
     if (b) {
+      if (b.achats < 2 && !b.ventes) return '';      // un seul achat : son duel suffit
       const qui = b.devant === 0 ? 'aucun ne vaut' : b.devant === 1 ? '1 vaut' : `${b.devant} valent`;
+      /* Le portefeuille : les positions, plus l'argent des ventes pas réinvesti,
+         contre l'argent versé, placé dans le S&P 500 aux mêmes dates et gardé.
+         Une vente rachetée n'est jamais comptée deux fois. */
+      const portefeuille = b.encaisse_eur > 0
+        ? `Ton portefeuille vaut ${PP.euros(b.toi_eur)} (${PP.euros(b.positions_eur)} de positions et `
+          + `${PP.euros(b.encaisse_eur)} de ventes pas réinvesties) ; les ${PP.euros(b.verse_eur)} versés, placés dans le `
+          + `S&P 500 aux mêmes dates et gardés, vaudraient ${PP.euros(b.indice_eur)}.`
+        : `Ton portefeuille vaut ${PP.euros(b.toi_eur)} ; les ${PP.euros(b.verse_eur)} versés, placés dans le S&P 500 `
+          + `aux mêmes dates et gardés, vaudraient ${PP.euros(b.indice_eur)}.`;
       return `<p class="pc-bilan">${habiller(`Sur tes ${b.achats} achat${b.achats > 1 ? 's' : ''}, ${qui} aujourd'hui `
-        + `plus que la même somme mise dans le S&P 500 le même jour${b.ventes ? ', ventes comprises' : ''}. `
-        + `Ton portefeuille vaut ${PP.euros(b.toi_eur)}, le même argent passé par le S&P 500 ${PP.euros(b.indice_eur)}.`)}
-        Écart : <span class="${PP.sens(b.ecart_eur)}">${num(PP.euros(b.ecart_eur, { signe: true }))}</span>.</p>`;
+        + `plus que la même somme mise dans le S&P 500 le même jour${b.ventes ? ', ventes comprises' : ''}. ${portefeuille}`)}
+        Écart : <span class="${PP.sens(b.ecart_eur)}">${num(PP.euros(b.ecart_eur, { signe: true }))}</span>, frais exclus
+        des deux côtés.</p>`;
     }
     const achats = decisions.filter((d) => d.sens === 'achat' && d.valeur_indice_eur != null);
     if (achats.length < 2) return '';
