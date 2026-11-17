@@ -492,6 +492,16 @@ def ordre_papier(payload):
     return papier.passer_ordre(payload)
 
 
+def recommencer_papier(payload):
+    """
+    Range le défi papier dans ses archives (data/papier-archives/), avec
+    ses chiffres, et repart d'un défi neuf. Le corps de la requête ({})
+    ne porte rien : la page demande d'abord une confirmation.
+    """
+    import papier
+    return papier.recommencer()
+
+
 # Le graphique dépend de sa période : une minute pour la journée, plus
 # longtemps pour le mois et l'année, qui ne bougent qu'une fois par barre.
 GRAPHIQUE_CACHE = {"1j": 60, "1m": 600, "1a": 3600}
@@ -603,8 +613,9 @@ class Handler(SimpleHTTPRequestHandler):
 
         path = urlparse(self.path).path
         actions = {
-            "/api/journal/ajouter": ajouter_au_journal,
-            "/api/papier/ordre":    ordre_papier,
+            "/api/journal/ajouter":      ajouter_au_journal,
+            "/api/papier/ordre":         ordre_papier,
+            "/api/papier/recommencer":   recommencer_papier,
         }
         if path not in actions:
             self.send_error(404)

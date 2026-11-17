@@ -51,7 +51,10 @@
      (même méthode et même motif que le carnet). */
   const NOMBRE = /(?<![\d,:])(?<!S&P\s)[+−-]?\d+(?:[  ]\d{3})*(?:[,:]\d+)?(?:[  ]?[€$%])?/g;
   const habiller = (phrase) => {
-    const texte = String(phrase ?? '').replace(/S&P 500/g, 'S&P 500');
+    /* Les espaces de la typographie française deviennent insécables : un « : » ne
+       passe jamais seul au début d'une ligne, ni un guillemet loin de son mot. */
+    const texte = String(phrase ?? '').replace(/S&P 500/g, 'S&P\u00a0500')
+      .replace(/ ([:;?!»])/g, '\u00a0$1').replace(/« /g, '«\u00a0');
     let html = '';
     let fin = 0;
     for (const m of texte.matchAll(NOMBRE)) {
@@ -168,6 +171,24 @@
         </div>
         <div id="pa-ordres"><p class="pc-attente">Chargement…</p></div>
       </section>
+
+      <section class="pa-section" id="pa-section-defis" aria-labelledby="pa-t-defis" hidden>
+        <h3 class="pc-rubrique" id="pa-t-defis" tabindex="-1">Tous tes défis</h3>
+        <div id="pa-defis"></div>
+        <div class="pa-recommencer" id="pa-recommencer" hidden>
+          <button type="button" class="badge pc-plus-bouton" id="pa-recommencer-bouton"
+                  aria-expanded="false" aria-controls="pa-confirmer">Recommencer le défi…</button>
+          <div class="pa-confirmer" id="pa-confirmer" role="group" aria-labelledby="pa-confirmer-texte" hidden>
+            <p id="pa-confirmer-texte"></p>
+            <div class="pa-confirmer-boutons">
+              <button type="button" class="btn" id="pa-oui">Oui, ranger et recommencer</button>
+              <button type="button" class="badge pc-plus-bouton" id="pa-non">Annuler</button>
+            </div>
+          </div>
+        </div>
+        <p class="form-msg pc-msg pa-recommencer-msg" id="pa-recommencer-msg" role="status" aria-live="polite"
+           tabindex="-1"></p>
+      </section>
     </div>`;
   (vue.querySelector('.pc-entete') || titre).after(zone);
 
@@ -180,7 +201,7 @@
   const etat = { mode: 'reel', donnees: null, erreur: null, envoi: false };
   /* Ce qu'on a déjà dessiné : un tour qui ramène les mêmes chiffres ne
      réécrit rien (le focus et la lecture d'un lecteur d'écran restent). */
-  const deja = { resume: '', positions: '', duel: '', ordres: '', ferme: null, options: '' };
+  const deja = { resume: '', positions: '', duel: '', defis: '', ordres: '', ferme: null, options: '' };
   let ticket = 0;
   let surveillance = null;
   let premiereOuverture = true;
@@ -243,6 +264,7 @@
     dessinerPositions();
     dessinerDuel();
     dessinerOrdres();
+    dessinerDefis();
     remplirValeurs();
     majAide();
     dessinerGuichet();
@@ -291,12 +313,17 @@
             ${d.total_eur == null ? 'le total attend le prochain essai.' : 'nouvel essai dans une minute.'}</p>` : '';
       const erreur = etat.erreur
         ? `<p class="pa-note">Dernier rafraîchissement impossible (${PP.esc(etat.erreur)}) : ces chiffres datent du tour précédent.</p>` : '';
+      /* La fin du défi (serveur du lot 2) : le bilan final et ses cours, ou
+         son attente, ou « plus aucune séance d'ici la fin ». Le bilan final
+         remplace la règle « son résultat sera compté… ». */
+      const bf = d.bilan_final;
+      const fin = bf?.message ? `<p class="pa-bilan-final">${habiller(bf.message)}</p>` : '';
       html = `
         <div class="pc-ligne pa-chiffres">
           <p class="pc-marge pa-jour">${jour}</p>
           <div>
             <p class="pc-valeur-ligne"><span class="pc-valeur-euros">${total}</span></p>
-            ${gain}${registre}${regle}${manquants}${erreur}
+            ${gain}${fin}${registre}${bf?.statut === 'final' ? '' : regle}${manquants}${erreur}
           </div>
         </div>`;
     }
@@ -383,7 +410,9 @@
          était coupée (elle prend la largeur du tableau, pas celle de
          l'écran). */
       const tableau = !r ? '' : `
-        <p class="pa-table-titre" id="pa-legende-resultat">Ton résultat en trois morceaux, si tu vendais tout maintenant</p>
+        <p class="pa-table-titre" id="pa-legende-resultat">${d.bilan_final?.statut === 'final'
+          ? 'Ton résultat final en trois morceaux, tout vendu à la clôture de la dernière séance'
+          : 'Ton résultat en trois morceaux, si tu vendais tout maintenant'}</p>
         <div class="pa-table-cadre pa-cadre-resultat" tabindex="0" role="region" aria-labelledby="pa-legende-resultat">
           <table class="pa-table pa-table-resultat" aria-labelledby="pa-legende-resultat">
             <thead><tr>
@@ -399,7 +428,8 @@
             </tbody>
           </table>
         </div>
-        ${ph.resultat ? `<p class="pa-note">${habiller(ph.resultat)}</p>` : ''}`;
+        ${ph.resultat ? `<p class="pa-note">${habiller(ph.resultat)}</p>` : ''}
+        ${ph.ecart_courtier ? `<p class="pa-note">${habiller(ph.ecart_courtier)}</p>` : ''}`;
       html = `
         <div class="pc-duel pa-duel">
           <dl class="pc-registre">
@@ -471,6 +501,123 @@
       deja.ordres = html;
     }
   }
+
+  /* ------------------------------------------------------------
+     3 bis. TOUS TES DÉFIS, ET RECOMMENCER
+     ------------------------------------------------------------
+     Le bilan de tous les défis (les archives, abandonnés compris, et
+     celui en cours) dès qu'un défi est rangé ; « Recommencer » dès que
+     le défi a commencé. Un serveur d'avant le lot 2 n'envoie pas
+     « defis » : la section reste cachée. La confirmation est dans la
+     page : la fenêtre de l'appli Mac n'affiche pas confirm(). */
+  const STATUTS = { abandonne: 'abandonné', fini: 'fini', en_cours: 'en cours' };
+  const texteConfirmation = (d) => `Ton défi sera rangé dans tes archives, ${d.fini ? 'fini' : `abandonné au jour ${d.jour}`}, `
+    + 'avec ses chiffres, et il restera compté dans « Tous tes défis ». Ton prochain ordre lancera un nouveau défi de '
+    + `${d.jours} jours avec ${PP.euros(d.capital_eur)} fictifs.`;
+
+  function dessinerDefis() {
+    const d = etat.donnees;
+    const connu = !!d && 'defis' in d;
+    const b = connu ? d.defis : null;
+    const peut = connu && !!d.debut;
+    $('#pa-section-defis').hidden = !(b || peut);
+    $('#pa-recommencer').hidden = !peut;
+    let html = '';
+    if (b) {
+      const statut = (l) => PP.esc(STATUTS[l.statut] || l.statut)
+        + (l.statut === 'abandonne' ? ` au jour ${num(String(l.jour))}`
+          : l.statut === 'en_cours' ? `, jour ${num(String(l.jour))}` : '');
+      const lignes = b.defis.map((l) => `
+        <tr>
+          <th scope="row">${PP.esc(jourCourt(l.debut))}</th>
+          <td class="pa-statut">${statut(l)}</td>
+          <td>${fictif(l.toi_eur)}</td>
+          <td>${fictif(l.indice_eur)}</td>
+          <td><span class="${PP.sens(l.ecart_eur)}">${fictif(l.ecart_eur, { signe: true })}</span></td>
+        </tr>`).join('');
+      html = `
+        <p class="pa-regle">${habiller(d.phrases?.defis || '')}</p>
+        <p class="pa-table-titre" id="pa-legende-defis">Chaque défi face au S&amp;P&nbsp;500 : à sa fin, au jour où il
+          a été rangé, ou au dernier cours pour celui en cours</p>
+        <div class="pa-table-cadre pa-cadre-resultat" tabindex="0" role="region" aria-labelledby="pa-legende-defis">
+          <table class="pa-table" aria-labelledby="pa-legende-defis">
+            <thead><tr>
+              <th scope="col">Début</th><th scope="col" class="pa-statut">Statut</th><th scope="col">Toi</th>
+              <th scope="col">S&amp;P&nbsp;500</th><th scope="col">Écart</th>
+            </tr></thead>
+            <tbody>${lignes}</tbody>
+          </table>
+        </div>`;
+    }
+    if (html !== deja.defis) {
+      const zone = $('#pa-defis');
+      const focus = zone.contains(document.activeElement);
+      const defile = zone.querySelector('.pa-table-cadre')?.scrollLeft || 0;
+      zone.innerHTML = html;
+      deja.defis = html;
+      const cadre = zone.querySelector('.pa-table-cadre');
+      if (cadre) cadre.scrollLeft = defile;
+      if (focus) cadre?.focus({ preventScroll: true });
+    }
+    /* La phrase de la confirmation suit le défi, sauf pendant qu'elle est
+       ouverte : on ne réécrit pas ce qu'on est en train de lire. */
+    if (peut && $('#pa-confirmer').hidden) $('#pa-confirmer-texte').innerHTML = habiller(texteConfirmation(d));
+  }
+
+  const boutonRecommencer = $('#pa-recommencer-bouton');
+  const confirmation = (ouverte) => {
+    $('#pa-confirmer').hidden = !ouverte;
+    boutonRecommencer.setAttribute('aria-expanded', String(ouverte));
+  };
+  /* Ouvrir pose le focus sur « Annuler » : la touche Entrée ne range
+     jamais un défi par mégarde. Annuler (ou Échap) le rend au bouton. */
+  boutonRecommencer.addEventListener('click', () => {
+    if (etat.donnees) $('#pa-confirmer-texte').innerHTML = habiller(texteConfirmation(etat.donnees));
+    $('#pa-recommencer-msg').textContent = '';
+    const ouvrir = $('#pa-confirmer').hidden;
+    confirmation(ouvrir);
+    if (ouvrir) $('#pa-non').focus();
+  });
+  const annuler = () => { confirmation(false); boutonRecommencer.focus(); };
+  $('#pa-non').addEventListener('click', annuler);
+  $('#pa-confirmer').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); annuler(); }   // le carnet ignore un Échap déjà traité
+  });
+  $('#pa-oui').addEventListener('click', async () => {
+    const oui = $('#pa-oui');
+    const msg = $('#pa-recommencer-msg');
+    if (oui.disabled) return;
+    oui.disabled = true;                 // pas de double rangement
+    msg.className = 'form-msg pc-msg pa-recommencer-msg';
+    msg.textContent = 'Rangement du défi…';
+    let r = null;
+    try {
+      const rep = await fetch('/api/papier/recommencer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Dashboard': '1' },
+        body: '{}',
+      });
+      const json = await rep.json().catch(() => ({ ok: false, error: `réponse illisible (${rep.status})` }));
+      if (!json.ok) throw new Error(json.error || 'refusé');
+      r = json.data;
+    } catch (err) {
+      msg.className = 'form-msg pc-msg pa-recommencer-msg error';
+      msg.textContent = lisible(err) === 'le serveur ne répond pas'
+        ? 'Pas de réponse du serveur : le défi est peut-être rangé. Regarde « Tous tes défis » avant de réessayer.'
+        : err.message;
+    }
+    oui.disabled = false;
+    confirmation(false);
+    await tour();
+    if (r) {
+      msg.className = 'form-msg pc-msg pa-recommencer-msg ok';
+      msg.textContent = `Ton défi est rangé (${r.statut === 'fini' ? 'fini' : `abandonné au jour ${r.jour}`}). `
+        + 'Ton prochain ordre lancera le nouveau.';
+      msg.focus();
+    } else {
+      ($('#pa-recommencer').hidden ? msg : boutonRecommencer).focus();
+    }
+  });
 
   /* ------------------------------------------------------------
      4. LE FORMULAIRE

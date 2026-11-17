@@ -169,6 +169,41 @@
 .pa-table-resultat tbody tr:nth-last-child(2) > * { border-bottom-color: var(--text); }
 .pa-table-resultat tbody tr:last-child > * { font-weight: 600; }
 
+/* ── La fin du défi, et tous les défis ─────────────────────── */
+/* Le bilan final (ou son attente) : un filet à gauche, comme la raison
+   d'un guichet fermé, à l'encre et sans rouge. */
+.pa-bilan-final {
+  margin-top: var(--space-3);
+  max-width: 36em;
+  padding: 8px 12px;
+  border-left: 2px solid var(--border-strong);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+}
+/* Le statut est un texte : aligné à gauche, son titre aussi (les montants restent à droite). */
+.pa-table .pa-statut { text-align: left; }
+.pa-recommencer { margin-top: var(--space-5); }
+.pa-confirmer {
+  margin-top: var(--space-3);
+  max-width: 36em;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.pa-confirmer .num { color: var(--text); }
+.pa-confirmer-boutons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  margin-top: var(--space-3);
+}
+.pa-recommencer-msg:focus { outline: none; }
+.pa-recommencer-msg:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 /* ── Le formulaire ─────────────────────────────────────────── */
 /* « Tout vendre » s'aligne sur le bas des champs voisins. */
 .pa-champ-tout { display: flex; align-items: flex-end; }
