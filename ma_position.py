@@ -82,6 +82,17 @@ def maintenant_paris():
     return datetime.now(PARIS).replace(tzinfo=None).isoformat(timespec="seconds")
 
 
+def ordre(d):
+    """
+    L'ordre du journal : l'heure réelle (en UTC, quel que soit le format de
+    la date), puis, à la même heure, les ventes avant les achats. L'argent
+    d'une vente peut payer un achat de la même minute, jamais l'inverse.
+    Avec un simple tri sur le texte de la date, l'ordre de saisie changeait
+    le bilan (vu par la vérification indépendante du 17/11/2026).
+    """
+    return (en_utc(d["date"]), 0 if d["sens"] == "vente" else 1)
+
+
 def seance_du_cours(heure_utc):
     """D'où vient un cours, d'après l'heure de New York : « avant » (avant 9 h 30), « ouverte », « apres » (16 h et plus).
     Une séance raccourcie (13 h) n'est pas connue ici : son après-séance s'écrit « ouverte » jusqu'à 16 h."""
@@ -99,7 +110,7 @@ def agreger(journal):
     compte les frais d'achat, puisque c'est l'argent vraiment sorti.
     """
     lignes = {}
-    for d in sorted(journal, key=lambda x: x["date"]):
+    for d in sorted(journal, key=ordre):
         l = lignes.setdefault(d["ticker"], {"ticker": d["ticker"], "quantite": 0.0,
                                             "cout_eur": 0.0, "montant_eur": 0.0})
         if d["sens"] == "achat":
@@ -112,6 +123,72 @@ def agreger(journal):
             l["montant_eur"] -= l["montant_eur"] * part
             l["quantite"] -= d["quantite"]
     return [l for l in lignes.values() if l["quantite"] > 1e-9]
+
+
+def _ventes_impossibles(journal):
+    """Les ventes qui vendent plus que ce qui était détenu À LEUR DATE, dans l'ordre du journal."""
+    detenu, fautives = {}, []
+    for d in sorted(journal, key=ordre):
+        q = detenu.get(d["ticker"], 0.0)
+        if d["sens"] == "achat":
+            detenu[d["ticker"]] = q + d["quantite"]
+        elif d["quantite"] > q + 1e-9:
+            fautives.append(d)
+        else:
+            detenu[d["ticker"]] = q - d["quantite"]
+    return fautives
+
+
+def flux(journal):
+    """
+    L'argent qui a vraiment bougé, dans l'ordre du journal (choix de Mathis
+    du 17/11/2026 : le chiffre du haut de « Ta position » garde le résultat
+    des ventes, et une action offerte compte à 0 €).
+
+    - versé : ce qui est sorti de ta poche. L'argent d'une vente paie
+      d'abord les achats suivants ; seul ce qui manque est versé. Un achat
+      noté « offert » ne coûte rien ;
+    - en caisse : l'argent des ventes pas encore réinvesti ;
+    - ventes : le résultat des ventes, l'argent reçu moins la part du coût
+      des actions vendues (prix moyen pondéré, comme `agreger`) ;
+    - offert : la valeur des actions offertes, au jour du cadeau.
+
+    Chaque montant existe frais compris et sans les frais. Le gain total
+    vaut alors : la valeur des actions + l'argent en caisse − le versé,
+    c'est-à-dire le gain des actions détenues + les ventes + l'offert.
+    """
+    verse = verse_sf = caisse = caisse_sf = offert = ventes = ventes_sf = 0.0
+    lignes, nombre_ventes = {}, 0
+    for d in sorted(journal, key=ordre):
+        l = lignes.setdefault(d["ticker"], {"quantite": 0.0, "cout": 0.0, "montant": 0.0})
+        if d["sens"] == "achat":
+            l["quantite"] += d["quantite"]
+            l["cout"] += d["montant_eur"] + d["frais_eur"]
+            l["montant"] += d["montant_eur"]
+            if d.get("offert"):
+                offert += d["montant_eur"]
+                continue
+            prix, prix_sf = d["montant_eur"] + d["frais_eur"], d["montant_eur"]
+            verse += max(0.0, prix - caisse)
+            caisse = max(0.0, caisse - prix)
+            verse_sf += max(0.0, prix_sf - caisse_sf)
+            caisse_sf = max(0.0, caisse_sf - prix_sf)
+        else:
+            nombre_ventes += 1
+            part = min(1.0, d["quantite"] / l["quantite"]) if l["quantite"] else 0.0
+            ventes += d["montant_eur"] - d["frais_eur"] - l["cout"] * part
+            ventes_sf += d["montant_eur"] - l["montant"] * part
+            l["cout"] -= l["cout"] * part
+            l["montant"] -= l["montant"] * part
+            l["quantite"] -= d["quantite"]
+            caisse += d["montant_eur"] - d["frais_eur"]
+            caisse_sf += d["montant_eur"]
+            if caisse < 0:      # une vente plus petite que ses frais : le reste est sorti de ta poche
+                verse, caisse = verse - caisse, 0.0
+    return {"verse_eur": verse, "verse_sans_frais_eur": verse_sf,
+            "encaisse_eur": caisse, "encaisse_sans_frais_eur": caisse_sf,
+            "ventes_eur": ventes, "ventes_sans_frais_eur": ventes_sf,
+            "offert_eur": offert, "nombre_ventes": nombre_ventes}
 
 
 def calcul_ligne(quantite, cout_eur, montant_eur, prix_usd, eurusd):
@@ -183,7 +260,9 @@ def _historique(symbole, **kwargs):
 # montre 12,62 € en haut et 12,60 € dans le journal).
 _memo_actuel = {}     # symbole → (instant de lecture, cours, heure du cours)
 _memo_passe = {}      # (symbole, moment) → cours : un cours passé ne change plus
+_memo_repli = {}      # (symbole, moment) → (instant de lecture, clôture du jour) : un repli, redemandé
 MEMO_ACTUEL_S = 30
+REPLI_S = 600         # toutes les 10 minutes, pour reprendre la vraie barre dès que Yahoo la rend
 
 
 def cours_actuel(symbole):
@@ -276,6 +355,9 @@ def cours_a(symbole, quand_utc):
     if garde:
         _memo_passe[cle] = garde
         return garde
+    repli = _memo_repli.get(cle)
+    if repli and time.monotonic() - repli[0] < REPLI_S:
+        return repli[1]
     jour = quand_utc.date()
     v, en_5_minutes = float("nan"), False
     try:
@@ -292,9 +374,14 @@ def cours_a(symbole, quand_utc):
     # Gardé seulement s'il date de plus de 10 minutes : la barre de
     # 5 minutes en cours peut encore bouger.
     if datetime.now(timezone.utc) - quand_utc > timedelta(minutes=10):
-        _memo_passe[cle] = v
-        if en_5_minutes and math.isfinite(v) and v > 0:
-            _garder_cours(f"{symbole}|{quand_utc.isoformat()}", v)
+        if en_5_minutes:
+            _memo_passe[cle] = v
+            if math.isfinite(v) and v > 0:
+                _garder_cours(f"{symbole}|{quand_utc.isoformat()}", v)
+        else:
+            # La clôture du jour (ajustée des dividendes) n'est qu'un repli : gardée en mémoire jusqu'au
+            # redémarrage, elle figeait un mauvais cours après une réponse vide de Yahoo (vérification du 17/11).
+            _memo_repli[cle] = (time.monotonic(), v)
     return v
 
 
@@ -348,20 +435,39 @@ def ajouter_decision(payload):
     if not all(math.isfinite(x) for x in nombres) or min(quantite, prix_eur, montant_eur) <= 0 \
             or frais_eur < 0:
         raise ValueError("quantité, prix et montant positifs, frais positifs ou nuls")
+    # Au centime, comme le courtier : une vente notée sans montant gardait 9,86227947 € (vérification du 17/11).
+    montant_eur = round(montant_eur, 2)
+    if montant_eur <= 0:
+        raise ValueError("quantité, prix et montant positifs, frais positifs ou nuls")
+    # Une action offerte par le courtier (choix de Mathis du 17/11/2026) : rien payé, donc pas de frais.
+    offert = sens == "achat" and payload.get("offert") is True
+    if offert:
+        frais_eur = 0.0
     raison = " ".join(str(payload.get("raison", "")).split())[:200]
     date = str(payload.get("date") or maintenant_paris())
-    quand = en_utc(date)
+    try:
+        quand = en_utc(date)
+    except (TypeError, ValueError):
+        raise ValueError("date illisible (attendu : 2026-11-17T15:45, à l'heure de Paris)")
+    if quand > datetime.now(timezone.utc) + timedelta(minutes=5):
+        raise ValueError("cette date est dans le futur : une décision se note une fois passée chez le courtier")
     prix_usd = prix_eur * cours_a(CHANGE, quand)
 
     with _verrou:
         journal = lire_journal()
-        if sens == "vente":
-            detenue = next((l for l in agreger(journal) if l["ticker"] == ticker), None)
-            if not detenue or quantite > detenue["quantite"] + 1e-9:
-                raise ValueError(f"tu ne détiens pas autant de {ticker}")
         decision = {"date": date, "sens": sens, "ticker": ticker, "quantite": quantite,
                     "prix_eur": prix_eur, "prix_usd": round(prix_usd, 4),
                     "montant_eur": montant_eur, "frais_eur": frais_eur, "raison": raison}
+        if offert:
+            decision["offert"] = True
+        if sens == "vente":
+            # Ce qui était détenu À LA DATE de la vente, pas aujourd'hui : une vente antidatée passait
+            # et faussait tout le bilan (vérification du 17/11).
+            fautives = _ventes_impossibles(journal + [decision])
+            if any(f is decision for f in fautives):
+                raise ValueError(f"à cette date, tu ne détenais pas autant de {ticker}")
+            if len(fautives) > len(_ventes_impossibles(journal)):
+                raise ValueError(f"cette vente rendrait impossible une vente de {ticker} notée plus tard")
         journal.append(decision)
         _ecrire(JOURNAL, journal)
 
@@ -398,10 +504,18 @@ def position(rang_de=None):
     """
     La position en direct. `rang_de(ticker)` donne (rang, classées) depuis
     le dernier scan du serveur, s'il en a un.
+
+    Chaque ligne compte comme le courtier : depuis son prix d'achat, une
+    action offerte depuis son prix du jour du cadeau. Le TOTAL répond à
+    « est-ce que je gagne ? » (choix de Mathis du 17/11/2026) : la valeur
+    des actions + l'argent des ventes pas réinvesti − ce qui est sorti de
+    ta poche (`flux`). Il garde donc le résultat des ventes, et l'action
+    offerte y compte comme un gain.
     """
     eurusd, _ = cours_actuel(CHANGE)
+    journal = lire_journal()
     lignes, valeur, cout = [], 0.0, 0.0
-    for l in agreger(lire_journal()):
+    for l in agreger(journal):
         prix_usd, heure = cours_actuel(l["ticker"])
         c = calcul_ligne(l["quantite"], l["cout_eur"], l["montant_eur"], prix_usd, eurusd)
         rang, classees = rang_de(l["ticker"]) if rang_de else (None, None)
@@ -411,12 +525,18 @@ def position(rang_de=None):
                        "resultats": engine.prochaine_publication(l["ticker"])})
         valeur += c["valeur_eur"]
         cout += l["cout_eur"]
+    f = flux(journal)
+    gain = valeur + f["encaisse_eur"] - f["verse_eur"]
+    gain_sf = valeur + f["encaisse_sans_frais_eur"] - f["verse_sans_frais_eur"]
     return {
         "maj": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "eurusd": eurusd,
         "lignes": lignes,
-        "total": {"valeur_eur": valeur, "cout_eur": cout, "gain_eur": valeur - cout,
-                  "gain_pct": (valeur / cout - 1) if cout else None},
+        "total": {"valeur_eur": valeur, "cout_eur": cout, **f,
+                  "gain_eur": gain, "gain_pct": gain / f["verse_eur"] if f["verse_eur"] else None,
+                  "gain_sans_frais_eur": gain_sf,
+                  "gain_sans_frais_pct": (gain_sf / f["verse_sans_frais_eur"]
+                                          if f["verse_sans_frais_eur"] else None)},
         "frais_vente_eur": FRAIS_VENTE,
         "avertissement": AVERTISSEMENT,
     }
@@ -439,7 +559,7 @@ def journal_compare(prix_actuels=None, fx_actuel=None):
     côtés. Tout est compté au centime : les écarts sont ceux des montants
     affichés.
     """
-    journal = sorted(lire_journal(), key=lambda d: d["date"])
+    journal = sorted(lire_journal(), key=ordre)
     valeurs = valeurs_du_journal()    # pour la liste du formulaire
     if not journal:
         return {"decisions": [], "valeurs": valeurs, "avertissement": AVERTISSEMENT, "bilan": None}
@@ -484,12 +604,16 @@ def journal_compare(prix_actuels=None, fx_actuel=None):
     positions = 0.0
     nombre = devant = 0
     for ticker, lots in achats.items():
-        if ticker not in prix_maintenant:
+        # Une valeur vendue en entier n'a plus besoin de son cours : le demander rendait tout le carnet
+        # « indisponible » le jour où Yahoo ne le donnait plus (vérification du 17/11).
+        restant = sum(a["ligne"]["quantite"] * a["reste"] for a in lots)
+        if restant > 1e-9 and ticker not in prix_maintenant:
             prix_maintenant[ticker] = cours_actuel(ticker)[0]
         for a in lots:
             # Les positions s'additionnent en valeurs exactes et ne s'arrondissent qu'une fois : le bilan
             # tombe sur « Ta position » au centime près (vu le 17/11 : 198,34 contre 198,33).
-            reste_brut = a["ligne"]["quantite"] * a["reste"] * prix_maintenant[ticker] / fx_maintenant
+            reste_brut = (a["ligne"]["quantite"] * a["reste"] * prix_maintenant[ticker] / fx_maintenant
+                          if restant > 1e-9 else 0.0)
             choix_brut = reste_brut + a["encaisse_eur"]
             jumeau_brut = a["parts_spy"] * indice_maintenant / fx_maintenant + a["jumeau_encaisse_eur"]
             choix, jumeau = round(choix_brut, 2), round(jumeau_brut, 2)
@@ -500,11 +624,15 @@ def journal_compare(prix_actuels=None, fx_actuel=None):
                 devant += round(choix - jumeau, 2) > 0
     # Le bilan : ce que tu as (positions + ventes pas réinvesties) contre l'argent versé, placé dans le
     # S&P 500 aux mêmes dates et gardé. Une vente rachetée n'est donc jamais comptée deux fois.
-    toi = round(positions + caisse, 2)
+    # Arrondis d'abord, additionnés ensuite : la phrase « X de positions et Y de ventes » tombe juste sur
+    # « Ton portefeuille vaut Z » (2 relectures sur 11 avaient un centime d'écart, vérification du 17/11).
+    positions_c, caisse_c = round(positions, 2), round(caisse, 2)
+    toi = round(positions_c + caisse_c, 2)
     indice = round(parts_versees * indice_maintenant / fx_maintenant, 2)
+    offert = sum(d["montant_eur"] for d in journal if d["sens"] == "achat" and d.get("offert"))
     bilan = ({"toi_eur": toi, "indice_eur": indice, "ecart_eur": round(toi - indice, 2),
-              "positions_eur": round(positions, 2), "encaisse_eur": round(caisse, 2), "verse_eur": round(verse, 2),
-              "achats": nombre, "devant": devant,
+              "positions_eur": positions_c, "encaisse_eur": caisse_c, "verse_eur": round(verse, 2),
+              "offert_eur": round(offert, 2), "achats": nombre, "devant": devant,
               "ventes": any(a["vendu"] for lots in achats.values() for a in lots)}
              if nombre and math.isfinite(toi) and math.isfinite(indice) else None)
     return {"decisions": sortie, "indice": "S&P 500 (SPY)", "valeurs": valeurs, "bilan": bilan,
@@ -677,6 +805,7 @@ def verifier():
             JOURNAL, CARNET, cours_a, cours_actuel, _historique = reel
 
     _verifier_lot3(ok, proche)
+    _verifier_lot4(ok, proche)
     print(f"\n{sum(cas)}/{len(cas)} vérifications réussies")
     return all(cas)
 
@@ -848,6 +977,170 @@ def _verifier_lot3(ok, proche):
         finally:
             JOURNAL, CARNET, cours_a, cours_actuel, _historique = reel
             _memo_passe.clear()
+            _disque_passe["chemin"] = None
+
+
+def _verifier_lot4(ok, proche):
+    """Les défauts trouvés par la vérification indépendante du 17/11/2026, et les deux choix de Mathis
+    (le total garde le résultat des ventes ; une action offerte compte à 0 €). Chiffres inventés."""
+    global JOURNAL, CARNET, cours_a, cours_actuel, _historique
+    import tempfile
+    reel = (JOURNAL, CARNET, cours_a, cours_actuel, _historique)
+    cours_a_reel = cours_a
+
+    def refus(fn, morceau=""):
+        try:
+            fn()
+        except ValueError as e:
+            return morceau in str(e)
+        return False
+
+    with tempfile.TemporaryDirectory() as dossier:
+        JOURNAL = os.path.join(dossier, "journal.json")
+        CARNET = os.path.join(dossier, "stock_positions.json")
+        _ecrire(CARNET, {})
+        _memo_passe.clear()
+        _memo_repli.clear()
+        _disque_passe["chemin"] = None
+        try:
+            passes = {("SPY", "2026-03-02"): 600.0, ("SPY", "2026-03-03"): 640.0, ("SPY", "2026-03-04"): 660.0,
+                      ("EURUSD=X", "2026-03-02"): 1.20, ("EURUSD=X", "2026-03-03"): 1.20,
+                      ("EURUSD=X", "2026-03-04"): 1.10}
+            cours_a = lambda symbole, quand: passes[(symbole, quand.date().isoformat())]
+            maintenant = {"SPY": 702.9, "EURUSD=X": 1.10, "AAPL": 352.0}      # MSFT absent : jamais demandée
+            cours_actuel = lambda symbole: (maintenant[symbole], datetime.now(timezone.utc))
+            achat1 = {"date": "2026-03-02T15:45:00", "sens": "achat", "ticker": "MSFT", "quantite": 0.5,
+                      "prix_eur": 120.0, "montant_eur": 60.0, "frais_eur": 1.0, "raison": "Un"}
+            vente = {**achat1, "date": "2026-03-03T16:00:00", "sens": "vente", "prix_eur": 130.0,
+                     "montant_eur": 65.0, "raison": "Tout"}
+            achat2 = {**achat1, "date": "2026-03-03T16:00:00", "ticker": "AAPL", "quantite": 0.2, "prix_eur": 200.0,
+                      "montant_eur": 40.0, "raison": "Deux"}
+
+            # ── 1. Une vente et un achat à la même minute : la vente passe d'abord, quel que soit l'ordre du fichier.
+            f1, f2 = flux([achat1, achat2, vente]), flux([achat1, vente, achat2])
+            ok("même minute, achat saisi d'abord ou vente saisie d'abord : le même argent (61 € versés, 23 € en "
+               "caisse après les 41 € d'AAPL payés par les 64 € de la vente)",
+               f1 == f2 and proche(f1["verse_eur"], 61.0) and proche(f1["encaisse_eur"], 23.0)
+               and proche(f1["verse_sans_frais_eur"], 60.0) and proche(f1["encaisse_sans_frais_eur"], 25.0))
+            # Même valeur, même minute : la vente prend sa part du coût AVANT l'achat (prix moyen pondéré).
+            meme = {**achat1, "date": "2026-03-03T16:00:00", "prix_eur": 140.0, "montant_eur": 70.0}
+            petite = {**vente, "quantite": 0.25, "prix_eur": 140.0, "montant_eur": 35.0}
+            lm = agreger([achat1, meme, petite])[0]
+            ok("même valeur, même minute : la vente de 0,25 retire la moitié des 61 € (30,50 €) avant l'achat de "
+               "70 € + 1 € : 0,75 action pour 101,50 € (et non 99 €)",
+               proche(lm["quantite"], 0.75) and proche(lm["cout_eur"], 101.5) and proche(lm["montant_eur"], 100.0))
+            mini = {**vente, "date": "2026-03-04T16:00:00", "quantite": 0.004, "prix_eur": 125.0, "montant_eur": 0.5}
+            fm = flux([achat1, mini])
+            ok("une vente de 0,50 € avec 1 € de frais : les 0,50 € qui manquent sortent de ta poche (61,50 € versés)",
+               proche(fm["verse_eur"], 61.5) and proche(fm["encaisse_eur"], 0.0))
+            _ecrire(JOURNAL, [achat1, achat2, vente])
+            b1 = journal_compare()["bilan"]
+            _ecrire(JOURNAL, [achat1, vente, achat2])
+            j2 = journal_compare()
+            b2 = j2["bilan"]
+            ok("… et le même bilan : AAPL 0,2 × 352 / 1,10 = 64 € + 25 € en caisse = 89 € ; les 60 € versés, "
+               "0,12 part de SPY → 76,68 € ; écart +12,32 €",
+               b1 == b2 and b1["toi_eur"] == 89.0 and b1["verse_eur"] == 60.0 and b1["encaisse_eur"] == 25.0
+               and b1["indice_eur"] == 76.68 and b1["ecart_eur"] == 12.32)
+            # ── 4. Une valeur vendue en entier n'a plus besoin de son cours (MSFT n'en a pas ici).
+            dm = next(x for x in j2["decisions"] if x["sens"] == "achat" and x["ticker"] == "MSFT")
+            ok("MSFT vendue en entier, sans cours du jour : le carnet reste lisible, son duel = les 65 € de la vente "
+               "contre son jumeau vendu 0,12 × 640 / 1,20 = 64 € (+1,00 €)",
+               (dm["valeur_choix_eur"], dm["valeur_indice_eur"], dm["ecart_eur"]) == (65.0, 64.0, 1.0))
+
+            # ── Les arrondis : « X de positions et Y de ventes » tombe sur « Ton portefeuille vaut Z ».
+            maintenant["MSFT"] = 132.01
+            _ecrire(JOURNAL, [achat1, {**vente, "date": "2026-03-04T16:00:00", "quantite": 0.1,
+                                       "montant_eur": 9.86227947}])
+            b = journal_compare()["bilan"]
+            ok(f"0,4 × 132,01 / 1,10 = 48,0036 € et 9,8623 € de vente : {b['positions_eur']} + {b['encaisse_eur']} "
+               f"= {b['toi_eur']} € (et non 57,87 €)",
+               b["toi_eur"] == 57.86 and b["toi_eur"] == round(b["positions_eur"] + b["encaisse_eur"], 2))
+
+            # ── 3. « Ta position » garde le résultat des ventes (choix de Mathis du 17/11).
+            #    0,5 MSFT pour 60 € + 1 €, puis 0,25 vendue 35 € − 1 € ; aujourd'hui 165 $ et 1 € = 1,10 $ (150 €).
+            maintenant["MSFT"] = 165.0
+            _ecrire(JOURNAL, [achat1, {**vente, "date": "2026-03-04T16:00:00", "quantite": 0.25,
+                                       "prix_eur": 140.0, "montant_eur": 35.0}])
+            t = position()["total"]
+            ok("après une vente : 37,50 € d'actions + 34 € en caisse − 61 € versés = +10,50 € (+17,21 %), soit "
+               "+7,00 € sur ce qui reste et +3,50 € sur la vente (35 − 1 − 30,50)",
+               proche(t["valeur_eur"], 37.5) and proche(t["gain_eur"], 10.5) and proche(t["gain_pct"], 10.5 / 61)
+               and proche(t["ventes_eur"], 3.5) and t["nombre_ventes"] == 1)
+            ok("… sans les frais : 37,50 + 35 − 60 = +12,50 € (+20,83 %), dont +5,00 € sur la vente",
+               proche(t["gain_sans_frais_eur"], 12.5) and proche(t["gain_sans_frais_pct"], 12.5 / 60)
+               and proche(t["ventes_sans_frais_eur"], 5.0))
+
+            # ── L'action offerte compte à 0 € dans le total, et garde son prix du jour du cadeau sur sa ligne.
+            maintenant.update({"TSLA": 330.0, "MSFT": 132.0})
+            prime = {"date": "2026-03-02T15:00:00", "sens": "achat", "ticker": "TSLA", "quantite": 0.03,
+                     "prix_eur": 300.0, "montant_eur": 9.0, "frais_eur": 0.0, "raison": "Offerte", "offert": True}
+            _ecrire(JOURNAL, [prime, {**achat1, "date": "2026-03-03T15:45:00"}])
+            p = position()
+            t, tsla = p["total"], next(x for x in p["lignes"] if x["ticker"] == "TSLA")
+            ok("une action offerte de 9 € et 60 € + 1 € de MSFT : 69 € d'actions − 61 € versés = +8,00 € "
+               "(dont +9,00 € d'action offerte) ; +9,00 € sans les frais",
+               proche(t["valeur_eur"], 69.0) and proche(t["gain_eur"], 8.0) and proche(t["offert_eur"], 9.0)
+               and proche(t["verse_eur"], 61.0) and proche(t["gain_sans_frais_eur"], 9.0))
+            ok("… sa ligne compte depuis son prix du jour du cadeau, comme le courtier : 0,03 × 300 € = 9 €, +0,00 €",
+               proche(tsla["valeur_eur"], 9.0) and proche(tsla["gain_eur"], 0.0) and proche(tsla["prix_achat_eur"], 300.0))
+            bo = journal_compare()["bilan"]
+            ok("… et le bilan la place dans le S&P 500 comme un achat de 9 €, en le disant : 69 € dont 9 € offerts",
+               bo["verse_eur"] == 69.0 and bo["offert_eur"] == 9.0)
+
+            # ── 2. Les dates des décisions : une vente se contrôle à SA date ; rien dans le futur.
+            cours_a = lambda _symbole, _quand: 1.10
+            _ecrire(JOURNAL, [{**achat1, "date": "2026-03-03T15:45:00"}])
+            base = {"sens": "vente", "ticker": "MSFT", "quantite": 0.1, "prix_eur": 130.0, "montant_eur": 13.0,
+                    "frais_eur": 1.0, "raison": "Essai"}
+            ok("une vente datée d'avant l'achat est refusée, et rien n'est écrit",
+               refus(lambda: ajouter_decision({**base, "date": "2026-03-02T16:00:00"}), "à cette date")
+               and len(lire_journal()) == 1)
+            ok("une vente de plus que ce qui était détenu à sa date est refusée",
+               refus(lambda: ajouter_decision({**base, "date": "2026-03-04T16:00:00", "quantite": 0.6}), "à cette date"))
+            ajouter_decision({**base, "date": "2026-03-04T16:00:00", "quantite": 0.3, "montant_eur": 39.0})
+            ok("une vente antidatée qui rendrait impossible une vente déjà notée est refusée (0,5 − 0,3 < 0,3)",
+               refus(lambda: ajouter_decision({**base, "date": "2026-03-03T16:00:00", "quantite": 0.3}),
+                     "rendrait impossible") and len(lire_journal()) == 2)
+            demain = (datetime.now(PARIS) + timedelta(days=1)).replace(tzinfo=None).isoformat(timespec="seconds")
+            ok("une décision datée de demain est refusée",
+               refus(lambda: ajouter_decision({**base, "sens": "achat", "date": demain}), "futur"))
+            ok("une date illisible est refusée avec une phrase en français",
+               refus(lambda: ajouter_decision({**base, "sens": "achat", "date": "hier"}), "date illisible"))
+            sans_montant = {k: v for k, v in base.items() if k != "montant_eur"}
+            d = ajouter_decision({**sans_montant, "date": "2026-03-05T16:00:00", "prix_eur": 123.456})
+            ok("une vente notée sans montant est gardée au centime : 0,1 × 123,456 = 12,35 €", d["montant_eur"] == 12.35)
+            d = ajouter_decision({**base, "sens": "achat", "date": "2026-03-05T16:05:00", "offert": True})
+            ok("un achat « offert » est gardé sans frais, avec sa marque", d["frais_eur"] == 0.0 and d["offert"] is True)
+            d = ajouter_decision({**base, "date": "2026-03-05T16:10:00", "offert": True})
+            ok("… une vente ne peut pas être « offerte »", "offert" not in d and d["frais_eur"] == 1.0)
+
+            # ── Le repli de Yahoo (la clôture du jour) n'est plus gardé jusqu'au redémarrage.
+            moment = datetime(2026, 3, 2, 15, 0, tzinfo=timezone.utc)
+            etat, appels = {"barre": None}, []
+
+            def faux_historique(_symbole, **k):
+                appels.append(k.get("interval"))
+                if k.get("interval") == "5m":
+                    if etat["barre"] is None:
+                        raise ValueError("Yahoo n'a rien rendu")
+                    return pd.Series([etat["barre"]], index=pd.DatetimeIndex([moment - timedelta(minutes=2)]))
+                return pd.Series([100.0], index=pd.DatetimeIndex([moment.replace(hour=0)]))
+
+            _historique = faux_historique
+            v1 = cours_a_reel("SPY", moment)
+            v2 = cours_a_reel("SPY", moment)
+            ok("Yahoo sans barre de 5 min : le repli (clôture du jour, 100) sert, et se garde 10 minutes",
+               v1 == 100.0 and v2 == 100.0 and appels == ["5m", "1d"])
+            _memo_repli[("SPY", moment.isoformat())] = (time.monotonic() - REPLI_S - 1, 100.0)
+            etat["barre"] = 105.0
+            v3, v4 = cours_a_reel("SPY", moment), cours_a_reel("SPY", moment)
+            ok("… après 10 minutes, la vraie barre revenue (105) remplace le repli, puis se garde",
+               v3 == 105.0 and v4 == 105.0 and appels == ["5m", "1d", "5m"])
+        finally:
+            JOURNAL, CARNET, cours_a, cours_actuel, _historique = reel
+            _memo_passe.clear()
+            _memo_repli.clear()
             _disque_passe["chemin"] = None
 
 

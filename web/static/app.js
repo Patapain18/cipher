@@ -493,11 +493,13 @@ function dessinerCartePosition() {
   const carte = $('#carte-position');
   if (!carte || !window.PP || !maPosition || !maPosition.lignes.length) return;
   const { total } = maPosition;
+  const dont = PP.TEXTES.dontTotal(total);
   carte.innerHTML = `
     <div class="label">Ma position</div>
     <div class="value">${PP.euros(total.valeur_eur)}</div>
     <div class="foot"><span class="${PP.sens(total.gain_eur)}">${PP.euros(total.gain_eur, { signe: true })}</span>
       depuis l'achat, frais compris</div>
+    ${dont ? `<div class="foot">${esc(dont)}</div>` : ''}
     <div class="foot">${PP.euros(PP.sansFraisTotal(maPosition).eur, { signe: true })} sans les frais</div>`;
 }
 
@@ -513,6 +515,9 @@ async function renderPositions() {
   dessinerCartePosition();
 
   const { lignes, total } = maPosition;
+  /* Le total compte l'action offerte et le résultat des ventes (choix de Mathis du 17/11/2026) :
+     les lignes ne s'additionnent plus jusqu'à lui, la note dit pourquoi. */
+  const dont = PP.TEXTES.dontTotal(total);
   if (!lignes.length) {
     zone.innerHTML = `
       <p class="empty">Aucune position. Une décision déjà passée chez ton courtier
@@ -533,8 +538,10 @@ async function renderPositions() {
         <span class="rank-total">${PP.pct(l.gain_pct)}</span></td>
       <td class="num-cell num sans-frais">${sansFrais(PP.sansFrais(l))}</td>
     </tr>`;
+  /* Au téléphone, le tableau défile à l'horizontale : il doit pouvoir se
+     prendre au clavier (axe, 17/11/2026), comme le grand tableau. */
   zone.innerHTML = `
-    <div class="position-table">
+    <div class="position-table" tabindex="0" role="region" aria-label="Ta position, action par action">
       <table>
         <thead><tr>
           <th>Action</th>
@@ -546,14 +553,16 @@ async function renderPositions() {
           <th class="num-cell">Sans les frais</th>
         </tr></thead>
         <tbody>${lignes.map(ligne).join('')}</tbody>
-        ${lignes.length > 1 ? `
+        ${lignes.length > 1 || dont ? `
         <tfoot><tr>
           <th scope="row" colspan="4">Total</th>
           <td class="num-cell num">${PP.euros(total.valeur_eur)}</td>
           <td class="num-cell num ${PP.sens(total.gain_eur)}">${PP.euros(total.gain_eur, { signe: true })}
             <span class="rank-total">${PP.pct(total.gain_pct)}</span></td>
           <td class="num-cell num sans-frais">${sansFrais(PP.sansFraisTotal(maPosition))}</td>
-        </tr></tfoot>` : ''}
+        </tr>${dont ? `
+        <tr class="position-dont"><td colspan="7">Le total compte aussi ${esc(dont.replace(/^dont /, ''))}.</td></tr>` : ''}
+        </tfoot>` : ''}
       </table>
     </div>`;
   /* Le panneau 1 de la vue baie EST cette section : il se remesure. */

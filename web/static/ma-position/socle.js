@@ -221,11 +221,16 @@ window.PP = (() => {
     eur: l.valeur_eur - l.montant_eur,
     pct: l.montant_eur ? l.valeur_eur / l.montant_eur - 1 : null,
   });
-  /** Le même calcul pour toutes les lignes d'une réponse de /api/position. */
-  const sansFraisTotal = (position) => sansFrais({
-    valeur_eur: position.lignes.reduce((somme, l) => somme + l.valeur_eur, 0),
-    montant_eur: position.lignes.reduce((somme, l) => somme + l.montant_eur, 0),
-  });
+  /** Le total sans les frais d'une réponse de /api/position. Comme le
+      chiffre principal (choix de Mathis du 17/11/2026), il garde le
+      résultat des ventes et compte une action offerte comme un gain : le
+      serveur le donne. Sinon (ancienne réponse), le calcul des lignes. */
+  const sansFraisTotal = (position) => (Number.isFinite(position.total?.gain_sans_frais_eur)
+    ? { eur: position.total.gain_sans_frais_eur, pct: position.total.gain_sans_frais_pct ?? null }
+    : sansFrais({
+      valeur_eur: position.lignes.reduce((somme, l) => somme + l.valeur_eur, 0),
+      montant_eur: position.lignes.reduce((somme, l) => somme + l.montant_eur, 0),
+    }));
 
   /* ── Les phrases communes ──────────────────────────────────
      Des faits, jamais un conseil : aucune ne dit « achète »,
@@ -267,6 +272,14 @@ window.PP = (() => {
     sansFrais: (sf, { court = false } = {}) =>
       `${euros(sf.eur, { signe: true })} (${pct(sf.pct)}) sans les frais`
       + (court ? '' : ', comme le calcule ton courtier'),
+    /** Ce que le total compte en plus des lignes : « dont +10,00 € d'action
+        offerte et −2,63 € sur tes ventes », ou rien. */
+    dontTotal: (t) => {
+      const parts = [];
+      if (t?.offert_eur > 0) parts.push(`${euros(t.offert_eur, { signe: true })} d'action offerte`);
+      if (t?.nombre_ventes > 0) parts.push(`${euros(t.ventes_eur, { signe: true })} sur tes ventes`);
+      return parts.length ? `dont ${parts.join(' et ')}` : '';
+    },
     /** Le duel d'une décision d'achat avec le S&P 500. */
     duel: (d) => (d.valeur_indice_eur == null ? null
       : d.ventes_comprises

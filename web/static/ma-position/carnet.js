@@ -324,10 +324,18 @@
         ? `Position indisponible pour l'instant (${PP.esc(etat.erreurPosition)}). Nouvel essai dans une minute.`
         : 'Chargement de ta position…'}</p>`;
     } else if (!p.lignes.length) {
+      /* Tout vendu : le résultat des ventes reste la réponse à « est-ce que je gagne ? ». */
+      const t = p.total;
+      const resultat = t?.nombre_ventes > 0 && Number.isFinite(t.gain_eur)
+        ? `<span class="pc-sep" aria-hidden="true">·</span>
+           <span><span class="${PP.sens(t.gain_eur)}">${num(PP.euros(t.gain_eur, { signe: true }))}
+             (${num(PP.pct(t.gain_pct))})</span> depuis le début, frais compris, ventes comprises</span>`
+        : '';
       html = `<p class="pc-direct-ligne"><span class="pc-direct-quoi">Ta position</span>
-                <span>Aucune action détenue en ce moment.</span></p>`;
+                <span>Aucune action détenue en ce moment.</span>${resultat}</p>`;
     } else {
       const t = p.total;
+      const dont = T.dontTotal(t);
       const derniere = [...p.lignes].filter((l) => l.cours_a).sort((a, b) => (a.cours_a < b.cours_a ? -1 : 1)).pop();
       const dernierCours = derniere?.cours_a;
       const quelCours = SEANCE_DU_COURS[derniere?.seance_du_cours] || 'cours de';
@@ -336,7 +344,7 @@
           <span class="pc-direct-quoi">Ta position</span>
           <span class="pc-direct-valeur">${num(PP.euros(t.valeur_eur))}</span>
           <span><span class="${PP.sens(t.gain_eur)}">${num(PP.euros(t.gain_eur, { signe: true }))}
-            (${num(PP.pct(t.gain_pct))})</span> depuis l'achat, frais compris</span>
+            (${num(PP.pct(t.gain_pct))})</span> depuis l'achat, frais compris${dont ? `, ${habiller(dont)}` : ''}</span>
           <span class="pc-sep" aria-hidden="true">·</span>
           <span class="pc-sans-frais">${habiller(T.sansFrais(PP.sansFraisTotal(p), { court: true }))}</span>
           <span class="pc-sep" aria-hidden="true">·</span>
@@ -417,11 +425,15 @@
       /* Le portefeuille : les positions, plus l'argent des ventes pas réinvesti,
          contre l'argent versé, placé dans le S&P 500 aux mêmes dates et gardé.
          Une vente rachetée n'est jamais comptée deux fois. */
+      /* Une action offerte entre dans le duel comme un achat de sa valeur : la phrase le dit. */
+      const somme = b.offert_eur > 0
+        ? `les ${PP.euros(b.verse_eur)} (dont ${PP.euros(b.offert_eur)} d'action offerte)`
+        : `les ${PP.euros(b.verse_eur)} versés`;
       const portefeuille = b.encaisse_eur > 0
         ? `Ton portefeuille vaut ${PP.euros(b.toi_eur)} (${PP.euros(b.positions_eur)} de positions et `
-          + `${PP.euros(b.encaisse_eur)} de ventes pas réinvesties) ; les ${PP.euros(b.verse_eur)} versés, placés dans le `
+          + `${PP.euros(b.encaisse_eur)} de ventes pas réinvesties) ; ${somme}, placés dans le `
           + `S&P 500 aux mêmes dates et gardés, vaudraient ${PP.euros(b.indice_eur)}.`
-        : `Ton portefeuille vaut ${PP.euros(b.toi_eur)} ; les ${PP.euros(b.verse_eur)} versés, placés dans le S&P 500 `
+        : `Ton portefeuille vaut ${PP.euros(b.toi_eur)} ; ${somme}, placés dans le S&P 500 `
           + `aux mêmes dates et gardés, vaudraient ${PP.euros(b.indice_eur)}.`;
       return `<p class="pc-bilan">${habiller(`Sur tes ${b.achats} achat${b.achats > 1 ? 's' : ''}, ${qui} aujourd'hui `
         + `plus que la même somme mise dans le S&P 500 le même jour${b.ventes ? ', ventes comprises' : ''}. ${portefeuille}`)}
