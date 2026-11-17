@@ -79,9 +79,10 @@ TAUX_IMPOT = 0.314          # la flat tax de 2026 : 12,8 % + 18,6 % (comme simul
 HASARD_SEANCES = 20
 HASARD_ANNEES = 2
 HASARD_FRAIS_EN_PLUS = (8.0, 18.0)   # 5 et 10 allers-retours de plus que l'adversaire (1 € par ordre)
+HASARD_REESSAI_S = 600               # un cache abîmé est relu au plus toutes les 10 minutes
 MARCHE = os.path.join(ROOT, "data", "market")
 _verrou = threading.Lock()
-_hasard = {}                # (dossier, valeurs, mise) → mesure : le cache ne change pas, une fois par lancement
+_hasard = {}                # (dossier, valeurs, mise) → (instant, mesure) : le cache ne change pas
 
 
 def nom(symbole):
@@ -134,6 +135,10 @@ def _valider(defi, nom_fichier):
                 or not isinstance(o.get("ticker"), str) or not isinstance(o.get("date"), str)
                 or not all(_nombre_fini(o.get(c)) for c in ("quantite", "montant_eur", "frais_eur", "prix_eur"))
                 or o["quantite"] <= 0):
+            raise mauvais()
+        try:
+            datetime.fromisoformat(o["date"])    # le jour de sa séance se lit dans cette date
+        except ValueError:
             raise mauvais()
     d = defi.get("debut")
     if d is not None:
@@ -322,6 +327,10 @@ def en_seance(minute, maintenant, periode=None):
     return ouverture <= maintenant < cloture
 
 
+def au_centime(v):
+    return round(v, 2)
+
+
 def trois_morceaux(valeur_eur, capital_eur, frais_payes_eur, frais_vente_eur, taux=TAUX_IMPOT):
     """
     Le résultat « si tu vendais tout maintenant », en trois morceaux :
@@ -329,12 +338,20 @@ def trois_morceaux(valeur_eur, capital_eur, frais_payes_eur, frais_vente_eur, ta
     L'impôt : `taux` du gain net de tout le défi (réalisé + latent, tous
     frais déduits), jamais en dessous de 0, comme si le défi était le
     seul compte. `valeur_eur` : liquidités + positions au dernier cours.
+    Tout est compté au centime, puis additionné : à l'écran, avant
+    frais − frais − impôt donne le net, sans un centime d'écart.
     """
-    gain_net = valeur_eur - frais_vente_eur - capital_eur
-    frais = frais_payes_eur + frais_vente_eur
-    impot = taux * max(0.0, gain_net)
-    return {"avant_frais_eur": gain_net + frais, "frais_eur": frais, "impot_eur": impot,
-            "net_eur": gain_net - impot}
+    gain_net = au_centime(au_centime(valeur_eur) - frais_vente_eur - capital_eur)
+    frais = au_centime(frais_payes_eur + frais_vente_eur)
+    impot = au_centime(taux * max(0.0, gain_net))
+    return {"avant_frais_eur": au_centime(gain_net + frais), "frais_eur": frais, "impot_eur": impot,
+            "net_eur": au_centime(gain_net - impot)}
+
+
+def duel_de(toi_eur, indice_eur):
+    """Le duel au centime : l'écart est celui des deux montants AFFICHÉS, pas des valeurs brutes."""
+    toi, indice = au_centime(toi_eur), au_centime(indice_eur)
+    return {"toi_eur": toi, "indice_eur": indice, "ecart_eur": au_centime(toi - indice)}
 
 
 def jour_new_york(ordre):
@@ -365,41 +382,58 @@ def part_du_hasard(dossier=MARCHE, valeurs=None, mise_eur=CAPITAL_EUR - FRAIS_EU
     valeurs sont mêlées, comme si l'on tirait au hasard une valeur et une
     date. Rend l'écart-type de l'écart de rendement, et la part des cas où
     la valeur bat le S&P 500 malgré 8 € puis 18 € de frais en plus, pour
-    `mise_eur` placés de chaque côté. None s'il manque une valeur au cache.
+    `mise_eur` placés de chaque côté.
+
+    None (et une ligne dans le journal du serveur) si le cache est abîmé :
+    un fichier absent ou illisible, des dates illisibles, avec fuseau ou
+    en double, un cours nul, négatif ou infini, ou une valeur qui n'a pas
+    au moins 90 % des périodes du S&P 500 (la phrase parlerait sinon des
+    49 valeurs en en mesurant moins). Jamais d'exception : la part du
+    hasard ne doit pas faire tomber l'affichage du défi. Une mesure
+    réussie est gardée jusqu'au prochain lancement ; un échec est retenté
+    au plus toutes les 10 minutes.
     """
     valeurs = sorted(valeurs or ma_position.engine.UNIVERSE)
     cle = (dossier, tuple(valeurs), mise_eur)
-    if cle in _hasard:
-        return _hasard[cle]
+    deja = _hasard.get(cle)
+    if deja and (deja[1] is not None or time.monotonic() - deja[0] < HASARD_REESSAI_S):
+        return deja[1]
 
     def clotures(symbole):
         c = pd.read_csv(os.path.join(dossier, f"{symbole}_10y.csv"), index_col=0, parse_dates=True)["Close"]
-        return c[~c.index.duplicated()].sort_index()
+        if not isinstance(c.index, pd.DatetimeIndex) or c.index.tz is not None or c.index.duplicated().any():
+            raise ValueError(f"{symbole} : des dates illisibles, avec fuseau ou en double")
+        c = c.astype(float).sort_index()
+        v = c.dropna()
+        if ((v <= 0) | (v == float("inf"))).any():
+            raise ValueError(f"{symbole} : un cours nul, négatif ou infini")
+        return c
 
+    mesure = None
     try:
         indice = clotures(INDICE)
         fin = indice.index[-1]
         # Coupé AVANT de calculer les rendements : aucune période ne part d'avant les 2 ans.
         indice = indice[indice.index > fin - pd.DateOffset(years=HASARD_ANNEES)]
         r_indice = indice.shift(-HASARD_SEANCES) / indice - 1
+        periodes = int(r_indice.notna().sum())
         ecarts = []
         for v in valeurs:
             c = clotures(v).reindex(indice.index)
-            ecarts.append(c.shift(-HASARD_SEANCES) / c - 1 - r_indice)
-        e = pd.concat(ecarts).replace([float("inf"), float("-inf")], float("nan")).dropna()
-    except (OSError, ValueError, KeyError, IndexError) as erreur:
-        print(f"[papier] part du hasard : {erreur}", file=sys.stderr)
-        e = pd.Series(dtype=float)
-    if len(e) < 2:
-        _hasard[cle] = None
-        return None
-    ecart_type = float(e.std())
-    mesure = {"seances": HASARD_SEANCES, "mise_eur": mise_eur, "valeurs": len(valeurs), "cas": int(len(e)),
-              "ecart_type": ecart_type, "ecart_type_eur": ecart_type * mise_eur,
-              "bat_malgre": [{"frais_eur": x, "part": float((mise_eur * e > x).mean())}
-                             for x in HASARD_FRAIS_EN_PLUS],
-              "debut": indice.index[0].date().isoformat(), "fin": fin.date().isoformat()}
-    _hasard[cle] = mesure
+            e = (c.shift(-HASARD_SEANCES) / c - 1 - r_indice).dropna()
+            if periodes < 2 or len(e) < 0.9 * periodes:
+                raise ValueError(f"{v} : {len(e)} périodes sur les {periodes} du S&P 500")
+            ecarts.append(e)
+        e = pd.concat(ecarts)
+        ecart_type = float(e.std())
+        mesure = {"seances": HASARD_SEANCES, "mise_eur": mise_eur, "valeurs": len(valeurs), "cas": int(len(e)),
+                  "ecart_type": ecart_type, "ecart_type_eur": ecart_type * mise_eur,
+                  "bat_malgre": [{"frais_eur": x, "part": float((mise_eur * e > x).mean())}
+                                 for x in HASARD_FRAIS_EN_PLUS],
+                  "debut": indice.index[0].date().isoformat(), "fin": fin.date().isoformat()}
+    except Exception as erreur:      # un cache abîmé, de quelque façon que ce soit
+        print(f"[papier] part du hasard indisponible : {erreur}", file=sys.stderr)
+    _hasard[cle] = (time.monotonic(), mesure)
     return mesure
 
 
@@ -877,28 +911,33 @@ def etat(*, maintenant=None, lire_cours=minute_de_seance, fichier=None, marche=N
     # Le duel de tout le portefeuille, et le résultat « si tu vendais tout » des deux côtés.
     duel = resultat = None
     if adversaire and total is not None:
-        duel = {"toi_eur": total, "indice_eur": adversaire["total_eur"], "ecart_eur": total - adversaire["total_eur"]}
+        duel = duel_de(total, adversaire["total_eur"])
         ind = defi["debut"]["indice"]
         resultat = {"taux_impot": TAUX_IMPOT,
                     "toi": trois_morceaux(total, capital, r["frais_payes_eur"], frais * len(r["positions"])),
                     "indice": trois_morceaux(adversaire["total_eur"], capital, float(ind.get("frais_eur", frais)),
                                              frais)}
 
-    # Le portefeuille de la première séance, gardé sans y toucher, au même cours.
+    # Le portefeuille de la première séance, gardé sans y toucher, au même cours ; au centime,
+    # comme le duel : l'écart est celui des deux montants affichés.
     premiere = None
+    total_affiche = au_centime(total) if total is not None else None
     if defi.get("debut") and defi["ordres"]:
         premiers, suivants = premiere_seance(defi["ordres"])
         valeur_p = valoriser(rejouer({**defi, "ordres": premiers}))
+        valeur_p = au_centime(valeur_p) if valeur_p is not None else None
         premiere = {"jour": jour_new_york(premiers[0]).isoformat(), "ordres": len(premiers),
-                    "ordres_suivants": len(suivants), "frais_suivants_eur": sum(o["frais_eur"] for o in suivants),
+                    "ordres_suivants": len(suivants),
+                    "frais_suivants_eur": au_centime(sum(o["frais_eur"] for o in suivants)),
                     "identique": not suivants, "valeur_eur": valeur_p,
-                    "ecart_eur": total - valeur_p if total is not None and valeur_p is not None else None}
+                    "ecart_eur": (au_centime(total_affiche - valeur_p)
+                                  if total_affiche is not None and valeur_p is not None else None)}
 
     hasard = part_du_hasard(marche or MARCHE, mise_eur=capital - frais)
     phrases = {
         "duel": phrase_duel(capital, defi["debut"]["date"], duel, maintenant) if duel else None,
         "hasard": phrase_hasard(hasard),
-        "premiere_seance": phrase_premiere(premiere, total) if premiere else None,
+        "premiere_seance": phrase_premiere(premiere, total_affiche) if premiere else None,
         "resultat": phrase_resultat(frais) if resultat else None,
     }
 
@@ -1408,13 +1447,23 @@ def _verifier_partie2(dossier, ok, faux, cours, T0, m, proche):
 
     # ── Les trois morceaux, à la main.
     t = trois_morceaux(209.0, 200.0, 1.0, 1.0)
-    ok("trois morceaux : 209 € (1 € payé, 1 € de vente) → avant frais +10, frais 2, impôt 2,512 (31,4 % de 8), net 5,488",
-       proche(t["avant_frais_eur"], 10) and proche(t["frais_eur"], 2) and proche(t["impot_eur"], 2.512)
-       and proche(t["net_eur"], 5.488))
+    ok("trois morceaux : 209 € (1 € payé, 1 € de vente) → avant frais +10, frais 2, impôt 2,51 (31,4 % de 8 = 2,512), "
+       "net 5,49",
+       proche(t["avant_frais_eur"], 10) and proche(t["frais_eur"], 2) and proche(t["impot_eur"], 2.51)
+       and proche(t["net_eur"], 5.49))
     t = trois_morceaux(197.0, 200.0, 3.0, 1.0)
     ok("trois morceaux : un gain net négatif (−4 €) ne paie aucun impôt",
        proche(t["impot_eur"], 0) and proche(t["net_eur"], -4) and proche(t["avant_frais_eur"], 0)
        and proche(t["frais_eur"], 4))
+    t = trois_morceaux(203.3333, 200.0, 1.0, 1.0)
+    centimes = lambda x: abs(round(x, 2) - x) < 1e-9
+    ok("trois morceaux au centime : 203,3333 € → gain net 2,33, impôt 0,73 (31,4 % de 2,33 = 0,73162), net 1,60 ; "
+       "avant frais − frais − impôt = net",
+       proche(t["avant_frais_eur"], 4.33) and proche(t["impot_eur"], 0.73) and proche(t["net_eur"], 1.60)
+       and all(centimes(v) for v in t.values())
+       and abs(t["avant_frais_eur"] - t["frais_eur"] - t["impot_eur"] - t["net_eur"]) < 1e-9)
+    ok("le duel au centime : 88,234 € contre 195,986 € → 88,23 et 195,99, écart −107,76 (pas −107,75, l'écart brut)",
+       duel_de(88.234, 195.986) == {"toi_eur": 88.23, "indice_eur": 195.99, "ecart_eur": -107.76})
 
     # ── Le duel : 50 € de NVDA à 100 € ; l'adversaire, 199 € de SPY à 600 €.
     fa = os.path.join(d2, "duel.json")
@@ -1434,12 +1483,12 @@ def _verifier_partie2(dossier, ok, faux, cours, T0, m, proche):
     ok("NVDA à 120 €, SPY à 630 € : toi 209 €, le S&P 500 208,95 € (199/600 × 630), écart +0,05 €",
        proche(e2["duel"]["toi_eur"], 209) and proche(e2["duel"]["indice_eur"], 208.95)
        and proche(e2["duel"]["ecart_eur"], 0.05))
-    ok("trois morceaux, toi : avant frais +10 €, frais 2 €, impôt 2,512 €, net +5,488 €",
+    ok("trois morceaux, toi : avant frais +10 €, frais 2 €, impôt 2,51 €, net +5,49 €",
        proche(r["toi"]["avant_frais_eur"], 10) and proche(r["toi"]["frais_eur"], 2)
-       and proche(r["toi"]["impot_eur"], 2.512) and proche(r["toi"]["net_eur"], 5.488) and r["taux_impot"] == 0.314)
-    ok("trois morceaux, le S&P 500 : avant frais +9,95 €, frais 2 €, impôt 2,4963 € (31,4 % de 7,95), net +5,4537 €",
+       and proche(r["toi"]["impot_eur"], 2.51) and proche(r["toi"]["net_eur"], 5.49) and r["taux_impot"] == 0.314)
+    ok("trois morceaux, le S&P 500 : avant frais +9,95 €, frais 2 €, impôt 2,50 € (31,4 % de 7,95 = 2,4963), net +5,45 €",
        proche(r["indice"]["avant_frais_eur"], 9.95) and proche(r["indice"]["frais_eur"], 2)
-       and proche(r["indice"]["impot_eur"], 2.4963) and proche(r["indice"]["net_eur"], 5.4537))
+       and proche(r["indice"]["impot_eur"], 2.50) and proche(r["indice"]["net_eur"], 5.45))
     attendu = (f"À ton premier ordre (16:00), l'adversaire a placé 200,00{NB}€ dans le S&P 500, frais compris : "
                f"ils valent 208,95{NB}€. Ton portefeuille vaut 209,00{NB}€, soit +0,05{NB}€ d'écart.")
     ok(f"la phrase du duel → « {e2['phrases']['duel']} »", e2["phrases"]["duel"] == attendu)
@@ -1462,8 +1511,8 @@ def _verifier_partie2(dossier, ok, faux, cours, T0, m, proche):
        proche(e3["plus_values_realisees_eur"], 8) and proche(e3["total_eur"], 197) and proche(t3["impot_eur"], 0)
        and proche(t3["net_eur"], -4) and proche(t3["frais_eur"], 4) and proche(t3["avant_frais_eur"], 0))
     t4 = etat(maintenant=T0, lire_cours=cours(T0, nvda=121.0), fichier=fb)["resultat"]["toi"]
-    ok("NVDA à 110 € : gain net 11 € (8 réalisés + 4 latents − 1 € de vente), impôt 3,454 €, net 7,546 €, avant frais 15 €",
-       proche(t4["impot_eur"], 3.454) and proche(t4["net_eur"], 7.546) and proche(t4["avant_frais_eur"], 15))
+    ok("NVDA à 110 € : gain net 11 € (8 réalisés + 4 latents − 1 € de vente), impôt 3,45 €, net 7,55 €, avant frais 15 €",
+       proche(t4["impot_eur"], 3.45) and proche(t4["net_eur"], 7.55) and proche(t4["avant_frais_eur"], 15))
 
     # ── La première séance : trois ordres le lundi (le dernier à 15 h 59 à New York), une vente le mardi.
     fc = os.path.join(d2, "premiere.json")
@@ -1512,34 +1561,72 @@ def _verifier_partie2(dossier, ok, faux, cours, T0, m, proche):
     ok("phrase : « autant » quand l'écart s'arrondit à 0,00 €",
        "il vaudrait 200,00\xa0€ : autant que ton portefeuille." in phrase_premiere({**pp, "valeur_eur": 200.004}, 200.0))
 
-    # ── La part du hasard, sur des cours inventés : 3 valeurs, 22 séances (2 périodes de 20 chacune),
-    #    plus 3 séances de 2020 aux prix absurdes, qui ne doivent jamais être lues.
+    # ── La part du hasard, sur des cours inventés. 22 séances gardées par valeur, donc 2 périodes de 20 :
+    #    la 1re juste APRÈS la coupure des 2 ans (lundi 09/09/2024, la fin étant le 08/09/2026), la dernière
+    #    le 08/09/2026. Avant, 3 séances aux prix absurdes, dont une PILE sur la coupure (08/09/2024) :
+    #    jamais lues. Le S&P 500 est écrit dans le désordre, BBB a un jour sans cours (le cache en a).
     hz = os.path.join(d2, "marche")
     os.makedirs(hz)
-    jours = pd.bdate_range("2026-08-10", periods=22)
-    vieux = pd.bdate_range("2020-01-06", periods=3)
+    gardes = pd.DatetimeIndex([pd.Timestamp("2024-09-09")] + list(pd.bdate_range("2025-01-06", periods=20))
+                              + [pd.Timestamp("2026-09-08")])
+    anciens = pd.DatetimeIndex(["2024-09-04", "2024-09-06", "2024-09-08"])
 
-    def ecrire(dossier_cache, symbole, fin_0, fin_1, ancien):
+    def ecrire(dossier_cache, symbole, fin_0, fin_1, ancien, sans=None, melange=False):
         """100 pendant 20 séances, puis fin_0 et fin_1 : rendements fin_0/100 − 1 et fin_1/100 − 1."""
-        prix = [ancien] * 3 + [100.0] * 20 + [fin_0, fin_1]
-        pd.Series(prix, index=vieux.append(jours), name="Close").to_csv(
-            os.path.join(dossier_cache, f"{symbole}_10y.csv"), index_label="Date")
+        serie = pd.Series([ancien] * 3 + [100.0] * 20 + [fin_0, fin_1], index=anciens.append(gardes), name="Close")
+        if sans is not None:
+            serie = serie.drop(gardes[sans])
+        if melange:
+            serie = serie.iloc[[5, 0, 24, 12, 2, 20, 1, 3, 4] + list(range(6, 12)) + list(range(13, 20))
+                               + [21, 22, 23]]
+        serie.to_csv(os.path.join(dossier_cache, f"{symbole}_10y.csv"), index_label="Date")
 
-    ecrire(hz, "SPY", 110.0, 105.0, 50.0)       # +10 % et +5 %
-    ecrire(hz, "AAA", 120.0, 110.0, 500.0)      # écarts +0,10 et +0,05
-    ecrire(hz, "BBB", 110.0, 105.0, 50.0)       # écarts 0 et 0
-    ecrire(hz, "CCC", 105.0, 120.0, 5.0)        # écarts −0,05 et +0,15
-    h = part_du_hasard(hz, valeurs=["AAA", "BBB", "CCC"], mise_eur=199.0)
-    ok("part du hasard : 6 périodes mêlées (+0,10 +0,05 0 0 −0,05 +0,15) → écart-type 0,073598, soit 14,65 € pour 199 €",
-       h is not None and h["cas"] == 6 and proche(h["ecart_type"], 0.0735980, 1e-6)
-       and proche(h["ecart_type_eur"], 14.6460, 1e-3) and h["valeurs"] == 3 and h["seances"] == 20)
-    ok("… battue malgré 8 € de frais en plus dans 3 cas sur 6, malgré 18 € dans 2 sur 6",
+    ecrire(hz, "SPY", 110.0, 105.0, 50.0, melange=True)    # +10 % et +5 %
+    ecrire(hz, "AAA", 120.0, 110.0, 500.0)                 # écarts +0,10 et +0,05
+    ecrire(hz, "BBB", 110.0, 105.0, 50.0, sans=5)          # écarts 0 et 0 (le 6e jour gardé manque)
+    ecrire(hz, "CCC", 105.0, 120.0, 5.0)                   # écarts −0,05 et +0,15
+    ecrire(hz, "DDD", 114.01, 114.01, 50.0)                # écarts +0,0401 et +0,0901 : 199 × 0,0401 < 8 < 200 × 0,0401
+    h = part_du_hasard(hz, valeurs=["AAA", "BBB", "CCC", "DDD"], mise_eur=199.0)
+    ok("part du hasard : 8 périodes mêlées (+0,10 +0,05 0 0 −0,05 +0,15 +0,0401 +0,0901) → écart-type 0,0645390 "
+       "(recalculé à part), soit 12,84 € pour 199 €",
+       h is not None and h["cas"] == 8 and proche(h["ecart_type"], 0.0645390, 1e-6)
+       and proche(h["ecart_type_eur"], 12.8433, 1e-3) and h["valeurs"] == 4 and h["seances"] == 20)
+    ok("… battue malgré 8 € de frais en plus dans 4 cas sur 8, malgré 18 € dans 2 sur 8 (pour 200 € placés : 5 et 3)",
        h is not None and [b["frais_eur"] for b in h["bat_malgre"]] == [8.0, 18.0]
-       and proche(h["bat_malgre"][0]["part"], 0.5) and proche(h["bat_malgre"][1]["part"], 1 / 3))
-    ok("… sur les 2 dernières années seulement : les séances de 2020 ne sont pas lues (du 10/08 au 08/09/2026)",
-       h is not None and h["debut"] == "2026-08-10" and h["fin"] == "2026-09-08")
-    ok("part du hasard : une valeur absente du cache → aucune mesure (pas une mesure à moitié)",
-       part_du_hasard(hz, valeurs=["AAA", "ZZZ"], mise_eur=199.0) is None)
+       and proche(h["bat_malgre"][0]["part"], 0.5) and proche(h["bat_malgre"][1]["part"], 0.25))
+    ok("… sur les 2 dernières années, coupure exclue : du 09/09/2024 au 08/09/2026 (S&P 500 écrit dans le désordre)",
+       h is not None and h["debut"] == "2024-09-09" and h["fin"] == "2026-09-08")
+    # Un cache abîmé, de chaque façon : aucune mesure, jamais une exception ni une mesure à moitié.
+    casse = os.path.join(d2, "marche-casse")
+    os.makedirs(casse)
+    for s in ("SPY", "AAA"):
+        ecrire(casse, s, 110.0 if s == "SPY" else 120.0, 105.0 if s == "SPY" else 110.0, 50.0)
+    with open(os.path.join(casse, "SPY_10y.csv"), "a") as g:
+        g.write("2026-09-0\n")                                                    # une ligne coupée
+    ecrire(hz, "DOUBLE", 120.0, 110.0, 500.0)
+    with open(os.path.join(hz, "DOUBLE_10y.csv"), "a") as g:
+        g.write("2025-01-08,101.0\n")                                             # une date en double
+    ecrire(hz, "TEXTE", 120.0, 110.0, 500.0)
+    with open(os.path.join(hz, "TEXTE_10y.csv"), "a") as g:
+        g.write("2026-09-09,abc\n")                                               # un cours illisible
+    ecrire(hz, "NEGATIF", 120.0, -110.0, 500.0)                                   # un cours négatif
+    pd.Series([100.0, 101.0], index=anciens[:2], name="Close").to_csv(
+        os.path.join(hz, "VIDE_10y.csv"), index_label="Date")                     # aucune période gardée
+    pd.Series([100.0] * 22, index=gardes.tz_localize("UTC"), name="Close").to_csv(
+        os.path.join(hz, "FUSEAU_10y.csv"), index_label="Date")                   # des dates avec fuseau
+    pd.Series([100.0] * 22, index=gardes, name="Prix").to_csv(
+        os.path.join(hz, "SANSCLOSE_10y.csv"), index_label="Date")                # pas de colonne « Close »
+    refus = {nom: part_du_hasard(dossier, valeurs=valeurs, mise_eur=199.0)
+             for nom, dossier, valeurs in [("valeur absente", hz, ["AAA", "ZZZ"]),
+                                           ("ligne coupée", casse, ["AAA"]),
+                                           ("date en double", hz, ["AAA", "DOUBLE"]),
+                                           ("cours illisible", hz, ["AAA", "TEXTE"]),
+                                           ("cours négatif", hz, ["AAA", "NEGATIF"]),
+                                           ("aucune période", hz, ["AAA", "VIDE"]),
+                                           ("dates avec fuseau", hz, ["AAA", "FUSEAU"]),
+                                           ("sans colonne Close", hz, ["AAA", "SANSCLOSE"])]}
+    ok(f"part du hasard, cache abîmé → aucune mesure, sans exception : {sorted(k for k, v in refus.items() if v)} "
+       "mesurés à tort", all(v is None for v in refus.values()))
     h_ecrit = {"valeurs": 49, "seances": 20, "ecart_type_eur": 19.27, "mise_eur": 199.0,
                "bat_malgre": [{"frais_eur": 8.0, "part": 0.2808}, {"frais_eur": 18.0, "part": 0.1279}],
                "debut": "2024-09-05", "fin": "2026-09-04"}
@@ -1563,6 +1650,24 @@ def _verifier_partie2(dossier, ok, faux, cours, T0, m, proche):
     e9 = etat(maintenant=T0, lire_cours=cours(T0), fichier=fa, marche=os.path.join(d2, "absent"))
     ok("sans cache des cours : le défi s'affiche, sans part du hasard",
        e9["hasard"] is None and e9["phrases"]["hasard"] is None and e9["duel"] is not None)
+
+    # ── Une date d'ordre illisible : le défi est refusé avec sa phrase, jamais un plantage de l'affichage.
+    fd = os.path.join(d2, "date-illisible.json")
+    with open(fd, "w") as g:
+        json.dump({**nouveau_defi(), "debut": {"date": T0.isoformat(), "indice": {"quantite": 0.3}},
+                   "ordres": [{"date": "23/11/2026 16:00", "sens": "achat", "ticker": "NVDA", "quantite": 0.5,
+                               "montant_eur": 50.0, "frais_eur": 1.0, "prix_eur": 100.0}]}, g)
+    with open(fd, "rb") as g:
+        avant = g.read()
+    try:
+        etat(maintenant=T0, lire_cours=cours(T0), fichier=fd)
+        texte = "affiché"
+    except ValueError as erreur:
+        texte = str(erreur)
+    with open(fd, "rb") as g:
+        intact = g.read() == avant
+    ok(f"une date d'ordre illisible (« 23/11/2026 16:00 ») → « {texte} », fichier laissé tel quel",
+       "pas la forme d'un défi" in texte and intact)
 
     # ── Le serveur n'envoie jamais NaN : JSON.parse refuse « NaN » et toute la réponse deviendrait illisible.
     import importlib.util
@@ -1597,9 +1702,26 @@ def _verifier_partie2(dossier, ok, faux, cours, T0, m, proche):
 
     guichet = FauxGuichet()
     serveur.Handler._json(guichet, 200, {"ok": True, "data": {"total_eur": float("nan")}})
-    ok("… et c'est bien ce que les routes envoient (Handler._json), longueur annoncée comprise",
+    ok("… et c'est bien ce que les POST envoient (Handler._json), longueur annoncée comprise",
        json.loads(guichet.ecrit) == {"ok": True, "data": {"total_eur": None}}
        and guichet.entetes.get("Content-Length") == str(len(guichet.ecrit)))
+
+    class FauxLecteur(FauxGuichet):
+        """Une lecture (GET) d'une route du serveur, sans réseau."""
+        def __init__(self, chemin_url):
+            super().__init__()
+            self.path = chemin_url
+
+        def _hote_refuse(self):
+            return False
+
+    serveur.ROUTES["/api/essai-nan"] = (lambda: {"total_eur": float("nan"), "suite": [float("inf"), 2.5]}, 0)
+    lecteur = FauxLecteur("/api/essai-nan")
+    serveur.Handler.do_GET(lecteur)
+    ok("… et les lectures (GET, comme /api/papier) aussi : null, jamais « NaN » ni « Infinity »",
+       b"NaN" not in lecteur.ecrit and b"Infinity" not in lecteur.ecrit
+       and json.loads(lecteur.ecrit)["data"] == {"total_eur": None, "suite": [None, 2.5]}
+       and lecteur.entetes.get("Content-Length") == str(len(lecteur.ecrit)))
 
 
 def main():

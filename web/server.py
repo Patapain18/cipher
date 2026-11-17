@@ -562,13 +562,10 @@ class Handler(SimpleHTTPRequestHandler):
             producer, ttl = ROUTES[path]
             try:
                 payload, computed_at = cached(path, ttl, producer)
-                body = json.dumps(
-                    {"ok": True, "data": payload, "cached_at": computed_at},
-                    default=str,
-                ).encode()
+                body = encoder_json({"ok": True, "data": payload, "cached_at": computed_at})
                 status = 200
             except Exception as e:
-                body = json.dumps({"ok": False, "error": str(e)}).encode()
+                body = encoder_json({"ok": False, "error": str(e)})
                 status = 500
 
             self.send_response(status)

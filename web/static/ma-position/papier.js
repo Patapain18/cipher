@@ -362,15 +362,21 @@
     if (duel) {
       const ph = d.phrases || {};
       const r = d.resultat;
+      /* Un montant absent (null) s'écrit « — », jamais 0 : en JavaScript,
+         -null vaut -0 et null - x vaut -x, des chiffres inventés. */
+      const montant = (v, o) => (v == null ? num('—') : fictif(v, o));
+      const moins = (v) => (v == null ? null : -v);
+      const ecart = (a, b) => (a == null || b == null ? null : a - b);
       /* Une ligne du tableau : les montants avec leur signe, et l'écart
-         (toi moins le S&P 500) coloré, comme tout écart du carnet. Les
-         lignes s'additionnent : avant frais − frais − impôt = net. */
+         (toi moins le S&P 500) coloré, comme tout écart du carnet. Le
+         serveur compte tout au centime : les lignes s'additionnent
+         (avant frais − frais − impôt = net), l'écart aussi. */
       const ligne = (titre, toi, indice) => `
         <tr>
           <th scope="row">${titre}</th>
-          <td>${fictif(toi, { signe: true })}</td>
-          <td>${fictif(indice, { signe: true })}</td>
-          <td><span class="${PP.sens(toi - indice)}">${fictif(toi - indice, { signe: true })}</span></td>
+          <td>${montant(toi, { signe: true })}</td>
+          <td>${montant(indice, { signe: true })}</td>
+          <td><span class="${PP.sens(ecart(toi, indice))}">${montant(ecart(toi, indice), { signe: true })}</span></td>
         </tr>`;
       /* Le titre du tableau est HORS du cadre qui défile : au téléphone, le
          tableau défile à l'horizontale, et une légende posée dedans y
@@ -386,9 +392,9 @@
             </tr></thead>
             <tbody>
               ${ligne('Avant frais', r.toi.avant_frais_eur, r.indice.avant_frais_eur)}
-              ${ligne('Les frais', -r.toi.frais_eur, -r.indice.frais_eur)}
+              ${ligne('Les frais', moins(r.toi.frais_eur), moins(r.indice.frais_eur))}
               ${ligne(`L'impôt (${num(PP.pct(r.taux_impot, { decimales: 1, signe: false }))})`,
-                -r.toi.impot_eur, -r.indice.impot_eur)}
+                moins(r.toi.impot_eur), moins(r.indice.impot_eur))}
               ${ligne('Résultat net', r.toi.net_eur, r.indice.net_eur)}
             </tbody>
           </table>
@@ -397,10 +403,10 @@
       html = `
         <div class="pc-duel pa-duel">
           <dl class="pc-registre">
-            <div><dt>Ton portefeuille</dt><dd>${fictif(duel.toi_eur)}</dd></div>
-            <div><dt>Le S&amp;P&nbsp;500</dt><dd>${fictif(duel.indice_eur)}</dd></div>
+            <div><dt>Ton portefeuille</dt><dd>${montant(duel.toi_eur)}</dd></div>
+            <div><dt>Le S&amp;P&nbsp;500</dt><dd>${montant(duel.indice_eur)}</dd></div>
             <div class="pc-registre-ecart"><dt>Écart</dt>
-              <dd><span class="${PP.sens(duel.ecart_eur)}">${fictif(duel.ecart_eur, { signe: true })}</span></dd></div>
+              <dd><span class="${PP.sens(duel.ecart_eur)}">${montant(duel.ecart_eur, { signe: true })}</span></dd></div>
           </dl>
           ${ph.duel ? `<p class="pc-duel-phrase">${habiller(ph.duel)}</p>` : ''}
           ${ph.hasard ? `<p class="pa-hasard">${habiller(ph.hasard)}</p>` : ''}
@@ -410,10 +416,17 @@
     }
     $('#pa-section-duel').hidden = !duel;
     if (html !== deja.duel) {
-      const focus = $('#pa-duel').contains(document.activeElement);
-      $('#pa-duel').innerHTML = html;
+      /* Au téléphone, le tableau défile à l'horizontale : on lui rend sa
+         position après la réécriture (en séance, les chiffres changent
+         chaque minute), et son focus s'il l'avait. */
+      const zone = $('#pa-duel');
+      const focus = zone.contains(document.activeElement);
+      const defile = zone.querySelector('.pa-table-cadre')?.scrollLeft || 0;
+      zone.innerHTML = html;
       deja.duel = html;
-      if (focus) $('#pa-duel .pa-table-cadre')?.focus({ preventScroll: true });
+      const cadre = zone.querySelector('.pa-table-cadre');
+      if (cadre) cadre.scrollLeft = defile;
+      if (focus) cadre?.focus({ preventScroll: true });
     }
   }
 
