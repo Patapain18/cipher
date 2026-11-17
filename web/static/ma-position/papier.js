@@ -186,6 +186,7 @@
             </div>
           </div>
         </div>
+        <p class="pa-note" id="pa-recommencer-note" hidden></p>
         <p class="form-msg pc-msg pa-recommencer-msg" id="pa-recommencer-msg" role="status" aria-live="polite"
            tabindex="-1"></p>
       </section>
@@ -519,9 +520,16 @@
     const d = etat.donnees;
     const connu = !!d && 'defis' in d;
     const b = connu ? d.defis : null;
-    const peut = connu && !!d.debut;
-    $('#pa-section-defis').hidden = !(b || peut);
+    /* Le serveur dit si Recommencer est possible maintenant, et sinon pourquoi
+       (choix de Mathis : après la dernière séance, on attend le bilan final). */
+    const rec = connu ? d.recommencer : null;
+    const peut = rec ? !!rec.possible : connu && !!d.debut;
+    const note = connu && d.debut && rec && !rec.possible ? (rec.message || '') : '';
+    $('#pa-section-defis').hidden = !(b || peut || note);
     $('#pa-recommencer').hidden = !peut;
+    const pNote = $('#pa-recommencer-note');
+    if (pNote.dataset.texte !== note) { pNote.innerHTML = habiller(note); pNote.dataset.texte = note; }
+    pNote.hidden = !note;
     let html = '';
     if (b) {
       /* Un défi au bilan faux ou incomplet (un fractionnement d'action, des cours

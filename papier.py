@@ -601,6 +601,26 @@ def _chiffres_valides(x):
     return False
 
 
+def recommencer_possible(e, maintenant):
+    """
+    Peut-on ranger ce défi maintenant ? (oui ou non, et pourquoi). Choix de
+    Mathis (17/11/2026) : un défi allé au bout de sa dernière séance attend
+    son bilan final pour être rangé « fini », aux clôtures officielles,
+    jamais « abandonné » le week-end d'avant. Un bilan final qui n'arrive
+    pas : rangé quand même 3 jours après la fin (pas compté).
+    """
+    if not e["debut"]:
+        return False, "Le défi n'a pas commencé : rien à ranger. Ton premier ordre le lancera."
+    lendemain = date.fromisoformat(e["fin"]) + timedelta(days=1)
+    if not e["fini"] and e["derniere_seance_passee"]:
+        return False, (f"Ta dernière séance est passée : le défi sera rangé « fini », avec son bilan final, à partir "
+                       f"du {date_fr(lendemain)}.")
+    if (e["fini"] and (e["bilan_final"] or {}).get("statut") != "final"
+            and (jour_paris(maintenant) - date.fromisoformat(e["fin"])).days < ATTENTE_MAX_JOURS):
+        return False, "Le bilan final attend les cours de clôture officiels : réessaie dans quelques minutes."
+    return True, None
+
+
 def recommencer(*, maintenant=None, lire_cours=None, lire_jours=None, fichier=None, marche=None):
     """
     Range le défi dans les archives avec ses chiffres (« fini », ou
@@ -619,14 +639,14 @@ def recommencer(*, maintenant=None, lire_cours=None, lire_jours=None, fichier=No
             raise ValueError("Le défi n'a pas commencé : rien à ranger. Ton premier ordre le lancera.")
         e = etat(maintenant=maintenant, lire_cours=lire_cours or minute_de_seance, lire_jours=lire_jours,
                  fichier=fichier, marche=marche)
+        possible, pourquoi = recommencer_possible(e, maintenant)
+        if not possible:
+            raise ValueError(pourquoi)
         statut = "fini" if e["fini"] else "abandonne"
         exclu = None
         if statut == "fini" and (e["bilan_final"] or {}).get("statut") != "final":
-            # D'habitude, quelques minutes. Si les cours ne viennent jamais (une valeur que Yahoo ne donne
-            # plus), le défi se range 3 jours après sa fin, aux derniers cours connus, et ne compte pas.
-            if (jour_paris(maintenant) - date.fromisoformat(e["fin"])).days < ATTENTE_MAX_JOURS:
-                raise ValueError("Le bilan final attend les cours de clôture officiels : réessaie dans quelques "
-                                 "minutes.")
+            # Les cours de la fin ne sont jamais venus (une valeur que Yahoo ne donne plus) : rangé 3 jours
+            # après la fin, aux derniers cours connus, et pas compté.
             exclu = "bilan final incomplet : cours de clôture introuvables"
         fractionnements = (e["bilan_final"] or {}).get("fractionnements")
         if fractionnements is None:
@@ -1362,7 +1382,7 @@ def etat(*, maintenant=None, lire_cours=minute_de_seance, fichier=None, marche=N
         "defis": phrase_defis(defis) if defis else None,
     }
 
-    return {
+    sortie = {
         "maj": maintenant.isoformat(timespec="seconds"),
         "capital_eur": capital, "frais_ordre_eur": frais, "achat_min_eur": ACHAT_MIN_EUR,
         "jours": int(defi.get("jours", JOURS)),
@@ -1392,6 +1412,10 @@ def etat(*, maintenant=None, lire_cours=minute_de_seance, fichier=None, marche=N
         "valeurs": sorted(ma_position.engine.UNIVERSE),
         "avertissement": AVERTISSEMENT,
     }
+    # Recommencer : la page ne l'offre que si le serveur l'accepterait (sinon, elle dit pourquoi).
+    possible, pourquoi = recommencer_possible(sortie, maintenant)
+    sortie["recommencer"] = {"possible": possible, "message": pourquoi}
+    return sortie
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -2309,6 +2333,15 @@ def _verifier_lot2(dossier, ok, faux, refus, empreinte, cours, T0, m, proche):
     r_ok, texte = refus(lambda: passer_ordre(achat(5), maintenant=vendredi_soir, lire_cours=cours(vendredi_soir),
                                              fichier=fe), "Plus aucune séance")
     ok(f"un ordre après la dernière séance : refusé → « {texte} »", r_ok and lire(fe) == copie_a)
+    r_ok, texte = refus(lambda: recommencer(maintenant=vendredi_soir, lire_cours=cours(vendredi_soir), fichier=fe),
+                        "Ta dernière séance est passée", "à partir du lundi 21 décembre")
+    ok(f"recommencer après la dernière séance (choix de Mathis : attendre le bilan) : refusé → « {texte} »",
+       r_ok and lire(fe) == copie_a and not os.path.exists(dossier_archives(fe))
+       and ee["recommencer"] == {"possible": False, "message": texte})
+    ok("ce que la page sait de Recommencer : pas commencé (non), en cours (oui), fini en attente (non)",
+       etat(maintenant=T0, lire_cours=cours(T0), fichier=os.path.join(d4, "rien.json"))["recommencer"]["possible"] is False
+       and etat(maintenant=mardi, lire_cours=cours(mardi), fichier=fe)["recommencer"] == {"possible": True, "message": None}
+       and ec["recommencer"]["possible"] is False)
 
     # ── F. Recommencer.
     fr = os.path.join(d3, "papier.json")
