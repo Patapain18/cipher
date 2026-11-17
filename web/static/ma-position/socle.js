@@ -218,7 +218,9 @@ window.PP = (() => {
      les euros vraiment sortis du compte. Avec le même cours, ce calcul
      redonne le pourcentage du courtier (vérifié le 15/11/2026). */
   const sansFrais = (l) => ({
-    eur: l.valeur_eur - l.montant_eur,
+    /* Le serveur envoie ce montant déjà arrondi : les lignes s'additionnent
+       jusqu'au total au centime (relecture du 17/11/2026). */
+    eur: Number.isFinite(l.gain_sans_frais_eur) ? l.gain_sans_frais_eur : l.valeur_eur - l.montant_eur,
     pct: l.montant_eur ? l.valeur_eur / l.montant_eur - 1 : null,
   });
   /** Le total sans les frais d'une réponse de /api/position. Comme le

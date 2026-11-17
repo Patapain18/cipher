@@ -500,7 +500,7 @@ function dessinerCartePosition() {
     <div class="label">Ma position</div>
     <div class="value">${PP.euros(total.valeur_eur)}</div>
     <div class="foot"><span class="${PP.sens(total.gain_eur)}">${PP.euros(total.gain_eur, { signe: true })}</span>
-      depuis l'achat, frais compris</div>
+      ${maPosition.lignes.length ? 'depuis l\'achat, frais compris' : 'depuis le début, ventes comprises'}</div>
     ${dont ? `<div class="foot">${esc(dont)}</div>` : ''}
     <div class="foot">${PP.euros(PP.sansFraisTotal(maPosition).eur, { signe: true })} sans les frais</div>`;
 }
@@ -545,14 +545,13 @@ async function renderPositions() {
         <span class="rank-total">${PP.pct(l.gain_pct)}</span></td>
       <td class="num-cell num sans-frais">${sansFrais(PP.sansFrais(l))}</td>
     </tr>`;
-  /* Au téléphone, le tableau défile à l'horizontale : il doit pouvoir se
-     prendre au clavier (axe, 17/11/2026), comme le grand tableau. Il est
-     réécrit à chaque rafraîchissement (60 s) : on lui rend son focus et
-     son défilement, sinon le clavier repartait du haut de la page. */
-  const avant = zone.querySelector('.position-table');
-  const garde = avant && { focus: avant.contains(document.activeElement), gauche: avant.scrollLeft };
-  zone.innerHTML = `
-    <div class="position-table" tabindex="0" role="region" aria-label="Ta position, action par action">
+  /* Au téléphone, le tableau défile à l'horizontale : son cadre doit
+     pouvoir se prendre au clavier (axe, 17/11/2026), comme le grand
+     tableau. Le cadre est créé UNE fois puis gardé : à chaque
+     rafraîchissement (60 s), seul son contenu change, et seulement s'il a
+     changé. Le focus et le défilement restent donc en place, sans qu'un
+     lecteur d'écran relise le cadre chaque minute (relectures du 17/11). */
+  const tableau = `
       <table>
         <thead><tr>
           <th>Action</th>
@@ -572,16 +571,27 @@ async function renderPositions() {
             <span class="rank-total">${PP.pct(total.gain_pct)}</span></td>
           <td class="num-cell num sans-frais">${sansFrais(PP.sansFraisTotal(maPosition))}</td>
         </tr></tfoot>` : ''}
-      </table>
-    </div>
-    ${dont ? `<p class="position-dont">Le total compte aussi ${esc(dont.replace(/^dont /, ''))}.</p>` : ''}`;
+      </table>`;
   /* La note est HORS du cadre qui défile : dans une cellule, elle prenait la
      largeur du tableau et se coupait au téléphone (relecture du 17/11/2026). */
-  const apres = zone.querySelector('.position-table');
-  if (garde && apres) {
-    apres.scrollLeft = garde.gauche;
-    if (garde.focus) apres.focus({ preventScroll: true });
+  const note = dont ? `Le total compte aussi ${esc(dont.replace(/^dont /, ''))}.` : '';
+  let cadre = zone.querySelector('.position-table');
+  if (!cadre) {
+    zone.innerHTML = `
+      <div class="position-table" tabindex="0" role="region" aria-label="Ta position, action par action"></div>
+      <p class="position-dont"></p>`;
+    cadre = zone.querySelector('.position-table');
+    cadre.dataset.contenu = '';
   }
+  if (cadre.dataset.contenu !== tableau) {
+    const gauche = cadre.scrollLeft;
+    cadre.innerHTML = tableau;
+    cadre.dataset.contenu = tableau;
+    cadre.scrollLeft = gauche;
+  }
+  const p = zone.querySelector('.position-dont');
+  if (p.innerHTML !== note) p.innerHTML = note;
+  p.hidden = !note;
   /* Le panneau 1 de la vue baie EST cette section : il se remesure. */
   document.dispatchEvent(new CustomEvent('stocks:dessine'));
 }

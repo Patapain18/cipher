@@ -552,6 +552,8 @@
     } else {
       const s = T.seuils(l);
       const alerte = T.alerteRang(l);
+      /* Une ligne toute offerte part du jour du cadeau, pas d'un achat (relecture du 17/11/2026). */
+      const offerte = l.offert_eur > 0 && Math.abs(l.offert_eur - l.montant_eur) < 0.005;
       html = `
         <div class="pc-ligne pc-chiffres">
           <p class="pc-marge pc-chiffres-quoi"><strong>${PP.esc(l.ticker)}</strong><br>
@@ -562,11 +564,11 @@
               <span class="pc-valeur-dollars">${num(PP.dollars(l.valeur_usd))}</span>
             </p>
             <p class="pc-gain-ligne"><span class="${PP.sens(l.gain_eur)}">${num(PP.euros(l.gain_eur, { signe: true }))}
-              (${num(PP.pct(l.gain_pct))})</span> depuis l'achat, frais compris</p>
+              (${num(PP.pct(l.gain_pct))})</span> ${offerte ? 'depuis le cadeau' : 'depuis l\'achat, frais compris'}</p>
             <p class="pc-sans-frais-ligne">${habiller(T.sansFrais(PP.sansFrais(l)))}</p>
             <p class="pc-cours-ligne">Cours ${num(PP.euros(l.prix_eur))} à ${num(heureDuCours(l.cours_a))}${PP.esc(SEANCE_ENTRE_PARENTHESES[l.seance_du_cours] || '')}
               <span class="pc-sep" aria-hidden="true">·</span>
-              ${num(PP.pct(l.variation_prix_pct))} depuis ton prix d'achat (${num(PP.euros(l.prix_achat_eur))})</p>
+              ${num(PP.pct(l.variation_prix_pct))} ${offerte ? 'depuis son prix du jour du cadeau' : 'depuis ton prix d\'achat'} (${num(PP.euros(l.prix_achat_eur))})</p>
           </div>
         </div>`;
       faits = `

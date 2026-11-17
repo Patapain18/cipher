@@ -82,34 +82,37 @@ def maintenant_paris():
     return datetime.now(PARIS).replace(tzinfo=None).isoformat(timespec="seconds")
 
 
-def _minute(d):
-    return en_utc(d["date"]).replace(second=0, microsecond=0)
-
-
 def trier(journal):
     """
-    L'ordre du journal (vérification et relecture du 17/11/2026).
+    L'ordre du journal (vérification et relectures du 17/11/2026).
 
     D'abord l'heure réelle, en UTC, quel que soit le format de la date
     (« …T15:45 » du formulaire, « …T15:45:32 » d'une décision notée sans
-    date, ou avec un fuseau) ; à la même seconde, l'achat avant la vente.
-    Puis, À LA MÊME MINUTE, une vente passe avant les achats d'AUTRES
-    valeurs : son argent peut les payer, quel que soit l'ordre de saisie.
-    Jamais avant un achat de la même valeur, qui peut être ce qu'elle vend.
-    Avec un simple tri sur le texte de la date, l'ordre de saisie changeait
-    le bilan.
+    date, ou avec un fuseau). À la même heure exacte, l'ordre de saisie :
+    une vente puis son rachat, ou un achat puis sa revente (le tri de
+    Python garde l'ordre des égalités).
+    Puis une vente passe avant les achats d'AUTRES valeurs notés moins
+    d'une minute plus tôt : son argent peut les payer, quel que soit l'ordre
+    de saisie. Jamais avant un achat de la même valeur, qui peut être ce
+    qu'elle vend. Une minute glissante, pas l'horloge : 21:00:58 puis
+    21:01:03 vont ensemble.
     """
-    base = sorted(journal, key=lambda d: (en_utc(d["date"]), 0 if d["sens"] == "achat" else 1))
+    base = sorted(journal, key=lambda d: en_utc(d["date"]))
     rangees = []
     for d in base:
         i = len(rangees)
         if d["sens"] == "vente":
-            minute = _minute(d)
+            quand = en_utc(d["date"])
             while (i > 0 and rangees[i - 1]["sens"] == "achat" and rangees[i - 1]["ticker"] != d["ticker"]
-                   and _minute(rangees[i - 1]) == minute):
+                   and quand - en_utc(rangees[i - 1]["date"]) < timedelta(seconds=60)):
                 i -= 1
         rangees.insert(i, d)
     return rangees
+
+
+def _toute_offerte(l):
+    """Une ligne dont toutes les actions détenues ont été offertes (son graphique, ses phrases)."""
+    return l["quantite"] > 0 and abs(l.get("offert_eur", 0.0) - l["montant_eur"]) < 0.005
 
 
 def _offert(d):
@@ -564,13 +567,19 @@ def position(rang_de=None):
         cout += l["cout_eur"]
     f = flux(journal)
     # Le gain vaut la valeur + la caisse − le versé, c'est-à-dire le gain des lignes + les ventes + l'offert.
-    # Il se compte avec les montants AFFICHÉS, arrondis au centime : les lignes et la note « dont… »
-    # s'additionnent alors jusqu'au total (relecture du 17/11/2026 : +0,74 € attendus, +0,73 € affichés).
+    # Tout se compte avec les montants AFFICHÉS : le serveur les arrondit au centime et la page les montre
+    # tels quels (Python et JavaScript n'arrondissent pas pareil un demi-centime exact). Les colonnes et la
+    # note « dont… » s'additionnent alors jusqu'au total (relectures du 17/11/2026).
     centimes = lambda x: round(x, 2)
-    gain = centimes(sum(centimes(x["gain_eur"]) for x in lignes)
-                    + centimes(f["offert_eur"]) + centimes(f["ventes_eur"]))
-    gain_sf = centimes(sum(centimes(x["valeur_eur"] - x["montant_eur"]) for x in lignes)
-                       + centimes(f["offert_eur"]) + centimes(f["ventes_sans_frais_eur"]))
+    for x in lignes:
+        x["gain_sans_frais_eur"] = centimes(x["valeur_eur"] - x["montant_eur"])
+        x["gain_eur"] = centimes(x["gain_eur"])
+        x["valeur_eur"] = centimes(x["valeur_eur"])
+    for cle in ("offert_eur", "ventes_eur", "ventes_sans_frais_eur"):
+        f[cle] = centimes(f[cle])
+    valeur = centimes(sum(x["valeur_eur"] for x in lignes))
+    gain = centimes(sum(x["gain_eur"] for x in lignes) + f["offert_eur"] + f["ventes_eur"])
+    gain_sf = centimes(sum(x["gain_sans_frais_eur"] for x in lignes) + f["offert_eur"] + f["ventes_sans_frais_eur"])
     return {
         "maj": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "eurusd": eurusd,
@@ -649,7 +658,7 @@ def journal_compare(prix_actuels=None, fx_actuel=None):
                 a["reste"] *= 1 - part
                 a["vendu"] = True
         sortie.append(ligne)
-    positions = 0.0
+    par_valeur = {}      # la valeur de ce qui reste, valeur par valeur
     nombre = devant = 0
     for ticker, lots in achats.items():
         # Une valeur vendue en entier n'a plus besoin de son cours : le demander rendait tout le carnet
@@ -658,8 +667,8 @@ def journal_compare(prix_actuels=None, fx_actuel=None):
         if restant > 1e-9 and ticker not in prix_maintenant:
             prix_maintenant[ticker] = cours_actuel(ticker)[0]
         for a in lots:
-            # Les positions s'additionnent en valeurs exactes et ne s'arrondissent qu'une fois : le bilan
-            # tombe sur « Ta position » au centime près (vu le 17/11 : 198,34 contre 198,33).
+            # Les positions se comptent valeur par valeur, arrondies au centime puis additionnées, comme
+            # « Ta position » : le bilan tombe sur elle au centime près (relectures du 17/11/2026).
             reste_brut = (a["ligne"]["quantite"] * a["reste"] * prix_maintenant[ticker] / fx_maintenant
                           if restant > 1e-9 else 0.0)
             choix_brut = reste_brut + a["encaisse_eur"]
@@ -668,13 +677,15 @@ def journal_compare(prix_actuels=None, fx_actuel=None):
             if math.isfinite(choix) and math.isfinite(jumeau):
                 a["ligne"].update({"valeur_choix_eur": choix, "valeur_indice_eur": jumeau,
                                    "ecart_eur": round(choix - jumeau, 2), "ventes_comprises": a["vendu"]})
-                positions, nombre = positions + reste_brut, nombre + 1
+                par_valeur[ticker] = par_valeur.get(ticker, 0.0) + reste_brut
+                nombre += 1
                 devant += round(choix - jumeau, 2) > 0
     # Le bilan : ce que tu as (positions + ventes pas réinvesties) contre l'argent versé, placé dans le
     # S&P 500 aux mêmes dates et gardé. Une vente rachetée n'est donc jamais comptée deux fois.
     # Arrondis d'abord, additionnés ensuite : la phrase « X de positions et Y de ventes » tombe juste sur
     # « Ton portefeuille vaut Z » (2 relectures sur 11 avaient un centime d'écart, vérification du 17/11).
-    positions_c, caisse_c = round(positions, 2), round(caisse, 2)
+    positions_c = round(sum(round(v, 2) for v in par_valeur.values()), 2)
+    caisse_c = round(caisse, 2)
     toi = round(positions_c + caisse_c, 2)
     indice = round(parts_versees * indice_maintenant / fx_maintenant, 2)
     offert = sum(d["montant_eur"] for d in journal if _offert(d))
@@ -713,7 +724,7 @@ def graphique(ticker, periode):
         sortie["achat"] = {"eur": ligne["montant_eur"] / ligne["quantite"],
                            "seuil_eur": ligne["cout_eur"] / ligne["quantite"],
                            # Une ligne toute offerte n'a aucun frais à rembourser (relecture du 17/11/2026).
-                           "offerte": abs(ligne.get("offert_eur", 0.0) - ligne["montant_eur"]) < 0.005}
+                           "offerte": _toute_offerte(ligne)}
     if periode == "1a":
         sma50, sma200 = moyenne_mobile(cours, 50), moyenne_mobile(cours, 200)
         r = rsi(cours)
@@ -1077,26 +1088,46 @@ def _verifier_lot4(ok, proche):
             f3 = flux([achat1, {**achat2, "date": "2026-03-03T16:00:05"}, {**vente, "date": "2026-03-03T16:00:30"}])
             ok("même minute, secondes différentes (achat d'AAPL à 16:00:05, vente de MSFT à 16:00:30) : le même argent",
                f3 == f1)
-            # Même valeur, même minute : l'achat passe d'abord, puisque la vente peut vendre ce qui vient d'être
-            # acheté (un aller-retour dans la minute n'est pas refusé).
+            # Une minute glissante, pas l'horloge : 16:00:58 puis 16:01:03 vont ensemble ; 15:58 et 16:00, non.
+            f4 = flux([achat1, {**achat2, "date": "2026-03-03T16:00:58"}, {**vente, "date": "2026-03-03T16:01:03"}])
+            f5 = flux([achat1, {**achat2, "date": "2026-03-03T15:58:00"}, {**vente, "date": "2026-03-03T16:00:00"}])
+            ok("16:00:58 puis 16:01:03 (5 s, à cheval sur deux minutes) : la vente paie l'achat ; 15:58 puis 16:00 "
+               "(2 minutes) : l'achat d'AAPL est versé (102 €), et les 64 € de la vente restent en caisse",
+               f4 == f1 and proche(f5["verse_eur"], 102.0) and proche(f5["encaisse_eur"], 64.0))
+            # Même valeur, même heure exacte : l'ordre de saisie (une vente puis son rachat, ou un aller-retour).
             meme = {**achat1, "date": "2026-03-03T16:00:00", "prix_eur": 140.0, "montant_eur": 70.0}
             petite = {**vente, "quantite": 0.25, "prix_eur": 140.0, "montant_eur": 35.0}
-            lm = agreger([achat1, petite, meme])[0]
-            ok("même valeur, même minute : l'achat de 70 € + 1 € d'abord (1 action pour 132 €), puis la vente de 0,25 "
-               "en retire le quart : 0,75 action pour 99 €",
-               proche(lm["quantite"], 0.75) and proche(lm["cout_eur"], 99.0) and proche(lm["montant_eur"], 97.5))
+            lv, la = agreger([achat1, petite, meme])[0], agreger([achat1, meme, petite])[0]
+            ok("même valeur, même heure exacte, l'ordre de saisie : vente puis rachat → la vente retire la moitié des "
+               "61 € puis le rachat ajoute 71 € (0,75 action pour 101,50 €) ; achat puis vente → 132 € dont on retire "
+               "le quart (0,75 pour 99 €)",
+               proche(lv["quantite"], 0.75) and proche(lv["cout_eur"], 101.5) and proche(lv["montant_eur"], 100.0)
+               and proche(la["quantite"], 0.75) and proche(la["cout_eur"], 99.0) and proche(la["montant_eur"], 97.5))
+            tout = {**achat2, "date": "2026-03-03T16:00:00", "sens": "vente", "prix_eur": 210.0, "montant_eur": 42.0}
+            rachat = {**achat2, "date": "2026-03-03T16:00:00", "prix_eur": 205.0, "montant_eur": 41.0}
+            avant_rachat = {**achat2, "date": "2026-03-02T15:45:00"}
+            lr = agreger([avant_rachat, tout, rachat])
+            ok("tout vendre puis racheter AAPL à la même heure exacte : le rachat repart de zéro (0,2 action pour "
+               "42 €), la vente rapporte 42 − 1 − 41 = 0 €, et rien n'est refusé",
+               len(lr) == 1 and proche(lr[0]["quantite"], 0.2) and proche(lr[0]["cout_eur"], 42.0)
+               and proche(flux([avant_rachat, tout, rachat])["ventes_eur"], 0.0)
+               and _ventes_impossibles([avant_rachat, tout, rachat]) == [])
             aller = {**achat1, "date": "2026-03-03T16:00:05", "ticker": "TSLA", "quantite": 0.03, "montant_eur": 9.0}
             retour = {**aller, "sens": "vente", "date": "2026-03-03T16:00:30", "montant_eur": 9.1}
-            ok("un aller-retour de TSLA dans la même minute (16:00:05 puis 16:00:30, ou les deux à 16:00) est possible",
+            ok("un aller-retour de TSLA dans la même minute (16:00:05 puis 16:00:30, ou les deux à 16:00 saisis dans "
+               "cet ordre) est possible",
                _ventes_impossibles([retour, aller]) == []
-               and _ventes_impossibles([{**retour, "date": "2026-03-03T16:00:00"},
-                                        {**aller, "date": "2026-03-03T16:00:00"}]) == [])
+               and _ventes_impossibles([{**aller, "date": "2026-03-03T16:00:00"},
+                                        {**retour, "date": "2026-03-03T16:00:00"}]) == [])
             # Une date avec un fuseau se range à son heure réelle, pas à son texte : « 15:30+00:00 » est 16 h 30
             # à Paris, donc APRÈS un achat noté « 16:00 » à Paris.
             vente_utc = {**vente, "date": "2026-03-03T15:30:00+00:00"}
             achat_paris = {**achat1, "date": "2026-03-03T16:00:00"}
-            ok("une vente notée « 15:30+00:00 » (16 h 30 à Paris) passe après un achat noté « 16:00 » à Paris",
-               _ventes_impossibles([vente_utc, achat_paris]) == [] and agreger([vente_utc, achat_paris]) == [])
+            lu = agreger([{**vente_utc, "quantite": 0.25}, achat_paris])
+            ok("une vente notée « 15:30+00:00 » (16 h 30 à Paris) passe après un achat noté « 16:00 » à Paris : vendre "
+               "la moitié laisse 0,25 action pour 30,50 € (rangée sur le texte, la vente passait avant et laissait 61 €)",
+               _ventes_impossibles([vente_utc, achat_paris]) == [] and agreger([vente_utc, achat_paris]) == []
+               and len(lu) == 1 and proche(lu[0]["quantite"], 0.25) and proche(lu[0]["cout_eur"], 30.5))
             mini = {**vente, "date": "2026-03-04T16:00:00", "quantite": 0.004, "prix_eur": 125.0, "montant_eur": 0.5}
             fm = flux([achat1, mini])
             ok("une vente de 0,50 € avec 1 € de frais : les 0,50 € qui manquent sortent de ta poche (61,50 € versés)",
@@ -1183,6 +1214,15 @@ def _verifier_lot4(ok, proche):
                f"{ta['gain_eur']:+.2f} € (et non +7,00)",
                ta["gain_eur"] == 7.01 and ta["gain_eur"] == round(sum(round(x["gain_eur"], 2) for x in pa["lignes"])
                                                                   + round(ta["offert_eur"], 2), 2))
+            bp = journal_compare()["bilan"]
+            ok("… la colonne « Valeur » aussi : 9,00 + 59,17 + 40,84 = 109,01 € (le calcul brut donnait 109,00), et le "
+               "bilan compte les mêmes 109,01 € de positions ; sans les frais : 0,00 − 0,83 + 0,84 + 9,00 = +9,01 €",
+               ta["valeur_eur"] == 109.01 and bp["positions_eur"] == 109.01 and ta["gain_sans_frais_eur"] == 9.01
+               and all(x["valeur_eur"] == round(x["valeur_eur"], 2) for x in pa["lignes"]))
+            ok("une ligne toute offerte, ou en partie : seule la première n'a aucun frais à rembourser",
+               _toute_offerte(agreger([prime])[0])
+               and not _toute_offerte(agreger([prime, {**prime, "date": "2026-03-03T15:00:00", "frais_eur": 1.0,
+                                                        "offert": False}])[0]))
 
             # ── 2. Les dates des décisions : une vente se contrôle à SA date ; rien dans le futur.
             cours_a = lambda _symbole, _quand: 1.10
