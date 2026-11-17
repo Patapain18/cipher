@@ -491,7 +491,9 @@ const quantite = (q) => Number(q).toLocaleString('fr-FR', { maximumFractionDigit
 /* La 4e carte de la synthèse, dès que la position est connue. */
 function dessinerCartePosition() {
   const carte = $('#carte-position');
-  if (!carte || !window.PP || !maPosition || !maPosition.lignes.length) return;
+  /* Tout vendu : la carte garde le résultat des ventes (relecture du 17/11/2026). */
+  if (!carte || !window.PP || !maPosition
+      || (!maPosition.lignes.length && !(maPosition.total?.nombre_ventes > 0))) return;
   const { total } = maPosition;
   const dont = PP.TEXTES.dontTotal(total);
   carte.innerHTML = `
@@ -519,9 +521,14 @@ async function renderPositions() {
      les lignes ne s'additionnent plus jusqu'à lui, la note dit pourquoi. */
   const dont = PP.TEXTES.dontTotal(total);
   if (!lignes.length) {
-    zone.innerHTML = `
+    /* Tout vendu : le résultat des ventes reste la réponse (relecture du 17/11/2026). */
+    zone.innerHTML = total?.nombre_ventes > 0 ? `
+      <p class="empty">Aucune action détenue en ce moment. Depuis le début, ventes comprises :
+        <span class="${PP.sens(total.gain_eur)}">${PP.euros(total.gain_eur, { signe: true })}</span>
+        (${PP.pct(total.gain_pct)}), frais compris.</p>` : `
       <p class="empty">Aucune position. Une décision déjà passée chez ton courtier
         se note dans <strong>Ma position</strong> (touche <kbd>P</kbd>).</p>`;
+    document.dispatchEvent(new CustomEvent('stocks:dessine'));
     return;
   }
   /* « Sans les frais » : le chiffre de l'appli du courtier, en retrait. */
@@ -539,7 +546,11 @@ async function renderPositions() {
       <td class="num-cell num sans-frais">${sansFrais(PP.sansFrais(l))}</td>
     </tr>`;
   /* Au téléphone, le tableau défile à l'horizontale : il doit pouvoir se
-     prendre au clavier (axe, 17/11/2026), comme le grand tableau. */
+     prendre au clavier (axe, 17/11/2026), comme le grand tableau. Il est
+     réécrit à chaque rafraîchissement (60 s) : on lui rend son focus et
+     son défilement, sinon le clavier repartait du haut de la page. */
+  const avant = zone.querySelector('.position-table');
+  const garde = avant && { focus: avant.contains(document.activeElement), gauche: avant.scrollLeft };
   zone.innerHTML = `
     <div class="position-table" tabindex="0" role="region" aria-label="Ta position, action par action">
       <table>
@@ -560,11 +571,17 @@ async function renderPositions() {
           <td class="num-cell num ${PP.sens(total.gain_eur)}">${PP.euros(total.gain_eur, { signe: true })}
             <span class="rank-total">${PP.pct(total.gain_pct)}</span></td>
           <td class="num-cell num sans-frais">${sansFrais(PP.sansFraisTotal(maPosition))}</td>
-        </tr>${dont ? `
-        <tr class="position-dont"><td colspan="7">Le total compte aussi ${esc(dont.replace(/^dont /, ''))}.</td></tr>` : ''}
-        </tfoot>` : ''}
+        </tr></tfoot>` : ''}
       </table>
-    </div>`;
+    </div>
+    ${dont ? `<p class="position-dont">Le total compte aussi ${esc(dont.replace(/^dont /, ''))}.</p>` : ''}`;
+  /* La note est HORS du cadre qui défile : dans une cellule, elle prenait la
+     largeur du tableau et se coupait au téléphone (relecture du 17/11/2026). */
+  const apres = zone.querySelector('.position-table');
+  if (garde && apres) {
+    apres.scrollLeft = garde.gauche;
+    if (garde.focus) apres.focus({ preventScroll: true });
+  }
   /* Le panneau 1 de la vue baie EST cette section : il se remesure. */
   document.dispatchEvent(new CustomEvent('stocks:dessine'));
 }

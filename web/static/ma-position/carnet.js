@@ -716,12 +716,17 @@
       return;
     }
     const { x, ticks } = abscisses(g);
-    const reperes = g.achat ? [
+    /* Une action offerte n'a rien coûté : pas de frais à rembourser, et son
+       repère est le prix du jour du cadeau (relecture du 17/11/2026). */
+    const reperes = !g.achat ? [] : g.achat.offerte ? [
+      { v: g.achat.eur, classe: 'pc-repere-achat', position: 'dessous',
+        texte: `Prix du jour du cadeau : ${num(PP.euros(g.achat.eur))}` },
+    ] : [
       { v: g.achat.seuil_eur, classe: 'pc-repere-seuil', position: 'dessus',
         texte: `Frais remboursés : ${num(PP.euros(g.achat.seuil_eur))}` },
       { v: g.achat.eur, classe: 'pc-repere-achat', position: 'dessous',
         texte: `Ton prix d'achat : ${num(PP.euros(g.achat.eur))}` },
-    ] : [];
+    ];
     /* En 1 jour, la droite du graphique est le reste de la séance, vide :
        les étiquettes s'y posent. En 1 mois et 1 an, la droite porte le
        cours récent, proche de tes lignes : elles passent à gauche. */

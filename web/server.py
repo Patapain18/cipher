@@ -85,6 +85,9 @@ HOTES_AUTORISES = {f"localhost:{PORT}", f"127.0.0.1:{PORT}"}
 
 _cache = {}
 _cache_lock = threading.Lock()
+# Monte à chaque écriture du journal : un calcul commencé avant ne se range
+# plus dans le cache après elle (voir `cached`).
+_cache_generation = [0]
 
 
 # ── Une réponse toujours lisible par la page ─────────────────────
@@ -116,11 +119,16 @@ def cached(key, ttl_seconds, producer):
         entry = _cache.get(key)
         if entry and (time.time() - entry["at"]) < ttl_seconds:
             return entry["value"], entry["at"]
+        generation = _cache_generation[0]
 
     value = producer()  # calculé HORS du verrou : un appel réseau lent
                         # ne doit pas bloquer les autres routes.
     with _cache_lock:
-        _cache[key] = {"value": value, "at": time.time()}
+        # Une décision notée PENDANT ce calcul l'a rendu périmé : il sert à
+        # cette réponse, mais ne se range pas. Sinon l'ancien total revenait
+        # pendant 60 s après une vente (relecture du 17/11/2026).
+        if _cache_generation[0] == generation:
+            _cache[key] = {"value": value, "at": time.time()}
     return value, time.time()
 
 
@@ -483,6 +491,7 @@ def ajouter_au_journal(payload):
     import ma_position
     decision = ma_position.ajouter_decision(payload)
     with _cache_lock:
+        _cache_generation[0] += 1
         for cle in [k for k in _cache if k.startswith(("/api/position", "/api/journal",
                                                        "/api/graphique"))]:
             _cache.pop(cle, None)

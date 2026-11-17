@@ -240,11 +240,24 @@ window.PP = (() => {
   const de = (ticker) => (/^[AEIOUY]/i.test(ticker) ? `d'${ticker}` : `de ${ticker}`);
   const TEXTES = {
     avertissement: 'Des faits sur ton argent. Aucune prédiction, aucun conseil d\'achat ou de vente.',
-    /** Les deux prix qui remboursent les frais. */
-    seuils: (l) => ({
-      achat: `À ${euros(l.seuil_achat_eur)}, ta position vaut ce qu'elle t'a coûté, frais d'achat compris.`,
-      vente: `À ${euros(l.seuil_vente_eur)}, elle couvre aussi le ${euros(1, { decimales: 0 })} d'une vente.`,
-    }),
+    /** Les deux prix qui remboursent les frais. Une ligne toute offerte n'a
+        rien coûté : ses chiffres partent du prix du jour du cadeau, comme
+        chez le courtier (relecture du 17/11/2026). */
+    seuils: (l) => {
+      const offerte = l.offert_eur > 0;
+      if (offerte && Math.abs(l.offert_eur - l.montant_eur) < 0.005) {
+        return {
+          achat: `Action offerte : elle ne t'a rien coûté. Ses chiffres partent de son prix du jour du cadeau, `
+            + `${euros(l.prix_achat_eur)}, comme chez ton courtier.`,
+          vente: `La vendre coûterait ${euros(1, { decimales: 0 })} de frais.`,
+        };
+      }
+      return {
+        achat: `À ${euros(l.seuil_achat_eur)}, ta position vaut ce qu'elle t'a coûté, frais d'achat compris`
+          + (offerte ? ', l\'action offerte comptée à son prix du jour du cadeau.' : '.'),
+        vente: `À ${euros(l.seuil_vente_eur)}, elle couvre aussi le ${euros(1, { decimales: 0 })} d'une vente.`,
+      };
+    },
     /** « 3ᵉ sur 49 au classement momentum du bot » ; une valeur détenue
         hors des 49 (TSLA) n'a pas de rang, et ne l'attend pas. */
     rang: (l) => (l.suivie_par_le_bot === false

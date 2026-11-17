@@ -568,16 +568,13 @@ tfoot td {
   white-space: nowrap;
 }
 tfoot th { text-align: left; font-weight: 600; }
-/* La note sous le total (17/11/2026) : ce que le total compte en plus des
-   lignes (l'action offerte, le résultat des ventes). Une phrase, pas un
-   chiffre : à gauche, en retrait, et elle peut aller à la ligne. */
-tfoot .position-dont td {
-  border-top: 0;
-  padding-top: 0;
+/* La note sous le tableau (17/11/2026) : ce que le total compte en plus
+   des lignes (l'action offerte, le résultat des ventes). Hors du cadre qui
+   défile, pour aller à la ligne à la largeur de l'écran. */
+.position-dont {
+  margin: var(--space-1, 6px) 0 0;
   font-size: 12px;
   color: var(--text-muted);
-  text-align: left;
-  white-space: normal;
 }
 
 tbody tr { transition: background var(--transition); }
