@@ -524,9 +524,13 @@
     $('#pa-recommencer').hidden = !peut;
     let html = '';
     if (b) {
+      /* Un défi au bilan faux ou incomplet (un fractionnement d'action, des cours
+         de clôture introuvables) reste dans le tableau, avec sa raison, mais
+         hors des totaux. */
       const statut = (l) => PP.esc(STATUTS[l.statut] || l.statut)
         + (l.statut === 'abandonne' ? ` au jour ${num(String(l.jour))}`
-          : l.statut === 'en_cours' ? `, jour ${num(String(l.jour))}` : '');
+          : l.statut === 'en_cours' ? `, jour ${num(String(l.jour))}` : '')
+        + (l.exclu ? `<br><span class="pa-exclu">pas compté : ${PP.esc(l.exclu)}</span>` : '');
       const lignes = b.defis.map((l) => `
         <tr>
           <th scope="row">${PP.esc(jourCourt(l.debut))}</th>

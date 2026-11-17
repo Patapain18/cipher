@@ -90,6 +90,8 @@ ECART_CHANGE_JOURS = 5      # le dollar de la fin : la ligne suivante d'EURUSD=X
 # de l'achat à la vente) ; un ordre en paie la moitié.
 DEMI_ECART = 0.0005
 ARCHIVES = "papier-archives"
+ATTENTE_MAX_JOURS = 3       # un bilan final qui n'arrive jamais : le défi peut être rangé 3 jours après sa fin
+PLUS_D_ORDRES = "Plus aucune séance de New York d'ici la fin du défi : plus d'ordres possibles."
 MARCHE = os.path.join(ROOT, "data", "market")
 _verrou = threading.Lock()
 _hasard = {}                # (dossier, valeurs, mise) → (instant, mesure) : le cache ne change pas
@@ -469,7 +471,7 @@ def _jours_yahoo(symbole, debut, fin):
     h = yf.Ticker(symbole).history(start=debut.isoformat(), end=fin.isoformat(), interval="1d",
                                    auto_adjust=False, actions=True)
     if h is None or h.empty:
-        raise BilanEnAttente(f"Yahoo n'a pas encore donné les cours journaliers de {nom(symbole)}")
+        raise BilanEnAttente(f"Yahoo n'a pas encore donné les cours journaliers {du(symbole)}")
     h = h.copy()
     h.index = [pd.Timestamp(t).date() for t in h.index]
     return h
@@ -496,17 +498,19 @@ def cours_de_fin(cal, symboles, aujourd_hui, lire_jours=_jours_yahoo):
     """
     debut, fin = date.fromisoformat(cal["debut_jour"]), date.fromisoformat(cal["fin"])
     lignes = {s: lire_jours(s, debut, aujourd_hui + timedelta(days=1)) for s in sorted(set(symboles) | {INDICE})}
-    seances = sorted(j for j, c in lignes[INDICE]["Close"].items() if debut <= j <= fin and _cours_positif(c))
-    if not seances:
-        raise BilanEnAttente("aucune séance du S&P 500 dans le défi d'après Yahoo")
-    derniere = seances[-1]
+    # La dernière séance : le dernier jour d'ici le jour 28 où l'une des valeurs a une clôture. Une ligne
+    # oubliée par Yahoo sur l'une d'elles ne fait donc pas reculer la fin : chacune doit avoir la sienne
+    # ce jour-là, sinon le bilan attend (jamais la clôture de la veille, prise sans le dire).
+    jours = [j for h in lignes.values() for j, c in h["Close"].items() if debut <= j <= fin and _cours_positif(c)]
+    if not jours:
+        raise BilanEnAttente("aucune séance dans le défi d'après Yahoo")
+    derniere = max(jours)
     cours, fractionnements = {}, []
     for s, h in lignes.items():
-        avant = sorted((j, _cours_positif(c)) for j, c in h["Close"].items()
-                       if debut <= j <= derniere and _cours_positif(c))
-        if not avant:
-            raise BilanEnAttente(f"pas de clôture pour {nom(s)}")
-        cours[s] = avant[-1][1]
+        prix = [_cours_positif(c) for j, c in h["Close"].items() if j == derniere]
+        if not prix or prix[0] is None:
+            raise BilanEnAttente(f"pas de clôture {du(s)} le {date_fr(derniere)}")
+        cours[s] = prix[0]
         if "Stock Splits" in h:
             fractionnements += [{"ticker": s, "jour": j.isoformat(), "rapport": float(x)}
                                 for j, x in h["Stock Splits"].items()
@@ -565,6 +569,25 @@ def nom_archive(defi):
     return f"papier-{d.strftime('%Y-%m-%dT%H-%M-%S')}.json"
 
 
+def _suite_de(ancien, defi):
+    """Le même défi, continué : même début, et les ordres de l'ancien sont les premiers du défi."""
+    return (isinstance(ancien, dict) and isinstance(ancien.get("ordres"), list)
+            and ancien.get("debut") == defi.get("debut")
+            and defi["ordres"][:len(ancien["ordres"])] == ancien["ordres"])
+
+
+def fractionnements_depuis(debut, symboles, aujourd_hui, lire_jours):
+    """Les fractionnements d'action de ces valeurs depuis le début du défi (lignes journalières de Yahoo)."""
+    trouves = []
+    for s in sorted(symboles):
+        h = lire_jours(s, debut, aujourd_hui + timedelta(days=1))
+        if "Stock Splits" in h:
+            trouves += [{"ticker": s, "jour": j.isoformat(), "rapport": float(x)}
+                        for j, x in h["Stock Splits"].items()
+                        if j >= debut and _cours_positif(x) and float(x) != 1.0]
+    return trouves
+
+
 def _chiffres_valides(x):
     """Aucun nombre non fini, nulle part (un NaN figé dans une archive le resterait pour toujours)."""
     if isinstance(x, bool) or x is None or isinstance(x, str):
@@ -597,8 +620,27 @@ def recommencer(*, maintenant=None, lire_cours=None, lire_jours=None, fichier=No
         e = etat(maintenant=maintenant, lire_cours=lire_cours or minute_de_seance, lire_jours=lire_jours,
                  fichier=fichier, marche=marche)
         statut = "fini" if e["fini"] else "abandonne"
+        exclu = None
         if statut == "fini" and (e["bilan_final"] or {}).get("statut") != "final":
-            raise ValueError("Le bilan final attend les cours de clôture officiels : réessaie dans quelques minutes.")
+            # D'habitude, quelques minutes. Si les cours ne viennent jamais (une valeur que Yahoo ne donne
+            # plus), le défi se range 3 jours après sa fin, aux derniers cours connus, et ne compte pas.
+            if (jour_paris(maintenant) - date.fromisoformat(e["fin"])).days < ATTENTE_MAX_JOURS:
+                raise ValueError("Le bilan final attend les cours de clôture officiels : réessaie dans quelques "
+                                 "minutes.")
+            exclu = "bilan final incomplet : cours de clôture introuvables"
+        fractionnements = (e["bilan_final"] or {}).get("fractionnements")
+        if fractionnements is None:
+            # Rangé avant son bilan final : ses fractionnements sont cherchés maintenant. Sans réponse de
+            # Yahoo, ils restent « non vérifiés » (None), sans empêcher de recommencer.
+            try:
+                fractionnements = fractionnements_depuis(date.fromisoformat(e["debut_jour"]),
+                                                         {o["ticker"] for o in defi["ordres"]},
+                                                         jour_paris(maintenant), lire_jours or _jours_yahoo)
+            except Exception as err:
+                print(f"[papier] fractionnements non vérifiés : {err}", file=sys.stderr)
+        if fractionnements and not exclu:
+            exclu = "fractionnement d'action : " + ", ".join(f"{f['ticker']} le {date_fr(f['jour'])}"
+                                                            for f in fractionnements)
         bilan = {k: e[k] for k in ("total_eur", "duel", "resultat", "premiere_seance", "frais_payes_eur",
                                     "plus_values_realisees_eur", "ecart_courtier", "bilan_final")}
         if (e["duel"] is None or e["resultat"] is None or e["premiere_seance"] is None
@@ -606,41 +648,61 @@ def recommencer(*, maintenant=None, lire_cours=None, lire_jours=None, fichier=No
             raise ValueError("Cours indisponibles pour l'instant (Yahoo) : le défi ne peut pas être rangé avec ses "
                              "chiffres. Réessaie dans une minute.")
         archive = {"version": 1, "archive_le": maintenant.isoformat(timespec="seconds"), "statut": statut,
-                   "jour": e["jour"], "jours": e["jours"], "fin": e["fin"], "defi": defi, "bilan": bilan}
+                   "jour": e["jour"] if statut == "abandonne" else e["jours"], "jours": e["jours"], "fin": e["fin"],
+                   "fractionnements": fractionnements, "exclu": exclu, "defi": defi, "bilan": bilan}
         dossier = dossier_archives(fichier)
-        os.makedirs(dossier, exist_ok=True)
         cible = os.path.join(dossier, nom_archive(defi))
-        if os.path.exists(cible):
-            try:
-                with open(cible) as f:
-                    deja = json.load(f).get("defi")
-            except (OSError, ValueError, AttributeError):
-                deja = None
-            if deja != defi:
-                raise ValueError(f"Une archive {os.path.basename(cible)} existe déjà, différente de ce défi : "
-                                 "rien n'est touché.")
-            # Déjà rangé par un essai coupé en route : il ne reste qu'à repartir de zéro.
-        else:
-            _ecrire_defi(cible, archive)
-        _ecrire_defi(fichier, nouveau_defi())
+        try:
+            os.makedirs(dossier, exist_ok=True)
+            if os.path.exists(cible):
+                try:
+                    with open(cible) as f:
+                        deja = json.load(f).get("defi")
+                except (ValueError, AttributeError):
+                    deja = None
+                if _suite_de(deja, defi) and deja != defi:
+                    # Le même défi, continué après un essai coupé en route : l'archive le suit.
+                    _ecrire_defi(cible, archive)
+                elif deja != defi:
+                    raise ValueError(f"Une archive {os.path.basename(cible)} existe déjà, différente de ce défi : "
+                                     "rien n'est touché.")
+                # Sinon, déjà rangé par un essai coupé en route : il ne reste qu'à repartir de zéro.
+            else:
+                _ecrire_defi(cible, archive)
+            _ecrire_defi(fichier, nouveau_defi())
+        except OSError as err:
+            print(f"[papier] archives : {err}", file=sys.stderr)
+            raise ValueError(f"Le dossier des archives ({ARCHIVES}) n'est pas accessible : le défi n'est pas remis "
+                             "à zéro. Réessaie, ou regarde les droits du dossier.")
     return {"archive": os.path.basename(cible), "statut": statut, "jour": e["jour"]}
 
 
 def bilan_des_defis(fichier, courant):
     """
     Tous les défis : ceux des archives, puis celui en cours (s'il a
-    commencé). None tant qu'aucun défi n'est rangé : le duel suffit. Une
-    archive illisible est signalée, jamais comptée ; celle du défi en cours
-    (rangé, mais pas encore remis à zéro) n'est comptée qu'une fois.
+    commencé). None tant qu'aucun défi n'est rangé : le duel suffit.
+    Jamais compté : une archive illisible (signalée), une copie d'une
+    archive (même début, signalée), un défi au bilan faux ou incomplet
+    (un fractionnement d'action, des cours de clôture introuvables :
+    montré dans le tableau, hors des totaux). Le défi rangé mais pas
+    encore remis à zéro n'est compté qu'une fois, comme celui en cours.
     """
     dossier = dossier_archives(fichier)
+    if not os.path.isdir(dossier):
+        return None
+    vide = {"defis": [], "illisibles": [], "doublons": [], "nombre": 0, "exclus": 0, "abandonnes": 0, "devant": 0,
+            "ecart_total_eur": 0.0, "net_toi_total_eur": 0.0, "net_indice_total_eur": 0.0}
     try:
-        noms = sorted(n for n in os.listdir(dossier) if n.startswith("papier-") and n.endswith(".json"))
-    except OSError:
-        noms = []
+        # Seulement de vrais fichiers : un tube ou un dossier nommé comme une archive bloquerait la lecture.
+        # Les noms courts d'abord : l'archive d'origine passe avant ses copies (« … copie.json »).
+        noms = sorted((n for n in os.listdir(dossier) if n.startswith("papier-") and n.endswith(".json")
+                       and os.path.isfile(os.path.join(dossier, n))), key=lambda n: (len(n), n))
+    except OSError as e:
+        print(f"[papier] archives illisibles : {e}", file=sys.stderr)
+        return {**vide, "illisibles": [f"le dossier {ARCHIVES}"]}
     if not noms:
         return None
-    lignes, illisibles = [], []
+    lignes, illisibles, doublons, vus = [], [], [], set()
     for n in noms:
         try:
             with open(os.path.join(dossier, n)) as f:
@@ -650,13 +712,18 @@ def bilan_des_defis(fichier, courant):
             ligne = {"debut": a["defi"]["debut"]["date"], "statut": a["statut"], "jour": int(a["jour"]),
                      "toi_eur": float(duel["toi_eur"]), "indice_eur": float(duel["indice_eur"]),
                      "ecart_eur": float(duel["ecart_eur"]),
-                     "net_toi_eur": float(res["toi"]["net_eur"]), "net_indice_eur": float(res["indice"]["net_eur"])}
+                     "net_toi_eur": float(res["toi"]["net_eur"]), "net_indice_eur": float(res["indice"]["net_eur"]),
+                     "exclu": a.get("exclu") or None}
             if a["statut"] not in ("fini", "abandonne") or not _chiffres_valides(ligne):
                 raise ValueError("statut ou chiffres illisibles")
         except Exception as e:
             print(f"[papier] archive {n} illisible : {e}", file=sys.stderr)
             illisibles.append(n)
             continue
+        if ligne["debut"] in vus:
+            doublons.append(n)
+            continue
+        vus.add(ligne["debut"])
         if ligne["debut"] != courant.get("debut"):
             lignes.append(ligne)
     if courant.get("debut") and courant.get("duel") and courant.get("resultat"):
@@ -664,14 +731,16 @@ def bilan_des_defis(fichier, courant):
         lignes.append({"debut": courant["debut"], "statut": "fini" if courant["fini"] else "en_cours",
                        "jour": courant["jour"], "toi_eur": d["toi_eur"], "indice_eur": d["indice_eur"],
                        "ecart_eur": d["ecart_eur"], "net_toi_eur": res["toi"]["net_eur"],
-                       "net_indice_eur": res["indice"]["net_eur"]})
+                       "net_indice_eur": res["indice"]["net_eur"], "exclu": courant.get("exclu")})
     lignes.sort(key=lambda l: l["debut"])
-    return {"defis": lignes, "illisibles": illisibles,
-            "nombre": len(lignes), "abandonnes": sum(l["statut"] == "abandonne" for l in lignes),
-            "devant": sum(round(l["ecart_eur"], 2) > 0 for l in lignes),
-            "ecart_total_eur": au_centime(sum(l["ecart_eur"] for l in lignes)),
-            "net_toi_total_eur": au_centime(sum(l["net_toi_eur"] for l in lignes)),
-            "net_indice_total_eur": au_centime(sum(l["net_indice_eur"] for l in lignes))}
+    comptes = [l for l in lignes if not l["exclu"]]
+    return {"defis": lignes, "illisibles": illisibles, "doublons": doublons,
+            "nombre": len(comptes), "exclus": len(lignes) - len(comptes),
+            "abandonnes": sum(l["statut"] == "abandonne" for l in comptes),
+            "devant": sum(round(l["ecart_eur"], 2) > 0 for l in comptes),
+            "ecart_total_eur": au_centime(sum(l["ecart_eur"] for l in comptes)),
+            "net_toi_total_eur": au_centime(sum(l["net_toi_eur"] for l in comptes)),
+            "net_indice_total_eur": au_centime(sum(l["net_indice_eur"] for l in comptes))}
 
 
 # ── Les mots ──────────────────────────────────────────────────────
@@ -731,6 +800,11 @@ def qte(q):
 def de(ticker):
     """« de NVDA », mais « d'AAPL »."""
     return f"d'{ticker}" if ticker[:1] in "AEIOUY" else f"de {ticker}"
+
+
+def du(symbole):
+    """« du dollar », « du S&P 500 », « de NVDA », « d'AAPL »."""
+    return {CHANGE: "du dollar", INDICE: "du S&P 500"}.get(symbole) or de(symbole)
 
 
 def message_fermee(maintenant, symbole=None, minute=None, periode=None):
@@ -866,12 +940,24 @@ def phrase_derniere_passee(cal):
 
 
 def phrase_defis(b):
-    """Le bilan de tous les défis, abandonnés compris."""
+    """Le bilan de tous les défis, abandonnés compris ; ce qui n'est pas compté est dit."""
     n, ab = b["nombre"], b["abandonnes"]
-    dont = f", dont {ab} abandonné{'s' if ab > 1 else ''}" if ab else ""
-    courant = ", celui en cours compris" if any(l["statut"] == "en_cours" for l in b["defis"]) else ""
-    texte = (f"{n} défi{'s' if n > 1 else ''}{courant}{dont} : devant le S&P 500 dans {b['devant']} sur {n}. "
-             f"Écart cumulé : {euros(b['ecart_total_eur'], signe=True)}, frais payés compris, avant impôt.")
+    if n:
+        dont = f", dont {ab} abandonné{'s' if ab > 1 else ''}" if ab else ""
+        courant = (", celui en cours compris"
+                   if any(l["statut"] == "en_cours" and not l["exclu"] for l in b["defis"]) else "")
+        texte = (f"{n} défi{'s' if n > 1 else ''}{courant}{dont} : devant le S&P 500 dans {b['devant']} sur {n}. "
+                 f"Écart cumulé : {euros(b['ecart_total_eur'], signe=True)}, frais payés compris, avant impôt.")
+    else:
+        texte = "Aucun défi compté pour l'instant."
+    if b["exclus"]:
+        k = b["exclus"]
+        texte += (f" {k} défi{'s' if k > 1 else ''} pas compté{'s' if k > 1 else ''} : bilan faux ou incomplet, "
+                  "la raison est dans le tableau.")
+    if b["doublons"]:
+        k = len(b["doublons"])
+        texte += (f" {k} copie{'s' if k > 1 else ''} d'archive ignorée{'s' if k > 1 else ''} : "
+                  f"{', '.join(b['doublons'])}.")
     if b["illisibles"]:
         k = len(b["illisibles"])
         texte += (f" {k} archive{'s' if k > 1 else ''} illisible{'s' if k > 1 else ''}, pas "
@@ -1028,7 +1114,7 @@ def passer_ordre(payload, *, maintenant=None, lire_cours=minute_de_seance, fichi
         if cal["fini"]:
             raise ValueError(f"Le défi est fini depuis le {date_fr(cal['fin'])} : plus d'ordres.")
         if cal["derniere_seance_passee"]:
-            raise ValueError(phrase_derniere_passee(cal))
+            raise ValueError(PLUS_D_ORDRES)
         etat = rejouer(defi)
         frais = float(defi.get("frais_ordre_eur", FRAIS_EUR))
         ticker = demande["ticker"]
@@ -1135,8 +1221,9 @@ def etat(*, maintenant=None, lire_cours=minute_de_seance, fichier=None, marche=N
     # La fin du défi : les prix viennent alors des clôtures officielles, plus de la dernière minute.
     lire_prix, fin, bilan_final = lire_cours, None, None
     if defi.get("debut") and cal["fini"]:
-        symboles = ({p["ticker"] for p in r["positions"]}
-                    | {p["ticker"] for p in rejouer({**defi, "ordres": premiers})["positions"]})
+        # Toutes les valeurs du défi : celles détenues, celles de la première séance, et celles revendues,
+        # dont un fractionnement fausserait aussi la vente (comptée au cours d'avant, Yahoo ayant ajusté).
+        symboles = {o["ticker"] for o in defi["ordres"]}
         fin, attente = _fin_du_defi(fichier, defi, cal, symboles, maintenant, lire_jours)
         if fin:
             j = date.fromisoformat(fin["seance"])
@@ -1152,8 +1239,6 @@ def etat(*, maintenant=None, lire_cours=minute_de_seance, fichier=None, marche=N
                            "message": phrase_fin(cal, fin, int(defi.get("jours", JOURS)))}
         else:
             bilan_final = {"statut": "attente", "message": attente}
-    elif defi.get("debut") and cal["derniere_seance_passee"]:
-        bilan_final = {"statut": "derniere_seance_passee", "message": phrase_derniere_passee(cal)}
 
     manquants, lus = [], {}
 
@@ -1169,6 +1254,17 @@ def etat(*, maintenant=None, lire_cours=minute_de_seance, fichier=None, marche=N
         return lus[symbole]
 
     fx, spy = cours(CHANGE), cours(INDICE)
+
+    # Plus aucune séance d'ici la fin ? Le calendrier le sait après 16 h à New York le dernier jour de
+    # semaine ; Yahoo le sait plus tôt, quand la prochaine séance qu'il annonce tombe après la fin (un
+    # jour 28 férié, ou raccourci).
+    if (defi.get("debut") and not cal["fini"] and not cal["derniere_seance_passee"] and spy
+            and not en_seance(spy[1], maintenant, spy[2])):
+        prochaine = _seances(spy[2])[1]
+        if prochaine and prochaine[0] > maintenant and jour_paris(prochaine[0]) > date.fromisoformat(cal["fin"]):
+            cal = {**cal, "derniere_seance_passee": True}
+    if bilan_final is None and defi.get("debut") and cal["derniere_seance_passee"]:
+        bilan_final = {"statut": "derniere_seance_passee", "message": phrase_derniere_passee(cal)}
 
     def valoriser(rejoue):
         """Liquidités + positions au dernier cours de séance ; None s'il manque un cours."""
@@ -1208,7 +1304,7 @@ def etat(*, maintenant=None, lire_cours=minute_de_seance, fichier=None, marche=N
     if cal["fini"]:
         ouverts, pourquoi = False, f"Le défi est fini depuis le {date_fr(cal['fin'])} : plus d'ordres."
     elif cal["derniere_seance_passee"]:
-        ouverts, pourquoi = False, phrase_derniere_passee(cal)
+        ouverts, pourquoi = False, PLUS_D_ORDRES
     else:
         ouverts, pourquoi = ouverte, message
 
@@ -1252,9 +1348,10 @@ def etat(*, maintenant=None, lire_cours=minute_de_seance, fichier=None, marche=N
         courtier = ecart_courtier(defi, sum(l["valeur_eur"] for l in positions), adversaire["valeur_eur"])
 
     hasard = part_du_hasard(marche or MARCHE, mise_eur=capital - frais)
+    exclu = ("fractionnement d'action" if (bilan_final or {}).get("fractionnements") else None)
     defis = bilan_des_defis(fichier, {"debut": defi["debut"]["date"] if defi.get("debut") else None,
                                       "fini": cal["fini"], "jour": cal["jour"], "duel": duel,
-                                      "resultat": resultat})
+                                      "resultat": resultat, "exclu": exclu})
     phrases = {
         "duel": phrase_duel(capital, defi["debut"]["date"], duel, maintenant) if duel else None,
         "hasard": phrase_hasard(hasard),
@@ -1845,6 +1942,8 @@ def _verifier_partie2(dossier, ok, faux, cours, T0, m, proche):
        proche(e3["plus_values_realisees_eur"], 8) and proche(e3["total_eur"], 197) and proche(t3["impot_eur"], 0)
        and proche(t3["net_eur"], -4) and proche(t3["frais_eur"], 4) and proche(t3["avant_frais_eur"], 0))
     t4 = etat(maintenant=T0, lire_cours=cours(T0, nvda=121.0), fichier=fb)["resultat"]["toi"]
+    ok("l'écart du courtier compte aussi les ventes : 0,05 % de (100 + 110 + 50 + 40) = 0,15 €",
+       e3["ecart_courtier"]["toi_eur"] == 0.15)
     ok("NVDA à 110 € : gain net 11 € (8 réalisés + 4 latents − 1 € de vente), impôt 3,45 €, net 7,55 €, avant frais 15 €",
        proche(t4["impot_eur"], 3.45) and proche(t4["net_eur"], 7.55) and proche(t4["avant_frais_eur"], 15))
 
@@ -1944,6 +2043,7 @@ def _verifier_partie2(dossier, ok, faux, cours, T0, m, proche):
     with open(os.path.join(hz, "TEXTE_10y.csv"), "a") as g:
         g.write("2026-09-09,abc\n")                                               # un cours illisible
     ecrire(hz, "NEGATIF", 120.0, -110.0, 500.0)                                   # un cours négatif
+    ecrire(hz, "MOITIE", 120.0, 110.0, 500.0, sans=20)                            # une période sur deux
     pd.Series([100.0, 101.0], index=anciens[:2], name="Close").to_csv(
         os.path.join(hz, "VIDE_10y.csv"), index_label="Date")                     # aucune période gardée
     pd.Series([100.0] * 22, index=gardes.tz_localize("UTC"), name="Close").to_csv(
@@ -1958,7 +2058,8 @@ def _verifier_partie2(dossier, ok, faux, cours, T0, m, proche):
                                            ("cours négatif", hz, ["AAA", "NEGATIF"]),
                                            ("aucune période", hz, ["AAA", "VIDE"]),
                                            ("dates avec fuseau", hz, ["AAA", "FUSEAU"]),
-                                           ("sans colonne Close", hz, ["AAA", "SANSCLOSE"])]}
+                                           ("sans colonne Close", hz, ["AAA", "SANSCLOSE"]),
+                                           ("la moitié des périodes", hz, ["AAA", "MOITIE"])]}
     ok(f"part du hasard, cache abîmé → aucune mesure, sans exception : {sorted(k for k, v in refus.items() if v)} "
        "mesurés à tort", all(v is None for v in refus.values()))
     h_ecrit = {"valeurs": 49, "seances": 20, "ecart_type_eur": 19.27, "mise_eur": 199.0,
@@ -2140,6 +2241,8 @@ def _verifier_lot2(dossier, ok, faux, refus, empreinte, cours, T0, m, proche):
        ea["bilan_final"]["message"] == "Bilan final : le défi s'est fini le dimanche 20 décembre (jour 28). Les deux "
        "côtés sont comptés à la clôture officielle de la dernière séance, le vendredi 18 décembre, en prix seul (sans "
        f"dividendes), au dollar de l'ouverture suivante (1,0500{NB}$ pour 1{NB}€).")
+    ok("fin : les positions sont datées de la clôture (16 h à New York le 18/12)",
+       [p["minute"] for p in ea["positions"]] == ["2026-12-18T21:00:00+00:00"] * 2)
     ok("fin : ordres fermés, la raison dite", not ea["ordres_ouverts"]
        and ea["ordres_message"] == "Le défi est fini depuis le dimanche 20 décembre : plus d'ordres.")
     ok("fin : la règle des trois morceaux dit que tout est vendu à la fin",
@@ -2198,8 +2301,8 @@ def _verifier_lot2(dossier, ok, faux, refus, empreinte, cours, T0, m, proche):
     attendu = ("Plus aucune séance de New York d'ici la fin du défi (dimanche 20 décembre) : plus d'ordres "
                "possibles. Bilan final le lundi 21 décembre, aux cours de clôture officiels.")
     ok("vendredi 18/12, 22 h 30 à Paris : la page dit qu'il n'y aura plus de séance, et quand vient le bilan",
-       not ee["ordres_ouverts"] and ee["ordres_message"] == attendu
-       and ee["bilan_final"] == {"statut": "derniere_seance_passee", "message": attendu})
+       not ee["ordres_ouverts"] and ee["bilan_final"] == {"statut": "derniere_seance_passee", "message": attendu}
+       and ee["ordres_message"] == "Plus aucune séance de New York d'ici la fin du défi : plus d'ordres possibles.")
     ok("vendredi 18/12 à 21 h 30 à Paris (15 h 30 à New York) : la séance continue, rien de dit",
        etat(maintenant=datetime(2026, 12, 18, 20, 30, tzinfo=UTC), lire_cours=cours(T0),
             fichier=fe)["bilan_final"] is None)
@@ -2230,7 +2333,8 @@ def _verifier_lot2(dossier, ok, faux, refus, empreinte, cours, T0, m, proche):
     rf = recommencer(maintenant=jour29, lire_cours=cours(jour29), fichier=fa, lire_jours=jours_a)
     with open(os.path.join(dossier_archives(fa), rf["archive"])) as g:
         arch_fini = json.load(g)
-    ok("fini : rangé avec les chiffres de la fin (écart −5,04 €)", rf["statut"] == "fini"
+    ok("fini : rangé avec les chiffres de la fin (écart −5,04 €), au jour 28 (pas au jour du rangement)",
+       rf["statut"] == "fini" and rf["jour"] == 29 and arch_fini["jour"] == 28
        and arch_fini["bilan"]["duel"]["ecart_eur"] == -5.04 and arch_fini["bilan"]["bilan_final"]["statut"] == "final")
     b = etat(maintenant=mardi, lire_cours=cours(mardi), fichier=fr)["defis"]
     ok("tous les défis : 2 rangés, dont 1 abandonné ; devant dans 0 sur 2 ; écart cumulé −5,04 €",
@@ -2293,6 +2397,9 @@ def _verifier_lot2(dossier, ok, faux, refus, empreinte, cours, T0, m, proche):
         VERROU_ATTENTE_S = garde
     ok(f"recommencer pendant un ordre (verrou tenu) : refusé → « {texte} »", r_ok and empreinte(fy) == avant)
 
+    _verifier_lot2_relecture(dossier, ok, faux, refus, empreinte, cours, T0, m, proche, achat, jours_faux, table,
+                             table_a, finaux, copie_a, fb, fc, sans_lundi, jour29, mardi)
+
     # ── G. La route du serveur : POST /api/papier/recommencer, avec l'en-tête X-Dashboard.
     import importlib.util
     import io
@@ -2320,6 +2427,205 @@ def _verifier_lot2(dossier, ok, faux, refus, empreinte, cours, T0, m, proche):
     ok("la route POST /api/papier/recommencer : refusée sans X-Dashboard (403), acceptée avec, corps {}",
        sans.statut == 403 and avec.statut == 200 and appels_route == [{}]
        and json.loads(avec.envoye) == {"ok": True, "data": {"archive": "essai"}})
+
+
+def _verifier_lot2_relecture(dossier, ok, faux, refus, empreinte, cours, T0, m, proche, achat, jours_faux, table,
+                             table_a, finaux, copie_a, fb, fc, sans_lundi, jour29, mardi):
+    """Les cas ajoutés après la relecture du lot 2 (17/11/2026)."""
+    d5 = os.path.join(dossier, "lot2-relecture")
+    os.makedirs(d5)
+
+    def a_part(nom_cas):
+        """Un dossier à lui pour chaque défi qui sera rangé : ses archives sont les siennes."""
+        f = os.path.join(d5, nom_cas, "papier.json")
+        os.makedirs(os.path.dirname(f))
+        return f
+
+    # Le jour 28 est un jour de séance (début mardi 24/11, fin lundi 21/12) : sa clôture compte.
+    ft = a_part("fin-en-seance")
+    mardi_24 = datetime(2026, 11, 24, 15, 0, tzinfo=UTC)
+    passer_ordre(achat(50), maintenant=mardi_24, lire_cours=cours(mardi_24), fichier=ft)
+    table_t = table(date(2026, 11, 24), date(2026, 12, 24), date(2026, 11, 26), date(2026, 12, 21),
+                    {"NVDA": (110.0, 132.0), "SPY": (660.0, 693.0)}, 1.05, date(2026, 12, 22))
+    et = etat(maintenant=datetime(2026, 12, 22, 15, 0, tzinfo=UTC), lire_cours=cours(T0), fichier=ft,
+              lire_jours=jours_faux(table_t))
+    ok("le jour 28 est un lundi de séance (21/12) : c'est sa clôture qui compte (149 + 0,5 × 132/1,05 = 211,86 €)",
+       et["bilan_final"]["seance"] == "2026-12-21" and et["duel"]["toi_eur"] == 211.86)
+
+    # Une valeur de la première séance revendue avant la fin, et fractionnée ensuite.
+    fs = a_part("fraction-vendue")
+    passer_ordre(achat(50), maintenant=T0, lire_cours=cours(T0), fichier=fs)
+    passer_ordre({"sens": "vente", "ticker": "NVDA", "tout": True, "raison": "Fin"}, maintenant=mardi,
+                 lire_cours=cours(mardi), fichier=fs)
+    passer_ordre(achat(30, "AAPL"), maintenant=mardi, lire_cours=cours(mardi), fichier=fs)
+    table_s = table(date(2026, 11, 23), date(2026, 12, 22), date(2026, 11, 26), date(2026, 12, 18), finaux, 1.05,
+                    date(2026, 12, 21), fractions={("NVDA", date(2026, 12, 1)): 4.0})
+    es = etat(maintenant=jour29, lire_cours=cours(jour29), fichier=fs, lire_jours=jours_faux(table_s))
+    ok("NVDA (première séance), revendue puis fractionnée : sa clôture est lue (211,86 €) et le fractionnement dit",
+       es["premiere_seance"]["valeur_eur"] == 211.86
+       and es["bilan_final"]["fractionnements"] == [{"ticker": "NVDA", "jour": "2026-12-01", "rapport": 4.0}])
+    recommencer(maintenant=jour29, lire_cours=cours(jour29), fichier=fs, lire_jours=jours_faux(table_s))
+    bs = etat(maintenant=jour29, lire_cours=cours(jour29), fichier=fs)["defis"]
+    ok("… rangé, il reste marqué et n'entre pas dans les totaux",
+       bs["nombre"] == 0 and bs["exclus"] == 1 and bs["ecart_total_eur"] == 0.0
+       and bs["defis"][0]["exclu"] == "fractionnement d'action : NVDA le mardi 1 décembre")
+    ok(f"la phrase quand rien n'est compté → « {etat(maintenant=jour29, lire_cours=cours(jour29), fichier=fs)['phrases']['defis']} »",
+       etat(maintenant=jour29, lire_cours=cours(jour29), fichier=fs)["phrases"]["defis"]
+       == "Aucun défi compté pour l'instant. 1 défi pas compté : bilan faux ou incomplet, la raison est dans le tableau.")
+
+    # Une clôture manquante le dernier jour : jamais celle de la veille, le bilan attend.
+    for symbole, mots in (("AAPL", "pas de clôture d'AAPL le vendredi 18 décembre"),
+                          ("SPY", "pas de clôture du S&P 500 le vendredi 18 décembre")):
+        trou = {s: [l for l in lignes if not (s == symbole and l[0] == date(2026, 12, 18))]
+                for s, lignes in table_a.items()}
+        fm = os.path.join(d5, f"sans-{symbole}.json")
+        _ecrire_defi(fm, copie_a)
+        em = etat(maintenant=jour29, lire_cours=cours(jour29), fichier=fm, lire_jours=jours_faux(trou))
+        ok(f"{symbole} sans sa clôture du 18/12 : bilan en attente → « {em['bilan_final']['message']} »",
+           em["bilan_final"]["statut"] == "attente" and mots in em["bilan_final"]["message"])
+
+    zero = {s: [(l[0], l[1], 0.0 if (s == "NVDA" and l[0] == date(2026, 12, 18)) else l[2], l[3]) for l in lignes]
+            for s, lignes in table_a.items()}
+    fz = os.path.join(d5, "cloture-zero.json")
+    _ecrire_defi(fz, copie_a)
+    ez = etat(maintenant=jour29, lire_cours=cours(jour29), fichier=fz, lire_jours=jours_faux(zero))
+    ok("une clôture à 0 € le dernier jour (Yahoo abîmé) : pas un cours, le bilan attend",
+       ez["bilan_final"]["statut"] == "attente" and "pas de clôture de NVDA le vendredi 18 décembre" in ez["bilan_final"]["message"])
+
+    # Le dollar : une ligne 6 jours après la dernière séance ne compte pas (5 jours au plus).
+    loin = {**table_a, CHANGE: [l for l in table_a[CHANGE] if l[0] <= date(2026, 12, 18) or l[0] >= date(2026, 12, 24)]}
+    fl = os.path.join(d5, "dollar-loin.json")
+    _ecrire_defi(fl, copie_a)
+    el = etat(maintenant=datetime(2026, 12, 26, 15, 0, tzinfo=UTC), lire_cours=cours(T0), fichier=fl,
+              lire_jours=jours_faux(loin))
+    ok("le dollar suivant 6 jours après la dernière séance : bilan en attente", el["bilan_final"]["statut"] == "attente"
+       and "dollar" in el["bilan_final"]["message"])
+
+    # Un fractionnement APRÈS la fin (Yahoo ajuste alors aussi les clôtures de la fin) : dit.
+    fp = os.path.join(d5, "fraction-apres.json")
+    _ecrire_defi(fp, copie_a)
+    table_p = table(date(2026, 11, 23), date(2026, 12, 24), date(2026, 11, 26), date(2026, 12, 18), finaux, 1.05,
+                    date(2026, 12, 21), fractions={("AAPL", date(2026, 12, 22)): 2.0})
+    ep = etat(maintenant=datetime(2026, 12, 23, 15, 0, tzinfo=UTC), lire_cours=cours(T0), fichier=fp,
+              lire_jours=jours_faux(table_p))
+    ok("un fractionnement d'AAPL le 22/12, après la fin : dit aussi",
+       ep["bilan_final"]["fractionnements"] == [{"ticker": "AAPL", "jour": "2026-12-22", "rapport": 2.0}])
+
+    # Les cours de la fin en attente sont relus au bout de 5 minutes (pas 1 h).
+    appels = []
+    fw = os.path.join(d5, "reessai.json")
+    _ecrire_defi(fw, copie_a)
+    lire_w = jours_faux(sans_lundi, appels)
+    etat(maintenant=jour29, lire_cours=cours(jour29), fichier=fw, lire_jours=lire_w)
+    n1 = len(appels)
+    etat(maintenant=jour29, lire_cours=cours(jour29), fichier=fw, lire_jours=lire_w)
+    n2 = len(appels)
+    cle = next(k for k in _fins if k[0] == os.path.abspath(fw))
+    _fins[cle] = (_fins[cle][0] - FIN_REESSAI_S - 1, *_fins[cle][1:])
+    etat(maintenant=jour29, lire_cours=cours(jour29), fichier=fw, lire_jours=lire_w)
+    ok("bilan en attente : pas relu tout de suite, relu après 5 minutes", n1 > 0 and n2 == n1 and len(appels) > n2)
+
+    # Le jour 28 férié : dès que Yahoo annonce la prochaine séance après la fin, plus d'ordres et le bilan est annoncé.
+    mercredi_soir = datetime(2026, 11, 25, 22, 0, tzinfo=UTC)                  # 17 h à New York, après la clôture
+    annonce = {"jour": (datetime(2026, 11, 25, 14, 30, tzinfo=UTC), datetime(2026, 11, 25, 21, 0, tzinfo=UTC)),
+               "courante": (datetime(2026, 11, 27, 14, 30, tzinfo=UTC), datetime(2026, 11, 27, 18, 0, tzinfo=UTC))}
+    cloture = datetime(2026, 11, 25, 20, 59, tzinfo=UTC)
+    e7 = etat(maintenant=mercredi_soir, fichier=fb,
+              lire_cours=faux({"NVDA": (110.0, cloture, annonce), "EURUSD=X": (1.10, m(mercredi_soir)),
+                               "SPY": (660.0, cloture, annonce)}))
+    ok("mercredi 25/11 au soir, Yahoo annonce vendredi 27 (après la fin, jeudi 26 férié) : plus d'ordres, bilan annoncé",
+       e7["derniere_seance_passee"] and not e7["ordres_ouverts"]
+       and e7["ordres_message"] == "Plus aucune séance de New York d'ici la fin du défi : plus d'ordres possibles."
+       and e7["bilan_final"]["statut"] == "derniere_seance_passee"
+       and "Bilan final le vendredi 27 novembre" in e7["bilan_final"]["message"])
+
+    # Un bilan final qui n'arrive jamais : refusé 3 jours, puis rangé, marqué, pas compté, au jour 28.
+    tard = datetime(2026, 12, 23, 15, 0, tzinfo=UTC)                              # 3 jours après la fin
+    rc = recommencer(maintenant=tard, lire_cours=cours(tard), fichier=fc, lire_jours=jours_faux(sans_lundi))
+    with open(os.path.join(dossier_archives(fc), rc["archive"])) as g:
+        ac = json.load(g)
+    ok("bilan final introuvable 3 jours après la fin : rangé quand même, marqué « incomplet », au jour 28",
+       rc["statut"] == "fini" and ac["exclu"].startswith("bilan final incomplet") and ac["jour"] == 28
+       and lire(fc) == nouveau_defi())
+
+    # Abandonné avec un fractionnement pendant le défi : marqué.
+    fa2 = a_part("abandon-fraction")
+    passer_ordre(achat(50), maintenant=T0, lire_cours=cours(T0), fichier=fa2)
+    table_f = table(date(2026, 11, 23), date(2026, 11, 30), date(2026, 11, 26), date(2026, 11, 27), finaux, 1.05,
+                    date(2026, 11, 30), fractions={("NVDA", date(2026, 11, 24)): 4.0})
+    rf2 = recommencer(maintenant=mardi, lire_cours=cours(mardi), fichier=fa2, lire_jours=jours_faux(table_f))
+    with open(os.path.join(dossier_archives(fa2), rf2["archive"])) as g:
+        af = json.load(g)
+    ok("abandonné, avec un fractionnement de NVDA le 24/11 : marqué, jour 2 gardé",
+       af["exclu"] == "fractionnement d'action : NVDA le mardi 24 novembre" and af["jour"] == 2
+       and af["fractionnements"] == [{"ticker": "NVDA", "jour": "2026-11-24", "rapport": 4.0}])
+
+    # Un essai coupé, puis un nouvel ordre sur le défi pas remis à zéro : l'archive suit, sans blocage.
+    fx2 = a_part("coupe-puis-ordre")
+    passer_ordre(achat(50), maintenant=T0, lire_cours=cours(T0), fichier=fx2)
+    defi_x = lire(fx2)
+    recommencer(maintenant=mardi, lire_cours=cours(mardi), fichier=fx2)
+    _ecrire_defi(fx2, defi_x)
+    passer_ordre(achat(10), maintenant=mardi, lire_cours=cours(mardi), fichier=fx2)
+    rx = recommencer(maintenant=mardi, lire_cours=cours(mardi), fichier=fx2)
+    with open(os.path.join(dossier_archives(fx2), rx["archive"])) as g:
+        ax = json.load(g)
+    ok("coupé, puis un ordre de plus : l'archive est mise à jour (2 ordres), le défi repart de zéro",
+       len(ax["defi"]["ordres"]) == 2 and lire(fx2) == nouveau_defi())
+    # Une copie de l'archive (« Dupliquer » du Finder) : comptée une fois, signalée.
+    arch = dossier_archives(fx2)
+    with open(os.path.join(arch, rx["archive"]), "rb") as g, open(os.path.join(arch, rx["archive"][:-5] + " copie.json"), "wb") as h:
+        h.write(g.read())
+    bx = etat(maintenant=mardi, lire_cours=cours(mardi), fichier=fx2)["defis"]
+    ok("une copie d'archive : comptée une seule fois, signalée", bx["nombre"] == 1
+       and bx["doublons"] == [rx["archive"][:-5] + " copie.json"])
+    # Un tube nommé comme une archive : ignoré, la lecture ne bloque pas.
+    tube = os.path.join(arch, "papier-tube.json")
+    os.mkfifo(tube)
+    lu = []
+    fil = threading.Thread(target=lambda: lu.append(bilan_des_defis(fx2, {})), daemon=True)
+    fil.start()
+    fil.join(5)
+    if not lu:                                    # bloqué : on libère le lecteur, l'échec est compté
+        fd_tube = os.open(tube, os.O_WRONLY | os.O_NONBLOCK)
+        os.close(fd_tube)
+    ok("un tube nommé « papier-tube.json » : ignoré, la lecture ne bloque pas", lu and lu[0]["nombre"] == 1)
+    # Un dossier d'archives illisible : signalé, et « Recommencer » le dit en français.
+    passer_ordre(achat(50), maintenant=mardi, lire_cours=cours(mardi), fichier=fx2)
+    os.chmod(arch, 0)
+    try:
+        bi = etat(maintenant=mardi, lire_cours=cours(mardi), fichier=fx2)["defis"]
+        r_ok, texte = refus(lambda: recommencer(maintenant=mardi, lire_cours=cours(mardi), fichier=fx2),
+                            "n'est pas accessible")
+    finally:
+        os.chmod(arch, 0o755)
+    ok(f"dossier d'archives illisible : signalé, et recommencer refusé → « {texte} »",
+       bi["illisibles"] == ["le dossier papier-archives"] and r_ok and lire(fx2)["ordres"])
+
+    # Une archive à la forme fausse (statut inconnu, nombre non fini) : illisible, jamais comptée.
+    fv = a_part("archives-abimees")
+    os.makedirs(dossier_archives(fv))
+    with open(os.path.join(arch, rx["archive"])) as g:
+        bonne = json.load(g)
+    _ecrire_defi(os.path.join(dossier_archives(fv), "papier-a.json"), {**bonne, "statut": "perdu"})
+    nan = json.loads(json.dumps(bonne))
+    nan["defi"]["debut"]["date"] = "2026-11-30T15:00:00+00:00"
+    nan["bilan"]["duel"]["ecart_eur"] = float("nan")
+    _ecrire_defi(os.path.join(dossier_archives(fv), "papier-b.json"), nan)
+    bv = bilan_des_defis(fv, {})
+    ok("une archive au statut inconnu, une autre avec un NaN : illisibles, pas comptées",
+       bv["illisibles"] == ["papier-a.json", "papier-b.json"] and bv["nombre"] == 0)
+
+    # Des cours illisibles (NaN) : rien n'est rangé.
+    fn = a_part("nan")
+    passer_ordre(achat(50), maintenant=T0, lire_cours=cours(T0), fichier=fn)
+    r_ok, texte = refus(lambda: recommencer(maintenant=mardi, lire_cours=cours(mardi, SPY=(float("nan"), m(mardi))),
+                                            fichier=fn), "Cours indisponibles")
+    ok(f"un cours NaN : recommencer refusé → « {texte} », rien de rangé",
+       r_ok and not os.path.exists(dossier_archives(fn)) and lire(fn)["ordres"])
+
+    ok("les mots : « du dollar », « du S&P 500 », « de NVDA », « d'AAPL »",
+       (du(CHANGE), du(INDICE), du("NVDA"), du("AAPL")) == ("du dollar", "du S&P 500", "de NVDA", "d'AAPL"))
 
 
 def main():

@@ -183,6 +183,7 @@
 }
 /* Le statut est un texte : aligné à gauche, son titre aussi (les montants restent à droite). */
 .pa-table .pa-statut { text-align: left; }
+.pa-exclu { font-size: 12px; color: var(--text-muted); white-space: normal; }
 .pa-recommencer { margin-top: var(--space-5); }
 .pa-confirmer {
   margin-top: var(--space-3);
