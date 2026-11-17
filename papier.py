@@ -1015,15 +1015,17 @@ def _seances_de_yahoo(meta, minute):
                     jour = (debut, fin)
     except (KeyError, TypeError, ValueError, AttributeError):
         jour = None
-    courante = None
-    try:
-        reg = meta["currentTradingPeriod"]["regular"]
-        debut = datetime.fromtimestamp(int(reg["start"]), UTC)
-        fin = datetime.fromtimestamp(int(reg["end"]), UTC)
-        courante = (debut, fin) if debut < fin else None
-    except (KeyError, TypeError, ValueError, OverflowError):
-        courante = None
-    return {"jour": jour, "courante": courante}
+    def periode(cle):
+        try:
+            p = meta["currentTradingPeriod"][cle]
+            debut = datetime.fromtimestamp(int(p["start"]), UTC)
+            fin = datetime.fromtimestamp(int(p["end"]), UTC)
+            return (debut, fin) if debut < fin else None
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+    # « avant » et « apres » : l'avant-séance et l'après-séance du même jour (vu le 17/11/2026 : Yahoo les
+    # donne aussi quand on ne lit que la séance normale), pour l'état de la Bourse du carnet réel.
+    return {"jour": jour, "courante": periode("regular"), "avant": periode("pre"), "apres": periode("post")}
 
 
 def minute_de_seance(symbole, relire=False):
@@ -1050,6 +1052,23 @@ def minute_de_seance(symbole, relire=False):
     periode = _seances_de_yahoo(getattr(t, "history_metadata", None), minute)
     _memo[symbole] = (time.monotonic(), cours, minute, periode)
     return cours, minute, periode
+
+
+def etat_bourse(maintenant, periode):
+    """
+    L'état de la Bourse de New York d'après Yahoo : « avant » (avant-séance),
+    « ouverte », « apres » (après-séance) ou « fermee ». Yahoo annonce les
+    trois périodes du jour, ou celles de la prochaine séance (un jour
+    férié, un week-end) : hors d'elles, c'est fermé. None quand Yahoo ne
+    dit rien : la page reprend son propre calcul (sans les jours fériés).
+    """
+    if not isinstance(periode, dict) or not periode.get("courante"):
+        return None
+    for nom_etat, p in (("avant", periode.get("avant")), ("ouverte", periode["courante"]),
+                        ("apres", periode.get("apres"))):
+        if p and p[0] <= maintenant < p[1]:
+            return nom_etat
+    return "fermee"
 
 
 def _trois(r):
@@ -1504,8 +1523,11 @@ def verifier():
                                                pd.Timestamp("2026-11-27 09:30", tz="America/New_York")],
                                      "end": [pd.Timestamp("2026-11-25 16:00", tz="America/New_York"),
                                              pd.Timestamp("2026-11-27 13:00", tz="America/New_York")]})
-            self.history_metadata = {"currentTradingPeriod": {"regular": {"start": debut, "end": debut + 3.5 * 3600}},
-                                     "tradingPeriods": par_jour}
+            self.history_metadata = {"currentTradingPeriod": {
+                "pre": {"start": debut - 5.5 * 3600, "end": debut},
+                "regular": {"start": debut, "end": debut + 3.5 * 3600},
+                "post": {"start": debut + 3.5 * 3600, "end": debut + 7.5 * 3600}},
+                "tradingPeriods": par_jour}
 
         def history(self, **kw):
             FauxTicker.appels.append(kw)
@@ -1560,6 +1582,20 @@ def verifier():
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+    # L'état de la Bourse d'après Yahoo (le carnet réel) : le vendredi 27/11, séance courte de 9 h 30 à 13 h.
+    v = lambda h, mi=0: datetime(2026, 11, 27, h, mi, tzinfo=UTC)
+    court = {"jour": None, "avant": (v(9), v(14, 30)), "courante": (v(14, 30), v(18)), "apres": (v(18), v(22))}
+    ferie = {"jour": None, "avant": (v(9), v(14, 30)), "courante": (v(14, 30), v(18)), "apres": (v(18), v(22))}
+    ok("état de la Bourse : avant-séance, ouverte, après-séance (dès 13 h à New York un jour court), fermée la nuit",
+       [etat_bourse(v(h, mi), court) for h, mi in ((10, 0), (15, 0), (18, 30), (23, 0))]
+       == ["avant", "ouverte", "apres", "fermee"])
+    ok("état de la Bourse : le jeudi de Thanksgiving, Yahoo annonce vendredi → fermée toute la journée ; rien de Yahoo → None",
+       etat_bourse(datetime(2026, 11, 26, 16, 0, tzinfo=UTC), ferie) == "fermee"
+       and etat_bourse(v(15), None) is None and etat_bourse(v(15), {"jour": None, "courante": None}) is None)
+    ok("lecture : Yahoo donne aussi l'avant-séance et l'après-séance du jour",
+       c1[2]["avant"] == (datetime(2026, 11, 27, 9, 0, tzinfo=UTC), datetime(2026, 11, 27, 14, 30, tzinfo=UTC))
+       and c1[2]["apres"] == (datetime(2026, 11, 27, 18, 0, tzinfo=UTC), datetime(2026, 11, 27, 22, 0, tzinfo=UTC)))
 
     ok("les mots : 1234,5 € → « 1 234,50 € », −0,004 € → « 0,00 € », 0,341234 et « d'AAPL »",
        euros(1234.5) == "1 234,50 €" and euros(-0.004) == "0,00 €"

@@ -269,8 +269,12 @@ window.PP = (() => {
       + (court ? '' : ', comme le calcule ton courtier'),
     /** Le duel d'une décision d'achat avec le S&P 500. */
     duel: (d) => (d.valeur_indice_eur == null ? null
-      : `La même somme mise dans le S&P 500 le même jour vaudrait ${euros(d.valeur_indice_eur)}. `
-        + `Ton choix vaut ${euros(d.valeur_choix_eur)}, soit ${euros(d.ecart_eur, { signe: true })} d'écart.`),
+      : d.ventes_comprises
+        ? `La même somme mise dans le S&P 500 le même jour, puis vendue dans les mêmes proportions, vaudrait `
+          + `${euros(d.valeur_indice_eur)}. Ton choix vaut ${euros(d.valeur_choix_eur)}, ventes comprises, `
+          + `soit ${euros(d.ecart_eur, { signe: true })} d'écart.`
+        : `La même somme mise dans le S&P 500 le même jour vaudrait ${euros(d.valeur_indice_eur)}. `
+          + `Ton choix vaut ${euros(d.valeur_choix_eur)}, soit ${euros(d.ecart_eur, { signe: true })} d'écart.`),
     indicateurs: {
       etiquette: 'Mesuré sur 10 ans : ne prédit rien.',
       sma: 'Moyennes mobiles 50 et 200 jours : la moyenne des clôtures sur 50 et 200 séances. '

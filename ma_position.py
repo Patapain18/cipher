@@ -77,6 +77,19 @@ def en_utc(date_iso):
     return d.astimezone(timezone.utc)
 
 
+def maintenant_paris():
+    """« 2026-11-17T16:45:00 » : l'heure de Paris, sans fuseau, comme le journal (le Mac peut être au Japon)."""
+    return datetime.now(PARIS).replace(tzinfo=None).isoformat(timespec="seconds")
+
+
+def seance_du_cours(heure_utc):
+    """D'où vient un cours, d'après l'heure de New York : « avant » (avant 9 h 30), « ouverte », « apres » (16 h et plus).
+    Une séance raccourcie (13 h) n'est pas connue ici : son après-séance s'écrit « ouverte » jusqu'à 16 h."""
+    ny = heure_utc.astimezone(ZoneInfo("America/New_York"))
+    minutes = ny.hour * 60 + ny.minute
+    return "avant" if minutes < 9 * 60 + 30 else "apres" if minutes >= 16 * 60 else "ouverte"
+
+
 def agreger(journal):
     """
     Les lignes détenues, à partir du journal.
@@ -184,20 +197,69 @@ def cours_actuel(symbole):
     return cours, heure
 
 
+# Les cours passés lus en barres de 5 minutes sont aussi gardés sur disque,
+# à côté du journal (data/cours_passes.json ; data/essai/… pour l'essai) :
+# Yahoo n'a plus ces barres après 60 jours, et sa clôture journalière de
+# secours est ajustée des dividendes. Sans eux, le duel d'un achat
+# bougerait tout seul à chaque lancement (vu par la relecture du 17/11).
+_disque_passe = {"chemin": None, "valeurs": {}, "lisible": True}
+_verrou_passe = threading.Lock()
+
+
+def _chemin_cours_passes():
+    return os.path.join(os.path.dirname(os.path.abspath(JOURNAL)), "cours_passes.json")
+
+
+def _cours_gardes():
+    """Les cours passés gardés sur disque, lus une fois par fichier. Un fichier abîmé n'est jamais remplacé."""
+    chemin = _chemin_cours_passes()
+    if _disque_passe["chemin"] != chemin:
+        valeurs, lisible = {}, True
+        try:
+            with open(chemin) as f:
+                brut = json.load(f)
+            valeurs = {k: float(v) for k, v in brut.items()
+                       if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v > 0}
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, AttributeError) as e:
+            print(f"[ma_position] {chemin} illisible, gardé tel quel : {e}", file=sys.stderr)
+            lisible = False
+        _disque_passe.update(chemin=chemin, valeurs=valeurs, lisible=lisible)
+    return _disque_passe
+
+
+def _garder_cours(cle, v):
+    with _verrou_passe:
+        d = _cours_gardes()
+        if d["lisible"] and d["valeurs"].get(cle) != v:
+            d["valeurs"][cle] = v
+            try:
+                _ecrire(d["chemin"], d["valeurs"])
+            except OSError as e:
+                print(f"[ma_position] cours passés pas gardés : {e}", file=sys.stderr)
+
+
 def cours_a(symbole, quand_utc):
     """
-    Le cours d'un symbole à un moment passé : les barres de 5 minutes du
-    jour (Yahoo les garde 60 jours), sinon la clôture du jour.
+    Le cours d'un symbole à un moment passé : celui gardé sur disque s'il
+    y est, sinon les barres de 5 minutes du jour (Yahoo les garde 60
+    jours), sinon la clôture du jour (jamais gardée sur disque).
     """
     cle = (symbole, quand_utc.isoformat())
     if cle in _memo_passe:
         return _memo_passe[cle]
+    garde = _cours_gardes()["valeurs"].get(f"{symbole}|{quand_utc.isoformat()}")
+    if garde:
+        _memo_passe[cle] = garde
+        return garde
     jour = quand_utc.date()
-    v = float("nan")
+    v, en_5_minutes = float("nan"), False
     try:
         c = _historique(symbole, start=jour - timedelta(days=4), end=jour + timedelta(days=1),
                         interval="5m", prepost=True)
         v = float(c.asof(quand_utc))
+        en_5_minutes = v == v
     except ValueError:
         pass
     if v != v:
@@ -208,6 +270,8 @@ def cours_a(symbole, quand_utc):
     # 5 minutes en cours peut encore bouger.
     if datetime.now(timezone.utc) - quand_utc > timedelta(minutes=10):
         _memo_passe[cle] = v
+        if en_5_minutes and math.isfinite(v) and v > 0:
+            _garder_cours(f"{symbole}|{quand_utc.isoformat()}", v)
     return v
 
 
@@ -262,7 +326,7 @@ def ajouter_decision(payload):
             or frais_eur < 0:
         raise ValueError("quantité, prix et montant positifs, frais positifs ou nuls")
     raison = " ".join(str(payload.get("raison", "")).split())[:200]
-    date = str(payload.get("date") or datetime.now().isoformat(timespec="seconds"))
+    date = str(payload.get("date") or maintenant_paris())
     quand = en_utc(date)
     prix_usd = prix_eur * cours_a(CHANGE, quand)
 
@@ -318,7 +382,8 @@ def position(rang_de=None):
         prix_usd, heure = cours_actuel(l["ticker"])
         c = calcul_ligne(l["quantite"], l["cout_eur"], l["montant_eur"], prix_usd, eurusd)
         rang, classees = rang_de(l["ticker"]) if rang_de else (None, None)
-        lignes.append({**l, **c, "cours_a": heure.isoformat(), "rang": rang, "classees": classees,
+        lignes.append({**l, **c, "cours_a": heure.isoformat(), "seance_du_cours": seance_du_cours(heure),
+                       "rang": rang, "classees": classees,
                        "suivie_par_le_bot": l["ticker"] in engine.UNIVERSE,
                        "resultats": engine.prochaine_publication(l["ticker"])})
         valeur += c["valeur_eur"]
@@ -336,32 +401,74 @@ def position(rang_de=None):
 
 def journal_compare(prix_actuels=None, fx_actuel=None):
     """
-    Chaque décision, et pour chaque achat ce qu'aurait fait la même somme
-    dans le S&P 500. `prix_actuels` ({ticker: cours en $}) et `fx_actuel`
-    sont les cours de la position déjà affichée : le journal compte avec
-    les mêmes, sinon l'écran montre deux valeurs pour la même action.
+    Chaque décision, et pour chaque achat le même argent passé par le
+    S&P 500 (SPY) au même moment : son « jumeau ». `prix_actuels`
+    ({ticker: cours en $}) et `fx_actuel` sont les cours de la position
+    déjà affichée : le journal compte avec les mêmes.
+
+    Une vente retire sa part de CHAQUE achat de la valeur (la règle du
+    prix moyen pondéré, comme `agreger`) et lui rend sa part de l'argent
+    encaissé ; le jumeau de chaque achat vend la même part de ses parts de
+    SPY, le même jour, au cours de ce moment. Un achat vaut donc ce qu'il
+    en reste plus ce qu'il a rapporté, ventes comprises, et le bilan
+    compare tout le portefeuille (positions + ventes encaissées) au même
+    argent passé par le S&P 500 aux mêmes dates. Frais exclus des deux
+    côtés. Tout est compté au centime : les écarts sont ceux des montants
+    affichés.
     """
     journal = sorted(lire_journal(), key=lambda d: d["date"])
     valeurs = valeurs_du_journal()    # pour la liste du formulaire
     if not journal:
-        return {"decisions": [], "valeurs": valeurs, "avertissement": AVERTISSEMENT}
+        return {"decisions": [], "valeurs": valeurs, "avertissement": AVERTISSEMENT, "bilan": None}
     indice_maintenant, _ = cours_actuel(INDICE)
     fx_maintenant = fx_actuel or cours_actuel(CHANGE)[0]
     prix_maintenant = dict(prix_actuels or {})
-    sortie = []
+    sortie, achats = [], {}
     for d in journal:
         ligne = dict(d)
+        quand = en_utc(d["date"])
+        ligne["date_utc"] = quand.isoformat()
         if d["sens"] == "achat":
-            quand = en_utc(d["date"])
-            if d["ticker"] not in prix_maintenant:
-                prix_maintenant[d["ticker"]] = cours_actuel(d["ticker"])[0]
-            valeur_choix = d["quantite"] * prix_maintenant[d["ticker"]] / fx_maintenant
-            valeur_indice = calcul_comparaison(d["montant_eur"], cours_a(INDICE, quand),
-                                               indice_maintenant, cours_a(CHANGE, quand), fx_maintenant)
-            ligne.update({"valeur_choix_eur": valeur_choix, "valeur_indice_eur": valeur_indice,
-                          "ecart_eur": valeur_choix - valeur_indice})
+            achats.setdefault(d["ticker"], []).append({
+                "ligne": ligne, "reste": 1.0, "encaisse_eur": 0.0, "vendu": False,
+                "parts_spy": d["montant_eur"] * cours_a(CHANGE, quand) / cours_a(INDICE, quand),
+                "jumeau_encaisse_eur": 0.0})
+        else:
+            tenus = [a for a in achats.get(d["ticker"], []) if a["reste"] > 1e-12]
+            detenu = sum(a["ligne"]["quantite"] * a["reste"] for a in tenus)
+            part = min(1.0, d["quantite"] / detenu) if detenu else 0.0
+            if tenus:
+                spy_v, fx_v = cours_a(INDICE, quand), cours_a(CHANGE, quand)
+            for a in tenus:
+                a["encaisse_eur"] += d["montant_eur"] * a["ligne"]["quantite"] * a["reste"] / detenu
+                vendues = a["parts_spy"] * part
+                a["jumeau_encaisse_eur"] += vendues * spy_v / fx_v
+                a["parts_spy"] -= vendues
+                a["reste"] *= 1 - part
+                a["vendu"] = True
         sortie.append(ligne)
-    return {"decisions": sortie, "indice": "S&P 500 (SPY)", "valeurs": valeurs,
+    toi = indice = 0.0
+    nombre = devant = 0
+    for ticker, lots in achats.items():
+        if ticker not in prix_maintenant:
+            prix_maintenant[ticker] = cours_actuel(ticker)[0]
+        for a in lots:
+            # Le total du bilan additionne les valeurs exactes et n'arrondit qu'une fois : sans vente, il
+            # tombe sur la valeur de « Ta position » au centime près (vu le 17/11 : 198,34 contre 198,33).
+            choix_brut = (a["ligne"]["quantite"] * a["reste"] * prix_maintenant[ticker] / fx_maintenant
+                          + a["encaisse_eur"])
+            jumeau_brut = a["parts_spy"] * indice_maintenant / fx_maintenant + a["jumeau_encaisse_eur"]
+            choix, jumeau = round(choix_brut, 2), round(jumeau_brut, 2)
+            if math.isfinite(choix) and math.isfinite(jumeau):
+                a["ligne"].update({"valeur_choix_eur": choix, "valeur_indice_eur": jumeau,
+                                   "ecart_eur": round(choix - jumeau, 2), "ventes_comprises": a["vendu"]})
+                toi, indice, nombre = toi + choix_brut, indice + jumeau_brut, nombre + 1
+                devant += round(choix - jumeau, 2) > 0
+    toi, indice = round(toi, 2), round(indice, 2)
+    bilan = ({"toi_eur": toi, "indice_eur": indice, "ecart_eur": round(toi - indice, 2),
+              "achats": nombre, "devant": devant,
+              "ventes": any(a["vendu"] for lots in achats.values() for a in lots)} if nombre else None)
+    return {"decisions": sortie, "indice": "S&P 500 (SPY)", "valeurs": valeurs, "bilan": bilan,
             "avertissement": AVERTISSEMENT}
 
 
@@ -530,8 +637,148 @@ def verifier():
         finally:
             JOURNAL, CARNET, cours_a, cours_actuel, _historique = reel
 
+    _verifier_lot3(ok, proche)
     print(f"\n{sum(cas)}/{len(cas)} vérifications réussies")
     return all(cas)
+
+
+def _verifier_lot3(ok, proche):
+    """Le carnet réel, lot 3 (17/11/2026) : le duel avec les ventes, les cours passés gardés, l'heure de Paris."""
+    global JOURNAL, CARNET, cours_a, cours_actuel, _historique
+    import tempfile
+    import time as horloge
+    reel = (JOURNAL, CARNET, cours_a, cours_actuel, _historique)
+    utc = lambda texte: en_utc(texte)
+    with tempfile.TemporaryDirectory() as dossier:
+        JOURNAL = os.path.join(dossier, "journal.json")
+        CARNET = os.path.join(dossier, "stock_positions.json")
+        _ecrire(CARNET, {})
+        _memo_passe.clear()
+        _disque_passe["chemin"] = None
+        try:
+            # ── Le duel avec une vente. Deux achats de MSFT, puis la moitié vendue (chiffres inventés) :
+            #    lundi 0,5 à 120 € (60 €, SPY 600 $, 1 € = 1,20 $ → 0,12 part de SPY) ; mardi 0,25 à 160 € (40 €,
+            #    SPY 640 $ → 0,075 part) ; mercredi, vente de 0,375 à 200 € (75 €), SPY 660 $ et 1 € = 1,10 $.
+            #    Aujourd'hui : MSFT 220 $ (200 €), SPY 702,9 $ (639 €).
+            passes = {("SPY", "2026-03-02"): 600.0, ("SPY", "2026-03-03"): 640.0, ("SPY", "2026-03-04"): 660.0,
+                      ("EURUSD=X", "2026-03-02"): 1.20, ("EURUSD=X", "2026-03-03"): 1.20, ("EURUSD=X", "2026-03-04"): 1.10}
+            cours_a = lambda symbole, quand: passes[(symbole, quand.date().isoformat())]
+            cours_actuel = lambda symbole: ({"SPY": 702.9, "EURUSD=X": 1.10, "MSFT": 220.0}[symbole],
+                                            datetime.now(timezone.utc))
+            achat1 = {"date": "2026-03-02T15:45:00", "sens": "achat", "ticker": "MSFT", "quantite": 0.5,
+                      "prix_eur": 120.0, "montant_eur": 60.0, "frais_eur": 1.0, "raison": "Un"}
+            achat2 = {**achat1, "date": "2026-03-03T15:45:00", "quantite": 0.25, "prix_eur": 160.0, "montant_eur": 40.0,
+                      "raison": "Deux"}
+            vente = {**achat1, "date": "2026-03-04T15:45:00", "sens": "vente", "quantite": 0.375, "prix_eur": 200.0,
+                     "montant_eur": 75.0, "raison": "Moitié"}
+            _ecrire(JOURNAL, [achat1, achat2])
+            sans = journal_compare()
+            a1 = sans["decisions"][0]
+            ok("sans vente, rien ne change : 0,5 × 200 = 100 € contre 60 × (702,9/600) × (1,20/1,10) = 76,68 €",
+               a1["valeur_choix_eur"] == 100.0 and a1["valeur_indice_eur"] == 76.68
+               and a1["valeur_indice_eur"] == round(calcul_comparaison(60.0, 600.0, 702.9, 1.20, 1.10), 2)
+               and a1["ventes_comprises"] is False)
+            _ecrire(JOURNAL, [achat1, achat2, vente])
+            j = journal_compare()
+            d1, d2 = j["decisions"][0], j["decisions"][1]
+            ok("la vente de la moitié : l'achat 1 garde 0,25 action (50 €) et reçoit 2/3 des 75 € (50 €) → 100 € ; son "
+               "jumeau vend 0,06 part à 600 € (36 €) et garde 0,06 × 639 € → 74,34 € ; écart +25,66 €",
+               d1["valeur_choix_eur"] == 100.0 and d1["valeur_indice_eur"] == 74.34 and d1["ecart_eur"] == 25.66
+               and d1["ventes_comprises"] is True)
+            ok("l'achat 2 : 0,125 action (25 €) + 1/3 des 75 € (25 €) = 50 € ; jumeau 0,0375 × 639 + 22,50 = 46,46 € ; +3,54 €",
+               d2["valeur_choix_eur"] == 50.0 and d2["valeur_indice_eur"] == 46.46 and d2["ecart_eur"] == 3.54)
+            ok("le bilan du portefeuille : 150 € (positions + ventes encaissées) contre 120,80 €, écart +29,20 €, ventes comprises",
+               j["bilan"] == {"toi_eur": 150.0, "indice_eur": 120.8, "ecart_eur": 29.2, "achats": 2, "devant": 2,
+                              "ventes": True})
+            ok("même règle que le prix moyen pondéré : il reste 0,375 MSFT, comme agreger",
+               proche(agreger([achat1, achat2, vente])[0]["quantite"], 0.25 + 0.125))
+            ok("chaque décision porte sa date en UTC (15 h 45 à Paris le 02/03 = 14 h 45 UTC)",
+               d1["date_utc"] == "2026-03-02T14:45:00+00:00" and j["decisions"][2]["date_utc"] == "2026-03-04T14:45:00+00:00")
+            _ecrire(JOURNAL, [achat1, {**achat1, "date": "2026-03-03T15:45:00"}])
+            cours_actuel = lambda symbole: ({"SPY": 702.9, "EURUSD=X": 1.10, "MSFT": 24.2088}[symbole],
+                                            datetime.now(timezone.utc))
+            b = journal_compare(prix_actuels={"MSFT": 24.2088}, fx_actuel=1.10)["bilan"]
+            ok("le bilan arrondit une seule fois : 2 × 0,5 × 24,2088/1,10 = 22,008 → 22,01 € (comme « Ta position »), "
+               "pas 11,00 + 11,00", b["toi_eur"] == 22.01)
+            cours_actuel = lambda symbole: ({"SPY": 702.9, "EURUSD=X": 1.10, "MSFT": 220.0}[symbole],
+                                            datetime.now(timezone.utc))
+            _ecrire(JOURNAL, [achat1, {**vente, "quantite": 0.75, "montant_eur": 150.0}])
+            tout = journal_compare()["decisions"][0]
+            ok("tout vendu : l'achat vaut ce qu'il a rapporté (150 €), son jumeau aussi (0,12 × 600 = 72 €)",
+               tout["valeur_choix_eur"] == 150.0 and tout["valeur_indice_eur"] == 72.0)
+
+            # ── Les cours passés gardés sur disque (à côté du journal).
+            cours_a = reel[2]
+            appels = []
+
+            def faux_historique(symbole, **kw):
+                appels.append(kw.get("interval"))
+                if kw.get("interval") == "5m" and symbole != "AAPL":
+                    index = pd.DatetimeIndex([pd.Timestamp("2026-03-02 14:40", tz="UTC"), pd.Timestamp("2026-03-02 14:45", tz="UTC")])
+                    return pd.Series([600.0, 601.0], index=index)
+                if kw.get("interval") == "5m":
+                    raise ValueError("pas de barres de 5 minutes")
+                return pd.Series([590.0], index=pd.DatetimeIndex([pd.Timestamp("2026-03-02", tz="UTC")]))
+            _historique = faux_historique
+            _memo_passe.clear()
+            quand = utc("2026-03-02T15:46:00")
+            v1 = cours_a("SPY", quand)
+            garde = os.path.join(dossier, "cours_passes.json")
+            with open(garde) as f:
+                sur_disque = json.load(f)
+            ok("un cours lu en barres de 5 minutes (601 $) est gardé sur disque, à côté du journal",
+               v1 == 601.0 and sur_disque == {"SPY|2026-03-02T14:46:00+00:00": 601.0})
+            v_jour = cours_a("AAPL", quand)
+            with open(garde) as f:
+                ok("… mais jamais la clôture journalière de secours (ajustée des dividendes)",
+                   v_jour == 590.0 and "AAPL|2026-03-02T14:46:00+00:00" not in json.load(f))
+            _memo_passe.clear()
+            _disque_passe["chemin"] = None
+            n = len(appels)
+            ok("au lancement suivant, le cours gardé est relu sur disque, sans Yahoo",
+               cours_a("SPY", quand) == 601.0 and len(appels) == n)
+            recent = datetime.now(timezone.utc) - timedelta(minutes=2)
+            cours_a("SPY", recent)
+            with open(garde) as f:
+                ok("un cours de moins de 10 minutes (la barre peut encore bouger) n'est pas gardé",
+                   len(json.load(f)) == 1)
+            with open(garde, "w") as f:
+                f.write("{abîmé")
+            _memo_passe.clear()
+            _disque_passe["chemin"] = None
+            cours_a("SPY", utc("2026-03-02T15:47:00"))
+            with open(garde) as f:
+                ok("un fichier de cours gardés abîmé n'est jamais remplacé", f.read() == "{abîmé")
+
+            # ── L'heure de Paris, même si le Mac est à Tokyo.
+            ancien = os.environ.get("TZ")
+            os.environ["TZ"] = "Asia/Tokyo"
+            horloge.tzset()
+            try:
+                note = datetime.fromisoformat(maintenant_paris())
+                paris = datetime.now(PARIS).replace(tzinfo=None)
+                cours_a = lambda _s, _q: 1.10
+                _ecrire(JOURNAL, [])
+                d = ajouter_decision({**achat1, "date": ""})
+                ok("Mac à Tokyo : une décision sans date prend l'heure de Paris (pas celle du Mac, 8 h plus tard)",
+                   abs((note - paris).total_seconds()) < 5 and abs((note - datetime.now()).total_seconds()) > 3600
+                   and abs((datetime.fromisoformat(d["date"]) - paris).total_seconds()) < 5)
+            finally:
+                if ancien is None:
+                    os.environ.pop("TZ", None)
+                else:
+                    os.environ["TZ"] = ancien
+                horloge.tzset()
+
+            ok("d'où vient un cours (heure de New York, en hiver UTC − 5) : 9 h 29 avant-séance, 9 h 30 et 15 h 59 "
+               "séance, 16 h après-séance",
+               [seance_du_cours(datetime(2026, 11, 17, h, mi, tzinfo=timezone.utc))
+                for h, mi in ((13, 0), (14, 29), (14, 30), (20, 59), (21, 0), (21, 30))]
+               == ["avant", "avant", "ouverte", "ouverte", "apres", "apres"])
+        finally:
+            JOURNAL, CARNET, cours_a, cours_actuel, _historique = reel
+            _memo_passe.clear()
+            _disque_passe["chemin"] = None
 
 
 def main():

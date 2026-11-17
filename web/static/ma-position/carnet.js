@@ -90,6 +90,12 @@
 
   /* La date d'une décision, sur deux lignes dans la marge du carnet :
      le jour (même forme que PP.dateHeure), puis l'heure. */
+  /* D'où vient le dernier cours (le serveur le dit, d'après l'heure de New
+     York) : le carnet garde le cours d'avant et d'après-séance, que suit
+     aussi le courtier, et il le dit (choix de Mathis, 17/11/2026). */
+  const SEANCE_DU_COURS = { avant: 'cours d\'avant-séance de', apres: 'cours d\'après-séance de', ouverte: 'cours de' };
+  const SEANCE_ENTRE_PARENTHESES = { avant: ' (avant-séance)', apres: ' (après-séance)' };
+
   const jourCourt = (iso) => {
     const d = new Date(iso);
     return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('fr-FR',
@@ -231,13 +237,13 @@
                   <input class="field num" id="pc-frais" name="frais_eur" inputmode="decimal" value="1">
                 </div>
                 <div class="pc-champ pc-champ-date">
-                  <label for="pc-date">Date et heure</label>
+                  <label for="pc-date">Date et heure (Paris)</label>
                   <input class="field num" id="pc-date" name="date" type="datetime-local"
                          aria-describedby="pc-aide">
                 </div>
               </div>
               <p class="pc-aide" id="pc-aide">Montant vide : quantité × prix, sans les frais.
-                Date vide : maintenant.</p>
+                Date vide : maintenant. La date et l'heure sont celles de Paris, même en voyage.</p>
               <div class="pc-envoi">
                 <button type="submit" class="btn">Noter cette décision</button>
                 <p class="form-msg pc-msg" id="pc-msg" role="status" aria-live="polite"></p>
@@ -322,7 +328,9 @@
                 <span>Aucune action détenue en ce moment.</span></p>`;
     } else {
       const t = p.total;
-      const dernierCours = p.lignes.map((l) => l.cours_a).filter(Boolean).sort().pop();
+      const derniere = [...p.lignes].filter((l) => l.cours_a).sort((a, b) => (a.cours_a < b.cours_a ? -1 : 1)).pop();
+      const dernierCours = derniere?.cours_a;
+      const quelCours = SEANCE_DU_COURS[derniere?.seance_du_cours] || 'cours de';
       html = `
         <p class="pc-direct-ligne">
           <span class="pc-direct-quoi">Ta position</span>
@@ -332,9 +340,9 @@
           <span class="pc-sep" aria-hidden="true">·</span>
           <span class="pc-sans-frais">${habiller(T.sansFrais(PP.sansFraisTotal(p), { court: true }))}</span>
           <span class="pc-sep" aria-hidden="true">·</span>
-          <span>cours de ${num(heureDuCours(dernierCours))}</span>
+          <span>${PP.esc(quelCours)} ${num(heureDuCours(dernierCours))}</span>
           <span class="pc-sep" aria-hidden="true">·</span>
-          <span>${PP.esc(PP.BOURSE[PP.bourse()])}</span>
+          <span>${PP.esc(PP.BOURSE[p.bourse] || PP.BOURSE[PP.bourse()])}</span>
         </p>
         ${etat.erreurPosition ? `<p class="pc-direct-erreur">Dernier rafraîchissement impossible
           (${PP.esc(etat.erreurPosition)}) : ces chiffres datent du tour précédent.</p>` : ''}`;
@@ -386,7 +394,7 @@
     return `
       <article class="pc-entree pc-ligne" aria-labelledby="pc-e-${i}">
         <p class="pc-marge pc-entree-date">
-          <time datetime="${PP.esc(d.date)}">${PP.esc(jourCourt(d.date))}<br>${num(PP.heure(d.date))}</time>
+          <time datetime="${PP.esc(d.date_utc || d.date)}">${PP.esc(jourCourt(d.date_utc || d.date))}<br>${num(PP.heure(d.date_utc || d.date))}</time>
         </p>
         <div class="pc-entree-corps">
           <p class="pc-entree-sens">${achat ? 'Achat' : 'Vente'} de ${num(quantite(d.quantite))} ${PP.esc(d.ticker)}</p>
@@ -400,7 +408,16 @@
 
   /* Le bilan, dès deux achats : la question même du carnet — « mes
      bonnes occasions font-elles mieux que l'indice ? » —, en faits. */
-  function bilan(decisions) {
+  function bilan(decisions, b) {
+    /* Le serveur compte tout le portefeuille (positions + ventes encaissées)
+       contre le même argent passé par le S&P 500 aux mêmes dates. */
+    if (b) {
+      const qui = b.devant === 0 ? 'aucun ne vaut' : b.devant === 1 ? '1 vaut' : `${b.devant} valent`;
+      return `<p class="pc-bilan">${habiller(`Sur tes ${b.achats} achat${b.achats > 1 ? 's' : ''}, ${qui} aujourd'hui `
+        + `plus que la même somme mise dans le S&P 500 le même jour${b.ventes ? ', ventes comprises' : ''}. `
+        + `Ton portefeuille vaut ${PP.euros(b.toi_eur)}, le même argent passé par le S&P 500 ${PP.euros(b.indice_eur)}.`)}
+        Écart : <span class="${PP.sens(b.ecart_eur)}">${num(PP.euros(b.ecart_eur, { signe: true }))}</span>.</p>`;
+    }
     const achats = decisions.filter((d) => d.sens === 'achat' && d.valeur_indice_eur != null);
     if (achats.length < 2) return '';
     const mieux = achats.filter((d) => PP.sens(d.ecart_eur) === 'up').length;
@@ -432,7 +449,7 @@
          Le bilan, lui, compte toujours tous les achats. */
       const entrees = recentes.map((d, i) => entree(d, i, j.indice));
       const anciennes = entrees.slice(ENTREES_VISIBLES);
-      html = bilan(recentes) + entrees.slice(0, ENTREES_VISIBLES).join('');
+      html = bilan(recentes, j.bilan) + entrees.slice(0, ENTREES_VISIBLES).join('');
       if (anciennes.length) {
         const n = anciennes.length;
         html += `
@@ -525,7 +542,7 @@
             <p class="pc-gain-ligne"><span class="${PP.sens(l.gain_eur)}">${num(PP.euros(l.gain_eur, { signe: true }))}
               (${num(PP.pct(l.gain_pct))})</span> depuis l'achat, frais compris</p>
             <p class="pc-sans-frais-ligne">${habiller(T.sansFrais(PP.sansFrais(l)))}</p>
-            <p class="pc-cours-ligne">Cours ${num(PP.euros(l.prix_eur))} à ${num(heureDuCours(l.cours_a))}
+            <p class="pc-cours-ligne">Cours ${num(PP.euros(l.prix_eur))} à ${num(heureDuCours(l.cours_a))}${PP.esc(SEANCE_ENTRE_PARENTHESES[l.seance_du_cours] || '')}
               <span class="pc-sep" aria-hidden="true">·</span>
               ${num(PP.pct(l.variation_prix_pct))} depuis ton prix d'achat (${num(PP.euros(l.prix_achat_eur))})</p>
           </div>

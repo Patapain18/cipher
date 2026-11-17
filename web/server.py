@@ -35,7 +35,7 @@ import os
 import sys
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse
 
@@ -410,9 +410,22 @@ def rang_de(ticker):
 
 
 def ma_position_en_direct():
-    """Ma position (ma_position.py) : valeur, gain frais compris, seuils, rang."""
+    """
+    Ma position (ma_position.py) : valeur, gain frais compris, seuils, rang,
+    et l'état de la Bourse de New York lu chez Yahoo sur le S&P 500 (jours
+    fériés et séances courtes compris ; None si Yahoo ne répond pas : la
+    page reprend alors son propre calcul).
+    """
     import ma_position
-    return ma_position.position(rang_de)
+    import papier
+    p = ma_position.position(rang_de)
+    try:
+        _, _, periode = papier.minute_de_seance(papier.INDICE)
+        p["bourse"] = papier.etat_bourse(datetime.now(timezone.utc), periode)
+    except Exception as e:
+        print(f"[position] état de la Bourse : {e}", file=sys.stderr)
+        p["bourse"] = None
+    return p
 
 
 def mon_journal():
