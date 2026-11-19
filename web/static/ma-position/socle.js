@@ -261,7 +261,7 @@ window.PP = (() => {
       };
     },
     /** « 3ᵉ sur 49 au classement momentum du bot » ; une valeur détenue
-        hors des 49 (TSLA) n'a pas de rang, et ne l'attend pas. */
+        hors des 49 (TSLA, TTWO, ANT) n'a pas de rang, et ne l'attend pas. */
     rang: (l) => (l.suivie_par_le_bot === false
       ? `${l.ticker} n'est pas dans les 49 valeurs du bot : pas de rang au classement momentum.`
       : l.rang == null

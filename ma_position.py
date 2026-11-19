@@ -51,13 +51,13 @@ PARIS = ZoneInfo("Europe/Paris")
 CHANGE = "EURUSD=X"
 INDICE = "SPY"            # le S&P 500, tel qu'un ETF le suit
 FRAIS_VENTE = 1.0         # € : ce que coûterait une vente chez le courtier (1 € par ordre)
-# Les valeurs détenues HORS des 49 du bot (ajoutées le 16/11/2026). Le
-# journal les note et le carnet de bord les suit comme les autres (cours,
-# gain, duel face au S&P 500). Le bot ne
+# Les valeurs détenues HORS des 49 du bot (TSLA le 16/11/2026, TTWO et ANT
+# le 20/11). Le journal les note et le carnet de bord les suit comme les
+# autres (cours, gain, duel face au S&P 500). Le bot ne
 # les classe pas, et son carnet en dollars (data/stock_positions.json)
 # ne les reçoit pas : le bot, le point de la semaine et leurs mesures
-# restent sur les 49.
-HORS_DU_BOT = ("TSLA",)
+# restent sur les 49. Chaque nom est le symbole de Yahoo.
+HORS_DU_BOT = ("TSLA", "TTWO", "ANT")
 AVERTISSEMENT = ("Des faits sur ton argent. Aucune prédiction, "
                  "aucun conseil d'achat ou de vente.")
 AVERTISSEMENT_INDICATEURS = ("Le score technique du bot, qui combine ces indicateurs, a été "
@@ -850,8 +850,9 @@ def verifier():
                and lignes.get("MSFT", {}).get("suivie_par_le_bot") is True)
             v = lignes.get("TSLA", {}).get("valeur_eur", 0.0)
             ok(f"TSLA à 330 $ et 1 € = 1,10 $ : {v:.2f} € (0,03 × 330 / 1,10 = 9,00 €)", abs(v - 9.0) < 0.01)
-            ok("le formulaire propose les 49 et TSLA, soit 50 valeurs",
-               len(valeurs_du_journal()) == 50 and set(engine.UNIVERSE) | {"TSLA"} == set(valeurs_du_journal()))
+            ok("le formulaire propose les 49, TSLA, TTWO et ANT, soit 52 valeurs",
+               len(valeurs_du_journal()) == 52
+               and set(engine.UNIVERSE) | {"TSLA", "TTWO", "ANT"} == set(valeurs_du_journal()))
             ok("le graphique refuse une valeur inconnue, avant tout appel réseau",
                refus(lambda: graphique("ZZZZ", "1j")))
             try:
