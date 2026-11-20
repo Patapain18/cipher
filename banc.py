@@ -39,6 +39,7 @@ LANCER
     python3 banc.py --fausses-alarmes  # le test, sans talent, dit-il « vu » 1 fois sur 100 ? (moins d'1 min)
     python3 banc.py --mesurer          # l'étape 1 (banc_methodes.py) : la mesure, une seule fois
     python3 banc.py --mesurer --a-blanc  # l'étape 1, des rendements tirés au hasard, rien d'écrit
+    python3 banc.py --critere2         # le critère 2 (banc_argent.py) : la stratégie de 200 €, une seule fois
 """
 
 import argparse
@@ -838,17 +839,22 @@ def main():
                    help="combien de fois le test dit « vu » sans talent (environ 1 min)")
     p.add_argument("--mesurer", action="store_true",
                    help="étape 1 : le test sur 6 ans des quatre méthodes, une seule fois (quelques minutes)")
+    p.add_argument("--critere2", action="store_true",
+                   help="le critère 2 : la stratégie de 200 € de chaque méthode, une seule fois (banc_argent.py)")
     p.add_argument("--a-blanc", action="store_true",
-                   help="avec --mesurer : toute la chaîne, mais des rendements tirés au hasard, sans rien écrire")
+                   help="avec --mesurer ou --critere2 : toute la chaîne, sur des données tirées au hasard, sans rien écrire")
     args = p.parse_args()
-    if args.a_blanc and not args.mesurer:
-        p.error("--a-blanc va avec --mesurer")
+    if args.a_blanc and not (args.mesurer or args.critere2):
+        p.error("--a-blanc va avec --mesurer ou --critere2")
     if args.verifier:
         import banc_methodes
         etape0 = verifier()
         print("\n══════════ ÉTAPE 1 ══════════\n")
         etape1 = banc_methodes.verifier()
-        sys.exit(0 if etape0 and etape1 else 1)
+        import banc_argent
+        print("\n══════════ CRITÈRE 2 ══════════\n")
+        critere2 = banc_argent.verifier()
+        sys.exit(0 if etape0 and etape1 and critere2 else 1)
     try:
         if args.frais:
             afficher(mur_des_frais())
@@ -859,6 +865,10 @@ def main():
         if args.mesurer:
             import banc_methodes
             banc_methodes.lancer_la_mesure(a_blanc=args.a_blanc)
+            return
+        if args.critere2:
+            import banc_argent
+            banc_argent.lancer_le_critere2(a_blanc=args.a_blanc)
             return
     except (CacheInvalide, FileNotFoundError) as erreur:
         sys.exit(f"Rien n'est calculé : {erreur}")
