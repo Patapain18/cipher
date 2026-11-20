@@ -408,10 +408,23 @@ ERREURS = [
     (A, [('    if not (abs(soir["spy"] - spy0) <= 0.005 and abs(soir["panier"] - panier0) <= 0.005):',
           '    if abs(soir["spy"] - spy0) > 0.005 or abs(soir["panier"] - panier0) > 0.005:')],
      "une cible vide (NaN) passe la garde"),
-    (A, [('        if arrets:\n            debut += ("arrêtée à 2 € : "', '        if False:\n            debut += ("arrêtée à 2 € : "')],
+    (A, [('f"à {_eur(x[\'final\'])})") if x["arret"] is not None else', 'f"à {_eur(x[\'final\'])})") if False else')],
      "une candidate arrêtée présentée sans son arrêt"),
     (A, [('q.update(suites=len(res["valeur"]), arretees=int(len(arrets)),', 'q.update(suites=len(res["valeur"]), arretees=0,')],
      "les arrêts du tirage au sort pas comptés"),
+    # Ajoutées après la seconde passe de la relecture du critère 2 (20/11/2026).
+    (A, [('arret_median=jours[int(arrets[(len(arrets) - 1) // 2])] if len(arrets) else None',
+          'arret_median=jours[int(arrets[-1])] if len(arrets) else None')], "« la moitié de ces arrêts avant » pris au dernier arrêt"),
+    (A, [('res["hasard"] = _avec_arrets(valoriser(hasard[:, :T], R, ans, e), argent.jours[heure])',
+          'res["hasard"] = _avec_arrets(valoriser(hasard[:, :T], R, ans, e), argent.dates)')],
+     "le matin, la date des arrêts du tirage au sort au soir de la décision"),
+    (A, [('en_plus = {m: np.array([choix_d_une_methode(argent.sorties[m], argent.valide, SEUILS[m],',
+          'en_plus = {m: np.array([choix_d_une_methode(argent.sorties["a"], argent.valide, SEUILS["a"],')],
+     "le départage de d calculé avec les choix de a"),
+    (A, [("{lot(d, 'le soir', extremes=True)}", "{lot(d, 'le soir')}")], "le départage sans la plus basse et la plus haute"),
+    (A, [('abs(soir["panier"] - panier0) <= 0.005', 'abs(soir["panier"] - panier0) <= 5')], "la cible du panier à 5 € près"),
+    (A, [("f\"elle finit à {_eur(x['final'])} {heure}\"\n", "f\"ce qu'elle garde ensuite ne veut plus rien dire : {_eur(x['final'])} {heure}\"\n")],
+     "une heure pas arrêtée rangée sous « ne veut plus rien dire »"),
 ]
 
 

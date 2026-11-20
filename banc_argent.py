@@ -492,13 +492,10 @@ def rendu(rap):
          "le matin.")
     for m in METHODES:
         s, ma = soir["methodes"][m], matin["methodes"][m]
-        arrets = [f"{_arret(x)} pour {heure}" for heure, x in (("le soir", s), ("le matin", ma)) if x["arret"] is not None]
-        debut = f"     {NOMS[m]} : "
-        if arrets:
-            debut += ("arrêtée à 2 € : " + ", ".join(arrets) + ". Ce qu'elle garde ensuite ne veut plus rien dire : "
-                      f"elle finit à {_eur(s['final'])} le soir et {_eur(ma['final'])} le matin.")
-        else:
-            debut += f"elle finit à {_eur(s['final'])} le soir et {_eur(ma['final'])} le matin."
+        morceaux = [(f"arrêtée à 2 € {_arret(x)} pour {heure} : ce qu'elle garde ensuite ne veut plus rien dire (elle finit "
+                     f"à {_eur(x['final'])})") if x["arret"] is not None else f"elle finit à {_eur(x['final'])} {heure}"
+                    for heure, x in (("le soir", s), ("le matin", ma))]
+        debut = f"     {NOMS[m]} : " + " ; ".join(morceaux) + "."
         if m in CANDIDATES:
             debut += (f" Il lui fallait plus de {_eur(soir['barre'])} le soir et de {_eur(matin['barre'])} le matin.")
         dire(debut + f" Le soir : {banc._nb(s['ordres'], 0)} ordres, {_eur(s['frais'] + s['ecart'])} de frais "
@@ -518,10 +515,12 @@ def rendu(rap):
     dire("\n2. LES AUTRES REPÈRES (ne décident rien)")
     hs, hm = soir["hasard"], matin["hasard"]
 
-    def lot(q, heure):
+    def lot(q, heure, extremes=False):
+        bornes = (f"de {_eur(q['min'])} à {_eur(q['max'])}" if extremes
+                  else f"8 sur 10 entre {_eur(q['bas'])} et {_eur(q['haut'])}")
         return (f"{heure}, {banc._nb(q['arretees'], 0)} sur {banc._nb(q['suites'], 0)} arrêtés à 2 €"
-                + (f" (la moitié avant le {banc._date(q['arret_median'])})" if q["arretees"] else "")
-                + f", médiane du capital final {_eur(q['mediane'])} (8 sur 10 entre {_eur(q['bas'])} et {_eur(q['haut'])})")
+                + (f" (la moitié de ces arrêts avant le {banc._date(q['arret_median'])})" if q["arretees"] else "")
+                + f", médiane du capital final {_eur(q['mediane'])} ({bornes})")
 
     dire(f"   Le tirage au sort (une valeur au hasard chaque soir) : {lot(hs, 'le soir')} ; {lot(hm, 'le matin')}.")
     ruine = hs["arretees"] * 2 > hs["suites"]
@@ -540,8 +539,8 @@ def rendu(rap):
              f"longtemps avant un arrêt : {tenues or 'aucune'}.")
     for m, d in soir["departage"].items():
         dire(f"   Le départage de {NOMS[m]} ({_soirs(rap['egalites'][m])} à égalité en tête), avec "
-             f"{banc._nb(rap['reglages']['graines_en_plus'], 0)} autres graines : {lot(d, 'le soir')} ; "
-             f"{lot(matin['departage'][m], 'le matin')}.")
+             f"{banc._nb(rap['reglages']['graines_en_plus'], 0)} autres graines : {lot(d, 'le soir', extremes=True)} ; "
+             f"{lot(matin['departage'][m], 'le matin', extremes=True)}.")
 
     dire("\n3. SI TU VENDAIS TOUT À LA FIN (la dernière vente, puis l'impôt de 31,4 %, année civile par année civile, "
          "pertes reportées, payé de ta poche l'année suivante)")
@@ -770,6 +769,12 @@ def verifier():
        "« au-dessus » est strict (50 % pile n'est pas une « hausse » pour c et d)",
        list(choix_d_une_methode(sortie2, np.array([[False, True, True], [True, True, True]]), 0.0, 1)) == [2, 2]
        and list(choix_d_une_methode(np.array([[0.5, 0.4]]), np.ones((1, 2), bool), 0.5, 1)) == [-1])
+    jours_t = pd.bdate_range("2024-01-01", periods=8)
+    q_t = _avec_arrets({"valeur": np.array([1.0, 2.0, 3.0, 4.0]), "arret": np.array([5, 1, 3, -1])}, jours_t)
+    ok("les arrêts d'un lot de suites : combien (3 sur 4), et la date de l'arrêt du milieu (le 2e des 3, au moment 3) ; "
+       "la plus basse et la plus haute",
+       q_t["suites"] == 4 and q_t["arretees"] == 3 and q_t["arret_median"] == jours_t[3] and q_t["min"] == 1.0
+       and q_t["max"] == 4.0)
     hz = choix_au_hasard(np.array([[True, False, True]] * 3), 400, 3)
     ok("le tirage au sort ne prend que des valeurs comptées, chacune à peu près aussi souvent",
        set(np.unique(hz)) == {0, 2} and 0.4 < float(np.mean(hz == 0)) < 0.6)
@@ -978,6 +983,18 @@ def verifier():
            and all(proche(float(par[(hh, m)]["capital"].iloc[-1]), rap["resultats"][f"{hh}-{ECART}"]["methodes"][m]["final"])
                    for hh in HEURES for m in METHODES))
         ok("le placebo : sur des cours au hasard, aucune candidate ne passe le critère 2", rap["passent"] == [])
+        lots_ok = True
+        for hh in HEURES:
+            T_h = ar.soirs[hh]
+            r_h, an_h = ar.r[hh][:T_h], ar.jours[hh][:T_h].year
+            v_hz = valoriser(choix_au_hasard(ar.valide, 30, GRAINE_TIRAGE)[:, :T_h], r_h, an_h)
+            lots_ok &= rap["resultats"][f"{hh}-{ECART}"]["hasard"] == _avec_arrets(v_hz, ar.jours[hh])
+            for m in ("a", "d"):
+                ch_m = np.array([choix_d_une_methode(ar.sorties[m], ar.valide, SEUILS[m], GRAINE_DEPARTAGE_EN_PLUS + k)[:T_h]
+                                 for k in range(3)])
+                lots_ok &= rap["resultats"][f"{hh}-{ECART}"]["departage"][m] == _avec_arrets(valoriser(ch_m, r_h, an_h), ar.jours[hh])
+        ok("le tirage au sort et le départage de a et de d, recalculés à part aux deux heures : capitaux, arrêts, et la date "
+           "de l'arrêt du milieu (celle du moment où il se décide : l'ouverture du lendemain pour le matin)", lots_ok)
         dates_ok, arrets_vus = True, 0
         for hh in HEURES:
             T_h = ar.soirs[hh]
@@ -1074,7 +1091,8 @@ def verifier():
            and rap_b["resultats"][f"soir-{ECART}"]["spy"] != soir["spy"])
         vraies_cibles, refusees = cibles_de_l_etape0, []
         for fausses in (lambda a_: (vraies_cibles(a_)[0] + 0.01, vraies_cibles(a_)[1]),
-                        lambda a_: (float("nan"), vraies_cibles(a_)[1])):
+                        lambda a_: (float("nan"), vraies_cibles(a_)[1]),
+                        lambda a_: (vraies_cibles(a_)[0], vraies_cibles(a_)[1] + 0.01)):
             sortie_txt = io.StringIO()
             with mock.patch(f"{__name__}.cibles_de_l_etape0", side_effect=fausses), contextlib.redirect_stdout(sortie_txt):
                 try:
@@ -1082,9 +1100,9 @@ def verifier():
                     refusees.append(False)
                 except RuntimeError:
                     refusees.append(sortie_txt.getvalue() == "")
-        ok("si les repères gardés ne redonnent pas les cibles de l'étape 0 au centime (1 centime d'écart, ou une valeur vide), "
-           "rien n'est affiché ni écrit",
-           refusees == [True, True] and not os.path.exists(os.path.join(banc_dir, NOM_RESULTAT)))
+        ok("si les repères gardés ne redonnent pas les cibles de l'étape 0 au centime (SPY à 1 centime, SPY vide, le panier "
+           "à 1 centime), rien n'est affiché ni écrit",
+           refusees == [True, True, True] and not os.path.exists(os.path.join(banc_dir, NOM_RESULTAT)))
         sortie_txt, echec = io.StringIO(), None
         with mock.patch(f"{__name__}.ecrire_critere2", side_effect=OSError("disque plein")), \
                 contextlib.redirect_stdout(sortie_txt):
@@ -1194,12 +1212,11 @@ def verifier():
     ok("le tableau : la date d'un arrêt à 2 € (soir, matin) AVANT les capitaux finaux, puis le verdict",
        "04/03/2021" in ligne_a and "—" in ligne_a and "123,45 €" in ligne_a and "120,00 €" in ligne_a
        and ligne_a.rstrip().endswith("ne passe pas") and ligne_a.index("04/03/2021") < ligne_a.index("123,45 €"))
-    ok("une candidate arrêtée : l'arrêt d'abord (sa date, ce qui lui restait et sur quelle valeur), puis « ce qu'elle garde "
-       "ensuite ne veut plus rien dire », la barre, les ordres et les frais du soir (1 € par ordre et l'écart)",
-       "     a. le score technique : arrêtée à 2 € : le 04/03/2021 (1,87 € sur BBB) pour le soir. Ce qu'elle garde "
-       "ensuite ne veut plus rien dire : elle finit à 123,45 € le soir et 120,00 € le matin. Il lui fallait plus de "
-       "701,23 € le soir et de 698,50 € le matin. Le soir : 150 ordres, 162,34 € de frais (1 € par ordre et l'écart)."
-       in texte)
+    ok("une candidate arrêtée le soir seulement : l'arrêt d'abord (sa date, ce qui lui restait, sur quelle valeur) et « ne "
+       "veut plus rien dire » pour le soir seul ; le matin, un vrai capital ; la barre, les ordres et les frais du soir",
+       "     a. le score technique : arrêtée à 2 € le 04/03/2021 (1,87 € sur BBB) pour le soir : ce qu'elle garde ensuite "
+       "ne veut plus rien dire (elle finit à 123,45 €) ; elle finit à 120,00 € le matin. Il lui fallait plus de 701,23 € "
+       "le soir et de 698,50 € le matin. Le soir : 150 ordres, 162,34 € de frais (1 € par ordre et l'écart)." in texte)
     ok("un arrêt en liquide le dit (pas « sur une valeur ») ; les repères gardés aux deux heures, chacun à sa place",
        "le 06/05/2022 (1,60 € en liquide) pour le soir" in texte
        and "SPY 650,00 € le soir, 698,50 € le matin ; le panier des 6 701,23 € le soir, 640,00 € le matin." in texte)
@@ -1227,7 +1244,8 @@ def verifier():
     ok("le tirage au sort : ses arrêts à 2 € comptés ; « ses frais le ruinent vite » seulement si plus de la moitié sont "
        "arrêtés ; ce qu'il montre ; le rappel de la porte A, le biais du survivant, la fin",
        "ses frais le ruinent vite" in texte and "ses frais le ruinent vite" not in rendu(calme)
-       and "il paie des frais presque chaque soir" in rendu(calme) and "arrêtés à 2 € (la moitié avant le" in texte
+       and "il paie des frais presque chaque soir" in rendu(calme) and "arrêtés à 2 € (la moitié de ces arrêts avant le" in texte
+       and f"(de {_eur(s['departage']['a']['min'])} à {_eur(s['departage']['a']['max'])})" in texte
        and "Faire mieux que lui montre surtout qu'on change moins souvent, pas un talent." in texte
        and "Le critère 2 ne rouvre pas la porte A" in texte and "biais du survivant" in texte
        and texte.endswith("Des faits sur le passé, pas une prévision ni un conseil."))
