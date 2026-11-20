@@ -1664,9 +1664,15 @@ void main() {
       return;
     }
     if (e.key === 'Escape') {
-      // Un <select> ouvert se ferme d'abord : on le lui laisse.
-      if (document.activeElement && document.activeElement.tagName === 'SELECT') return;
-      e.preventDefault(); return fermer();
+      e.preventDefault();
+      // Dans un champ (la liste de l'historique, au panneau 5) : Échap en sort
+      // d'abord et rend le focus au panneau, où les flèches et Échap reprennent
+      // leur rôle ; un second Échap ferme la vue. Une liste ouverte se ferme en
+      // perdant le focus. Avant, Échap était laissé à la liste, même fermée :
+      // au clavier, on ne sortait plus du panneau 5, dont elle est le seul
+      // élément atteignable (relecture du 20/11/2026, WCAG 2.1.2).
+      if (enSaisie()) return panneaux[courant].el.focus({ preventScroll: true });
+      return fermer();
     }
     if (e.key === 'Tab') {
       e.preventDefault();

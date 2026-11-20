@@ -57,12 +57,25 @@ try {
     }
     ok(!vus.some((v) => v.includes('caché')), `${ou} : Tab ne va que sur ce qui se voit (${[...new Set(vus)].join(', ')})`);
     await p.screenshot({ path: join(sortie, `baie2-${w}x${h}.png`) });
-    // Échap : retour à la vue plan, le détail est toujours là et ouvert.
-    await p.evaluate(() => document.activeElement && document.activeElement.blur && document.activeElement.blur());
+    // Échap depuis la liste de l'historique (où Tab vient de mettre le focus) : le
+    // premier rend le focus au panneau, sans fermer la vue (le piège clavier corrigé
+    // le 20/11/2026) ; les flèches y changent alors de panneau ; le second ferme la vue.
+    await p.keyboard.press('Escape');
+    await p.waitForTimeout(300);
+    const apres1 = await p.evaluate(() => ({ ouverte: window.__vueBaie.etat.ouverte,
+      surLePanneau: document.activeElement === document.querySelector('.vue3d-panneau[data-panneau="historique"]') }));
+    ok(apres1.ouverte && apres1.surLePanneau, `${ou} : un premier Échap sort de la liste et rend le focus au panneau (${JSON.stringify(apres1)})`);
+    await p.keyboard.press('ArrowLeft');
+    await p.waitForTimeout(1200);
+    const gauche = await p.evaluate(() => window.__vueBaie.etat.courant);
+    await p.keyboard.press('ArrowRight');
+    await p.waitForTimeout(1200);
+    const droite = await p.evaluate(() => window.__vueBaie.etat.courant);
+    ok(gauche === 3 && droite === 4, `${ou} : ensuite, ← et → changent de panneau (${gauche + 1}, puis ${droite + 1})`);
     await p.keyboard.press('Escape');
     await p.waitForTimeout(2500);
     const plan = await p.evaluate(() => ({ ouverte: window.__vueBaie.etat.ouverte, detail: document.querySelector('#banc details').open && document.querySelector('#banc details').offsetParent !== null }));
-    ok(!plan.ouverte && plan.detail, `${ou} : Échap rend la vue plan, avec le détail ouvert et visible (${JSON.stringify(plan)})`);
+    ok(!plan.ouverte && plan.detail, `${ou} : le second Échap rend la vue plan, avec le détail ouvert et visible (${JSON.stringify(plan)})`);
     ok(!erreurs.length, `${ou} : console sans erreur${erreurs.length ? ' — ' + erreurs.join(' | ').slice(0, 200) : ''}`);
     await c.close();
   }
