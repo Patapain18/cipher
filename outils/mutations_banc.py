@@ -256,6 +256,12 @@ ERREURS = [
     (M, [('bibliotheques=versions_des_bibliotheques())', 'bibliotheques=None)')], "les versions des bibliothèques pas gardées"),
     (B, [('    import banc\n    banc.main()', '    main()')],
      "en commande, une trace Python au lieu de « Rien n'est calculé » (deux exemplaires de banc)"),
+    # Ajoutées après la seconde passe de la relecture (20/11/2026).
+    (M, [('"md5": _md5(temp_prev), "lignes"', '"md5": "", "lignes"')], "le md5 des prévisions pas gardé"),
+    (M, [("{_ecart_et_borne(f['contraire'])} : {qualif}", "{_ecart_et_borne(f['comme_hier'])} : {qualif}")],
+     "face au sens du jour, « comme hier » affiché à la place de son contraire"),
+    (M, [('seuils_sens += [f["comme_hier"]["seuil"], f["contraire"]["seuil"]]', 'seuils_sens += [f["comme_hier"]["seuil"]]')],
+     "ce que le test du sens du jour voyait, d'un seul côté"),
 ]
 
 

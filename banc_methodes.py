@@ -491,9 +491,13 @@ def _ecart_pts(x, dec=2):
     return _ecart(x, dec) + (" point" if abs(v) < 2 else " points")
 
 
-def _avec_borne(res, cle):
-    f = res["face"][cle]
+def _ecart_et_borne(f):
+    """« +0,32 (−0,05) » : un écart observé, puis sa borne basse (l'écart moins son seuil)."""
     return f"{_ecart(f['ecart'])} ({_ecart(f['ecart'] - f['seuil'])})"
+
+
+def _avec_borne(res, cle):
+    return _ecart_et_borne(res["face"][cle])
 
 
 def rendu(rap):
@@ -565,13 +569,20 @@ def rendu(rap):
         phrase = (f"rien de net à {banc._pct(reg['niveau'], 0)} : le test ne voyait que les écarts de plus de "
                   f"{banc._pts(max(h['seuil'], h['seuil_dessous']), 2)}, dans un sens ou dans l'autre.")
     dire(f"   « Comme hier » face au tirage au sort : {_ecart_pts(h['ecart'])} ; {phrase}")
-    dire("   Chaque candidate face au seul sens du jour, dans ses deux versions (« comme hier », puis son contraire), "
-         "chacune face à son propre tirage au sort ; la moins bonne des deux comparaisons, et sa borne basse :")
+    dire("   Chaque candidate face au seul sens du jour, dans ses deux versions, chacune comptée face à son propre "
+         "tirage au sort (l'écart, puis sa borne basse) ; « nettement mieux » seulement si les deux bornes sont "
+         "au-dessus de 0 :")
+    seuils_sens = []
     for m in CANDIDATES:
         f = tout[m]["face"]["sens_du_jour"]
+        seuils_sens += [f["comme_hier"]["seuil"], f["contraire"]["seuil"]]
         qualif = ("nettement mieux que le sens du jour, dans un sens comme dans l'autre" if f["vu"]
                   else "pas nettement mieux que le sens du jour")
-        dire(f"     {NOMS[m]} : {_ecart_pts(f['ecart'])} ({_ecart(f['borne'])}) : {qualif}.")
+        dire(f"     {NOMS[m]} : face à « comme hier » {_ecart_et_borne(f['comme_hier'])}, face à son contraire "
+             f"{_ecart_et_borne(f['contraire'])} : {qualif}.")
+    dire(f"   Ce test est prudent : il ne voyait que les écarts de plus de {banc._nb(min(seuils_sens) * 100, 2)} à "
+         f"{banc._pts(max(seuils_sens), 2)}. « Pas nettement mieux » ne dit donc pas que l'avance d'une candidate ne "
+         "vient que du sens du jour.")
 
     dire("\n4. LA PORTE A")
     if not rap["porte_a"]:
@@ -596,8 +607,8 @@ def rendu(rap):
 
     dire("\n5. À SAVOIR")
     dire("   Le biais du survivant : les 49 valeurs ont été choisies en 2026, toutes ont survécu. « Ça monte "
-         "toujours » en est flatté ; une méthode peut l'être aussi, si ce qu'elle a appris ne vaut que pour des "
-         "valeurs qui ont survécu (par exemple, dire « hausse » après une baisse). Le coffre, sur les mêmes 49 "
+         "toujours » en est flatté ; une méthode peut l'être aussi, si ce qu'elle fait ou a appris ne vaut que pour "
+         "des valeurs qui ont survécu (par exemple, dire « hausse » après une baisse). Le coffre, sur les mêmes 49 "
          "valeurs, ne protège pas de ce biais.")
     dire("   Des faits sur le passé, pas une prévision ni un conseil.")
     return "\n".join(lignes)
@@ -610,9 +621,14 @@ def rendu(rap):
 FICHIERS_DU_CODE = ("banc.py", "banc_methodes.py", "stock_engine.py")
 
 
+def _md5(chemin):
+    with open(chemin, "rb") as f:
+        return hashlib.md5(f.read()).hexdigest()
+
+
 def md5_des_fichiers(dossier, noms=FICHIERS_DU_CODE):
     """L'empreinte md5 de chaque fichier du code du banc."""
-    return {nom: hashlib.md5(open(os.path.join(dossier, nom), "rb").read()).hexdigest() for nom in noms}
+    return {nom: _md5(os.path.join(dossier, nom)) for nom in noms}
 
 
 def empreinte_du_code(dossier=banc.ROOT):
@@ -647,7 +663,7 @@ def _en_json(x):
 def empreinte_des_donnees(dossier, tickers):
     """L'empreinte md5 de chaque fichier du cache lu (les valeurs, SPY, l'euro/dollar) : un cache retéléchargé se verrait."""
     noms = [f"{t}_10y.csv" for t in list(tickers) + [banc.REFERENCE, banc.CHANGE]]
-    return {nom: hashlib.md5(open(os.path.join(dossier, nom), "rb").read()).hexdigest() for nom in noms}
+    return {nom: _md5(os.path.join(dossier, nom)) for nom in noms}
 
 
 def versions_des_bibliotheques():
@@ -669,8 +685,11 @@ def ecrire_mesure(rap, previsions, texte, code, dossier_banc=DOSSIER_BANC, maint
     prévisions sont posées d'abord, le JSON en dernier, par un lien, qui
     échoue s'il existe déjà (FileExistsError) : une coupure en route laisse
     au pire des prévisions sans résultat (la mesure peut alors se refaire :
-    rien n'a été affiché), jamais un résultat sans ses prévisions. Rien
-    n'est jamais écrit dans data/market.
+    rien n'a été affiché), jamais un résultat sans ses prévisions. Le JSON
+    garde le md5 de SES prévisions : si deux mesures lancées en même temps
+    se croisaient, la seconde, refusée, aurait pu remplacer le fichier des
+    prévisions ; le recomptage le verrait. Rien n'est jamais écrit dans
+    data/market.
     """
     if os.path.abspath(dossier_banc).startswith(os.path.abspath(banc.MARCHE)):
         raise RuntimeError("le banc n'écrit jamais dans data/market")
@@ -688,9 +707,10 @@ def ecrire_mesure(rap, previsions, texte, code, dossier_banc=DOSSIER_BANC, maint
     fd2, temp_prev = tempfile.mkstemp(dir=dossier_banc, prefix=".previsions-", suffix=".tmp")
     os.close(fd2)
     try:
+        previsions.to_csv(temp_prev, index=False, compression="gzip")
+        contenu["previsions"] = {"fichier": NOM_PREVISIONS, "md5": _md5(temp_prev), "lignes": len(previsions)}
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(contenu, f, ensure_ascii=False, indent=1, allow_nan=False)
-        previsions.to_csv(temp_prev, index=False, compression="gzip")
         os.replace(temp_prev, os.path.join(dossier_banc, NOM_PREVISIONS))      # les prévisions d'abord…
         os.link(temp, chemin)                       # refusé si le résultat existe déjà
     finally:
@@ -1225,10 +1245,12 @@ def verifier():
         with open(chemin, encoding="utf-8") as f:
             lu = json.load(f)
         relue = pd.read_csv(os.path.join(banc_tmp, NOM_PREVISIONS), float_precision="round_trip")
-        ok("le résultat écrit : la date, le commit, les choix de Mathis, le rapport tel qu'affiché, la porte A ; les "
-           "prévisions relues à l'identique",
+        ok("le résultat écrit : la date, le commit, les choix de Mathis, le rapport tel qu'affiché, la porte A, le md5 "
+           "et le nombre de lignes de SES prévisions ; les prévisions relues à l'identique",
            lu["code"]["commit"] == "0" * 40 and lu["rapport"] == texte0 and lu["resultat"]["porte_a"] is False
            and "moyenne exacte" in lu["choix"]["tirage"] and len(relue) == len(prev_m)
+           and lu["previsions"]["md5"] == _md5(os.path.join(banc_tmp, NOM_PREVISIONS))
+           and lu["previsions"]["lignes"] == len(prev_m) and lu["previsions"]["fichier"] == NOM_PREVISIONS
            and np.allclose(relue["d"].to_numpy(), prev_m["d"].to_numpy(), rtol=0, atol=0, equal_nan=True))
         deux = None
         try:
@@ -1267,11 +1289,11 @@ def verifier():
         print("\n— Le code commité, puis écrire avant d'afficher —")
         depot = os.path.join(racine, "depot")
         os.makedirs(depot)
-        for nom in FICHIERS_DU_CODE:
+        for nom in ("banc.py", "banc_methodes.py", "stock_engine.py"):
             shutil.copy(os.path.join(banc.ROOT, nom), depot)
-        git = ["git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=banc", "-c", "user.email=banc@exemple.invalid",
-               "-c", "commit.gpgsign=false"]
-        for commande in (["init", "-q", "--template="], ["add", "."], ["commit", "-q", "-m", "essai"]):
+        # Un dépôt jetable ordinaire : les crochets du Mac (le contrôle gitleaks posé à chaque git init) tournent.
+        git = ["git", "-c", "user.name=banc", "-c", "user.email=banc@exemple.invalid"]
+        for commande in (["init", "-q"], ["add", "."], ["commit", "-q", "-m", "essai"]):
             subprocess.run(git + commande, cwd=depot, check=True, capture_output=True)
         propre = empreinte_du_code(depot)
         retouches = {}
@@ -1469,17 +1491,27 @@ def verifier():
        and "« Comme hier » face au tirage au sort : +0,10 point ; rien de net à 99 % : le test ne voyait que les "
            "écarts de plus de 0,45 point, dans un sens ou dans l'autre." in rendu(neutre))
     sens = copy.deepcopy(faux)
-    sens["resultats"][TOUT]["c"]["face"]["sens_du_jour"].update(ecart=0.0042, borne=0.0011, vu=True)
-    sens["resultats"][TOUT]["d"]["face"]["sens_du_jour"].update(ecart=-0.0063, borne=-0.0102, vu=False)
-    sens["resultats"][TOUT]["b"]["face"]["sens_du_jour"].update(ecart=0.0011, borne=-0.0030, vu=False)
+    for m, (e1, s1, e2, s2, ecart, vu) in {"a": (0.0010, 0.0035, -0.0020, 0.0040, -0.0020, False),
+                                           "b": (0.0011, 0.0041, 0.0020, 0.0045, 0.0011, False),
+                                           "c": (0.0080, 0.0050, 0.0042, 0.0031, 0.0042, True),
+                                           "d": (-0.0063, 0.0039, 0.0012, 0.0050, -0.0063, False)}.items():
+        f = sens["resultats"][TOUT][m]["face"]["sens_du_jour"]
+        f["comme_hier"].update(ecart=e1, seuil=s1)
+        f["contraire"].update(ecart=e2, seuil=s2)
+        f.update(ecart=ecart, vu=vu)
     texte_sens = rendu(sens)
-    ok("face au sens du jour : la moins bonne des deux comparaisons et sa borne ; « nettement mieux » (c) seulement "
-       "si elle est vue face aux deux, sinon « pas nettement mieux » (d, et b malgré son écart positif), jamais "
-       "« moins bien »",
-       "c. la régression logistique : +0,42 point (+0,11) : nettement mieux que le sens du jour, dans un sens comme "
-       "dans l'autre." in texte_sens
-       and "d. le gradient boosting : −0,63 point (−1,02) : pas nettement mieux que le sens du jour." in texte_sens
-       and "b. le momentum 12-1 : +0,11 point (−0,30) : pas nettement mieux que le sens du jour." in texte_sens
+    ok("face au sens du jour : ses deux versions, chacune avec sa borne ; « nettement mieux » (c) seulement si elle "
+       "est vue face aux deux, sinon « pas nettement mieux » (d, et b malgré ses écarts positifs), jamais « moins "
+       "bien » ; ce que ce test prudent pouvait voir (de 0,31 à 0,50 point), et ce que « pas nettement mieux » ne "
+       "dit pas",
+       "c. la régression logistique : face à « comme hier » +0,80 (+0,30), face à son contraire +0,42 (+0,11) : "
+       "nettement mieux que le sens du jour, dans un sens comme dans l'autre." in texte_sens
+       and "d. le gradient boosting : face à « comme hier » −0,63 (−1,02), face à son contraire +0,12 (−0,38) : pas "
+           "nettement mieux que le sens du jour." in texte_sens
+       and "b. le momentum 12-1 : face à « comme hier » +0,11 (−0,30), face à son contraire +0,20 (−0,25) : pas "
+           "nettement mieux que le sens du jour." in texte_sens
+       and "Ce test est prudent : il ne voyait que les écarts de plus de 0,31 à 0,50 point. « Pas nettement mieux » "
+           "ne dit donc pas que l'avance d'une candidate ne vient que du sens du jour." in texte_sens
        and "moins bien que le sens du jour" not in texte_sens)
     ok("le rapport rappelle le biais du survivant, dans les deux sens (« ça monte toujours » et une méthode), et "
        "finit par « pas une prévision ni un conseil »",
