@@ -1054,7 +1054,10 @@ const bancDateLongue = (iso) => {
     : d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }).replace(/^1 /, '1ᵉʳ ');
 };
 /** « 2020-09-14 » → « septembre 2020 ». */
-const bancMois = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+const bancMois = (iso) => {
+  const d = new Date(`${iso}T12:00:00`);
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+};
 /** Le jour et l'heure de Paris d'une mesure : « 20 novembre 2026 », « 17 h 06 ». */
 const bancJourMesure = (iso) => {
   const d = new Date(iso);
@@ -1102,42 +1105,59 @@ function faitsDuBanc(v) {
       + `${bancNum(m2.passent.length)} le critère 2`;
   const resume = `Le banc a testé ${n} façons de prévoir le lendemain des ${m1.valeurs} valeurs, sur les séances `
     + `du ${bancDateLongue(m1.debut)} au ${bancDateLongue(m1.fin)}.`
-    + (aucune ? ' Aucune ne passe le critère 1 (avoir raison plus souvent que le hasard et que « ça monte toujours ») '
-      + 'ni le critère 2 (payer ses frais).' : '');
+    + (aucune ? ' Aucune ne passe le critère 1 (avoir raison nettement plus souvent que le hasard et que « ça monte '
+      + `toujours ») ni le critère 2 (finir au-dessus de SPY et du panier des ${m1.valeurs} gardés, frais compris).` : '');
 
-  /* Critère 1 : voir quelque chose. Le cas qui intrigue : vue face au
-     tirage au sort, pas face à « ça monte toujours » (son taux dépasse
-     pourtant celui de « ça monte toujours »). */
+  /* Critère 1 : voir quelque chose. « Nettement » : avec 99 % de certitude.
+     Le cas qui intrigue : une méthode nettement au-dessus du tirage au sort,
+     mais pas de « ça monte toujours », alors que son taux peut dépasser le
+     sien. Ce qu'elle fait face à lui se calcule depuis l'écart mesuré. */
   const presque = candidates.filter((m) => m.vu_tirage && !m.vu_monte && !m.passe);
+  const points = (x) => {
+    const p = Number((Math.abs(x) * 100).toFixed(2));
+    return `${bancNum(`${x > 0 ? '+' : '−'}${bancPoints(Math.abs(x))}`)}&nbsp;point${p >= 2 ? 's' : ''}`;
+  };
+  const phrasePresque = (m) => {
+    const ecart = Number((m.ecart_monte * 100).toFixed(2));
+    const face = ecart > 0 ? `son avance sur lui (${points(m.ecart_monte)}) reste dans la marge du hasard, et dire `
+      + '« hausse » partout fait à peu près aussi bien'
+      : ecart < 0 ? `elle fait même moins bien que lui (${points(m.ecart_monte)})` : 'elle fait exactement comme lui';
+    return `${esc(m.cle)} (${esc(m.nom)}) a raison nettement plus souvent que le tirage au sort, pas que « ça monte `
+      + `toujours » : ${face}.`;
+  };
   const c1 = {
     verdict: combien(m1.passent),
     passe: m1.passent.length > 0,
-    regle: `Avoir raison plus souvent qu'un tirage au sort et que « ça monte toujours » (${bancNum(bancTaux(m1.monte))} `
+    regle: `Avoir raison nettement plus souvent qu'un tirage au sort et que « ça monte toujours » (${bancNum(bancTaux(m1.monte))} `
       + `de bonnes réponses), avec ${bancNum(`${PP.nombre(m1.niveau * 100, 0)}&nbsp;%`)} de certitude.`,
-    barre: 'La barre de chaque méthode : le taux qu\'il fallait dépasser pour que son avance ne puisse pas venir du hasard.',
+    barre: 'La barre de chaque méthode : le taux qu\'il fallait dépasser pour que son avance soit nette, c\'est-à-dire que '
+      + `le hasard seul ne la donne qu'environ une fois sur ${PP.nombre(Math.round(1 / (1 - m1.niveau)), 0)}.`,
     porte: m1.porte_a
       ? 'La porte A s\'ouvre : la dernière année, gardée au coffre, peut être regardée.'
       : 'La porte A reste fermée : la dernière année, gardée au coffre, n\'a pas été ouverte.',
-    presque: presque.length
-      ? `${bancListe(presque.map((m) => `${esc(m.cle)} (${esc(m.nom)})`))} fai${presque.length > 1 ? 'ont' : 't'} mieux `
-        + 'que le tirage au sort, pas mieux que « ça monte toujours » : dire « hausse » partout fait à peu près aussi bien.'
-      : '',
+    presque: presque.map(phrasePresque).join(' '),
     lignes: candidates,
   };
 
-  /* Ce que le test pouvait voir : un « non » n'est pas une preuve d'absence. */
-  const voyait = 'Ce « non » a une limite : selon la méthode, le test ne voyait que les écarts '
-    + `${bancFourchette(candidates.map((m) => m.seuil_tirage))} face au tirage au sort, et `
-    + `${bancFourchette(candidates.map((m) => m.seuil_monte))} face à « ça monte toujours ». `
-    + 'Un avantage plus petit pourrait exister sans être vu.';
+  /* Ce que le test pouvait voir : un « non » n'est pas une preuve d'absence.
+     Un écart vrai égal au seuil n'est vu qu'une fois sur deux (le rapport du
+     critère 1). */
+  const seuilsTirage = candidates.map((m) => m.seuil_tirage);
+  const seuilsMonte = candidates.map((m) => m.seuil_monte);
+  const varie = (vals) => bancPoints(Math.min(...vals)) !== bancPoints(Math.max(...vals));
+  const voyait = `${m1.passent.length ? 'Ce test a une limite' : 'Ce « non » a une limite'} : `
+    + `${varie(seuilsTirage) || varie(seuilsMonte) ? 'selon la méthode, ' : ''}le test ne voyait que les écarts `
+    + `${bancFourchette(seuilsTirage)} face au tirage au sort, et ${bancFourchette(seuilsMonte)} face à « ça monte `
+    + 'toujours ». Même un avantage vrai de cette taille n\'était vu qu\'une fois sur deux, et un plus petit pouvait '
+    + 'passer inaperçu.';
 
-  /* Critère 2 : payer les frais. Une méthode arrêtée à 2 € est dite par
-     sa date, jamais par son capital final, qui ne veut plus rien dire
-     (règle du rapport du critère 2). */
+  /* Critère 2 : la stratégie de 200 €. Une méthode arrêtée à 2 € ou moins
+     est dite par sa date, jamais par son capital final, qui ne veut plus
+     rien dire (règle du rapport du critère 2). Ruinées : arrêtées le soir
+     ET le matin ; une méthode arrêtée à une seule heure a sa phrase. */
   const lignes2 = candidates.map((m) => ({ m, soir: soir.methodes[m.cle], matin: matin.methodes[m.cle] }));
-  const ruinees = lignes2.filter((l) => l.soir.arret || l.matin.arret);
-  const debout = lignes2.filter((l) => !l.soir.arret && !l.matin.arret && !(l.soir.passe && l.matin.passe));
-  const dates = ruinees.flatMap((l) => [l.soir.arret, l.matin.arret]).filter(Boolean).sort();
+  const ruinees = lignes2.filter((l) => l.soir.arret && l.matin.arret);
+  const dates = ruinees.flatMap((l) => [l.soir.arret, l.matin.arret]).sort();
   let quand = '';
   if (dates.length) {
     const [d0, d1] = [dates[0], dates[dates.length - 1]];
@@ -1145,35 +1165,52 @@ function faitsDuBanc(v) {
       : d0.slice(0, 4) === d1.slice(0, 4) ? `entre ${bancMois(d0).replace(/ \d{4}$/, '')} et ${bancMois(d1)}`
         : `entre ${bancMois(d0)} et ${bancMois(d1)}`;
   }
+  /* D'où vient la barre : le meilleur des deux repères gardés. */
+  const source = (h) => (h.barre === h.panier ? `le panier des ${m1.valeurs} gardé`
+    : h.barre === h.spy ? 'SPY gardé' : 'le meilleur repère gardé');
+  const sourceBarre = source(soir) === source(matin) ? source(soir) : 'le meilleur de SPY et du panier gardés';
+  const fallait = `il lui fallait plus de ${bancNum(PP.euros(soir.barre))} et ${bancNum(PP.euros(matin.barre))} (${sourceBarre})`;
+  const aHeure = (h, quandAchat) => (h.arret ? `tombe à 2&nbsp;€ ou moins en achetant ${quandAchat}, le ${bancDateCourte(h.arret)}`
+    : `finit à ${bancNum(PP.euros(h.final))} en achetant ${quandAchat}`);
+  const autres = lignes2.filter((l) => !(l.soir.arret && l.matin.arret)).map((l) => {
+    const qui = `${esc(l.m.cle)} (${esc(l.m.nom)})`;
+    if (!l.soir.arret && !l.matin.arret) {
+      return `${qui} finit à ${bancNum(PP.euros(l.soir.final))} en achetant le soir et ${bancNum(PP.euros(l.matin.final))} `
+        + `le matin ; ${fallait}${l.soir.passe && l.matin.passe ? ' : elle passe' : ''}.`;
+    }
+    return `${qui} ${aHeure(l.soir, 'le soir')}, et ${aHeure(l.matin, 'le matin')} ; ${fallait}.`;
+  });
   const NOMBRES = ['Aucune', 'Une', 'Deux', 'Trois', 'Quatre'];
   const c2 = {
     verdict: combien(m2.passent),
     passe: m2.passent.length > 0,
+    capital: m2.capital,
     regle: `${bancNum(bancEurosRond(m2.capital))} sur une seule valeur à la fois, ${bancNum(bancEurosRond(m2.frais_ordre))} `
       + 'par ordre et l\'écart du courtier. Il fallait finir au-dessus de SPY gardé et du panier des '
       + `${m1.valeurs} gardé (le soir : ${bancNum(PP.euros(soir.spy))} et ${bancNum(PP.euros(soir.panier))}), `
       + 'en achetant le soir comme le matin.',
     ruine: ruinees.length
       ? `${NOMBRES[ruinees.length] || ruinees.length} ${ruinees.length > 1 ? 'sont ruinées' : 'est ruinée'} par les frais : `
-        + `${bancListe(ruinees.map((l) => esc(l.m.cle)))} tomb${ruinees.length > 1 ? 'ent' : 'e'} à 2&nbsp;€ ${quand}.`
+        + `${bancListe(ruinees.map((l) => esc(l.m.cle)))} tomb${ruinees.length > 1 ? 'ent' : 'e'} à 2&nbsp;€ ou moins `
+        + `${quand}, le soir comme le matin.`
       : '',
-    debout: debout.map((l) => `${esc(l.m.cle)} (${esc(l.m.nom)}) finit à ${bancNum(PP.euros(l.soir.final))} en achetant `
-      + `le soir et ${bancNum(PP.euros(l.matin.final))} le matin ; il lui fallait plus de ${bancNum(PP.euros(soir.barre))} `
-      + `et ${bancNum(PP.euros(matin.barre))} (le panier des ${m1.valeurs} gardé).`).join(' '),
+    autres: autres.join(' '),
     lignes: lignes2,
     soir,
     matin,
+    sourceBarre,
   };
 
-  /* Le biais du survivant, avec la valeur que chaque méthode encore
-     debout a gardée le plus longtemps (son rendement sur ces soirs-là,
+  /* Le biais du survivant, avec la valeur que chaque méthode jamais
+     arrêtée a gardée le plus longtemps (son rendement ces soirs-là,
      avant les frais). */
-  const exemples = debout.map((l) => ({ cle: l.m.cle, s: m2.survivant[l.m.cle] })).filter((x) => x.s);
+  const exemples = lignes2.filter((l) => !l.soir.arret && !l.matin.arret)
+    .map((l) => ({ cle: l.m.cle, s: m2.survivant[l.m.cle] })).filter((x) => x.s);
   const survivant = `Les ${m1.valeurs} valeurs ont été choisies en 2026 : toutes ont survécu. « Ça monte toujours » et `
     + 'les repères gardés en sont flattés, et une méthode peut l\'être aussi'
     + (exemples.length ? ` : ${exemples.map(({ cle, s }) => `${esc(cle)} a gardé ${esc(s.valeur)} `
-      + `${bancNum(PP.nombre(s.soirs, 0))} soirs (${bancNum(PP.pct(s.rendement, { decimales: 1 }))} sur ces soirs-là, `
-      + 'avant les frais)').join(', ')}` : '')
+      + `${bancNum(PP.nombre(s.soirs, 0))} soir${s.soirs > 1 ? 's' : ''} (${bancNum(PP.pct(s.rendement, { decimales: 1 }))} `
+      + `sur ${s.soirs > 1 ? 'ces soirs-là' : 'ce soir-là'}, avant les frais)`).join(', ')}` : '')
     + '. Le coffre, sur les mêmes valeurs, n\'en protège pas.';
 
   /* Le pied : quand, et ce que ce n'est pas. */
@@ -1230,10 +1267,10 @@ function htmlBanc(f) {
         <p class="banc-mesure">${f.c1.porte}${f.c1.presque ? ` ${f.c1.presque}` : ''}</p>
       </li>
       <li class="banc-critere">
-        <p class="banc-critere-tete"><span class="banc-nom">Critère 2 · payer les frais</span>
+        <p class="banc-critere-tete"><span class="banc-nom">Critère 2 · la stratégie de ${bancEurosRond(f.c2.capital)}</span>
           <span class="badge ${f.c2.passe ? '' : 'muted'} banc-badge">${esc(f.c2.verdict)}</span></p>
         <p>${f.c2.regle}</p>
-        <p>${f.c2.ruine}${f.c2.debout ? ` ${f.c2.debout}` : ''}</p>
+        <p>${[f.c2.ruine, f.c2.autres].filter(Boolean).join(' ')}</p>
       </li>
     </ul>
 
@@ -1248,15 +1285,15 @@ function htmlBanc(f) {
             <th scope="col">Méthode</th>
             <th scope="col" class="num-cell">Bonnes réponses</th>
             <th scope="col" class="num-cell">Il fallait plus de</th>
-            <th scope="col" class="num-cell">200&nbsp;€ achetés le soir</th>
-            <th scope="col" class="num-cell">Le matin</th>
+            <th scope="col" class="num-cell">${bancEurosRond(f.c2.capital)} : le soir</th>
+            <th scope="col" class="num-cell">${bancEurosRond(f.c2.capital)} : le matin</th>
           </tr></thead>
           <tbody>${lignesTable}</tbody>
         </table>
       </div>
       <p class="banc-note">${f.c1.barre} Au critère 2, il fallait plus de ${bancNum(PP.euros(f.c2.soir.barre))} le soir
-        et ${bancNum(PP.euros(f.c2.matin.barre))} le matin (le panier gardé). « À 2&nbsp;€ le … » : l'argent disponible
-        est tombé à 2&nbsp;€ ce jour-là, et plus aucun ordre n'a suivi.</p>
+        et ${bancNum(PP.euros(f.c2.matin.barre))} le matin (${f.c2.sourceBarre}). « À 2&nbsp;€ le … » : l'argent disponible
+        est tombé à 2&nbsp;€ ou moins ce jour-là, et plus aucun ordre n'a suivi.</p>
     </details>
 
     <p class="banc-avertissement">${f.pied}</p>`;

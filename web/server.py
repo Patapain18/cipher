@@ -422,8 +422,16 @@ def _fini(valeur):
 
 
 def _jour(valeur):
-    """Une date « AAAA-MM-JJ », sinon ValueError."""
-    datetime.strptime(valeur, "%Y-%m-%d")
+    """Une date « AAAA-MM-JJ » écrite en entier (pas « 2020-9-4 »), sinon ValueError."""
+    if not isinstance(valeur, str) or datetime.strptime(valeur, "%Y-%m-%d").strftime("%Y-%m-%d") != valeur:
+        raise ValueError(f"date attendue (AAAA-MM-JJ), reçu {valeur!r}")
+    return valeur
+
+
+def _horodatage(valeur):
+    """L'heure d'une mesure, avec son fuseau (« 2026-11-20T17:06:45+01:00 »), sinon ValueError."""
+    if not isinstance(valeur, str) or datetime.fromisoformat(valeur).tzinfo is None:
+        raise ValueError(f"heure de mesure attendue, avec son fuseau, reçu {valeur!r}")
     return valeur
 
 
@@ -457,8 +465,11 @@ def _banc_critere1(brut):
     passent = list(r["passent"])
     if sorted(passent) != sorted(m["cle"] for m in methodes if m["candidate"] and m["passe"]):
         raise ValueError("la liste des méthodes qui passent ne suit pas leurs résultats")
+    # La porte A s'ouvre si, et seulement si, une candidate passe (règle du plan).
+    if not isinstance(r["porte_a"], bool) or r["porte_a"] != bool(passent):
+        raise ValueError("la porte A ne suit pas la liste des méthodes qui passent")
     return {
-        "date_mesure": brut["date_mesure"], "commit": str(brut["code"]["commit"])[:7],
+        "date_mesure": _horodatage(brut["date_mesure"]), "commit": str(brut["code"]["commit"])[:7],
         "debut": _jour(r["debut"]), "fin": _jour(r["fin"]),
         "seances": int(r["seances"]), "valeurs": int(r["valeurs"]), "valeurs_jours": int(r["valeurs_jours"]),
         "niveau": _fini(r["reglages"]["niveau"]),
@@ -507,7 +518,7 @@ def _banc_critere2(brut):
     if sorted(passent) != sorted(attendu):
         raise ValueError("la liste des méthodes qui passent ne suit pas leurs résultats")
     return {
-        "date_mesure": brut["date_mesure"], "commit": str(brut["code"]["commit"])[:7],
+        "date_mesure": _horodatage(brut["date_mesure"]), "commit": str(brut["code"]["commit"])[:7],
         "debut": _jour(r["debut"]),
         "capital": _fini(reglages["capital"]), "frais_ordre": _fini(reglages["frais"]),
         "ecart": _fini(reglages["ecart"]),

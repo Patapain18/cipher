@@ -1541,6 +1541,23 @@ body.vue3d-active { overflow: hidden; }
    doit ressembler à une alarme, à une prévision ou à un ordre. */
 .banc { padding: var(--space-3) var(--space-4) var(--space-4); }
 .banc-attente { margin: 0; color: var(--text-muted); font-size: 14px; }
+/* Pas de date tant que les deux mesures ne sont pas lues : pas de pastille vide. */
+#banc-date:empty { display: none; }
+/* Dans le panneau 5 de la vue baie, le détail replié n'est pas proposé : un
+   panneau ne défile pas, et l'ouvrir le recentrait (le résumé sautait de
+   118 px, et la fin sortait de l'écran). Il reste dans la vue plan (Échap). */
+.vue3d-corps .banc-details { display: none; }
+/* Et des marges plus serrées : à 1200 × 690 (la plus petite vue baie), la
+   dernière ligne passait sous la note du bas de la vue. */
+.vue3d-corps .banc { padding: var(--space-2) var(--space-4) var(--space-3); }
+.vue3d-corps .banc-phrase { margin-top: var(--space-1); }
+.vue3d-corps .banc-chiffres { line-height: 1.55; }
+.vue3d-corps .banc-criteres { margin-top: var(--space-3); }
+.vue3d-corps .banc-critere p + p,
+.vue3d-corps .banc-critere ul + p,
+.vue3d-corps .banc-critere p + ul { margin-top: var(--space-1); }
+.vue3d-corps .banc-limite { margin-top: var(--space-3); }
+.vue3d-corps .banc-avertissement { margin-top: var(--space-2); }
 .banc-tete { display: flex; align-items: center; gap: var(--space-3); }
 .banc-echelle { display: inline-flex; gap: 4px; }
 .banc-echelle i {
@@ -1570,7 +1587,8 @@ body.vue3d-active { overflow: hidden; }
   margin: var(--space-4) 0 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  /* min(100 %, …) : sous 390 px, une colonne de 300 px débordait de la carte. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
   gap: var(--space-4);
 }
 .banc-critere p { margin: 0; line-height: 1.5; font-size: 14px; }

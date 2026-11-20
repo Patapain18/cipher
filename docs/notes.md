@@ -126,14 +126,16 @@ On passe de l'un à l'autre en tournant la tête — flèches à droite et à ga
 touches ← →, ou en tirant le fond à la souris. **Échap** ramène à la vue plan,
 qui reste derrière, et **V** y retourne.
 
-Les cinq panneaux, de gauche à droite : **mes positions** (le carnet, le seul
-endroit où l'on écrit) · **fiabilité du signal** · **synthèse** (on arrive ici :
-la tête de classement, les quatre chiffres, six lignes) · **le tableau
-complet** (49 lignes, qui défilent dans le panneau) · **historique et verdict
-du banc des prévisions** (le verdict a pris la place des bascules de l'état
-technique le 20/11/2026). Ce sont les sections RÉELLES de la page, déplacées dans la pièce
-— pas des copies : le formulaire du carnet reste un formulaire, les filtres
-des filtres, et tout se rafraîchit en place. À la fermeture, tout revient à sa
+Les cinq panneaux, de gauche à droite : **ma position** (le résumé du carnet
+de bord, en euros, frais compris ; on n'écrit que dans le carnet, touche P) ·
+**fiabilité du signal** · **synthèse** (on arrive ici : la tête de classement,
+les quatre chiffres, six lignes) · **le tableau complet** (49 lignes, qui
+défilent dans le panneau) · **historique et verdict du banc des prévisions**
+(le verdict a pris la place des bascules de l'état technique le 20/11/2026 ;
+son détail « Méthode par méthode » ne s'ouvre que dans la vue plan). Ce sont
+les sections RÉELLES de la page, déplacées dans la pièce — pas des copies :
+les filtres restent des filtres, le choix de la valeur de l'historique reste
+une liste, et tout se rafraîchit en place. À la fermeture, tout revient à sa
 place dans la page.
 
 ### Pourquoi une vue, et pas un décor
