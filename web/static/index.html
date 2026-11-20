@@ -234,12 +234,18 @@
     </div>
   </section>
 
-  <section class="section" id="section-bascules">
-    <span class="eyebrow">Bascules de l'état technique</span>
-    <div class="card">
-      <ul class="log" id="stocks-events">
-        <li class="loading">Chargement…</li>
-      </ul>
+  <!-- Le verdict du banc des prévisions (banc.py) : ce que ses deux mesures,
+       faites une seule fois, ont trouvé. Des faits sur le passé, jamais une
+       prévision ni un conseil. Il a pris la place des « Bascules de l'état
+       technique » (choix de Mathis, 20/11/2026), dans la vue plan comme dans
+       le panneau 5 de la vue baie. -->
+  <section class="section" id="section-banc">
+    <div class="section-head">
+      <span class="eyebrow">Le banc des prévisions</span>
+      <span class="badge muted" id="banc-date"></span>
+    </div>
+    <div class="card banc" id="banc">
+      <p class="banc-attente">Lecture du banc…</p>
     </div>
   </section>
 

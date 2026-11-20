@@ -613,7 +613,6 @@ async function renderHistory() {
   if (!tickers.length) {
     $('#history-chart').innerHTML =
       '<p class="empty">Aucun historique pour l\'instant — il se remplit quand le bot tourne.</p>';
-    $('#stocks-events').innerHTML = '<li class="empty">Rien à signaler.</li>';
     return;
   }
 
@@ -637,7 +636,6 @@ async function renderHistory() {
   });
 
   drawHistory();
-  drawEvents();
 }
 
 function drawHistory() {
@@ -646,20 +644,6 @@ function drawHistory() {
   $('#history-range').textContent =
     ` · ${points.length} relevés du ${dt(historyData.from)} au ${dt(historyData.to)}`;
   $('#history-chart').innerHTML = lineChart(points, { label: (p) => dt(p.t) });
-}
-
-function drawEvents() {
-  const events = historyData.events || [];
-  $('#stocks-events').innerHTML = events.length
-    ? events.map((e) => `
-        <li>
-          <time class="num">${dt(e.t)}</time>
-          <span class="who">${esc(e.ticker)}</span>
-          <span class="reco reco-${esc(e.reco)}">${esc(ETAT_TECHNIQUE[e.reco] || e.reco)}</span>
-          <span class="what">à ${nf(e.price)} $${e.signals && e.signals.length
-            ? ' — ' + esc(e.signals.join(', ')) : ''}</span>
-        </li>`).join('')
-    : '<li class="empty">Aucune bascule enregistrée.</li>';
 }
 
 /* ------------------------------------------------------------
@@ -1041,6 +1025,296 @@ async function renderThermometre() {
 }
 
 /* ------------------------------------------------------------
+   LE BANC DES PRÉVISIONS
+   ------------------------------------------------------------
+   Le verdict des deux mesures du banc (banc.py, écrites une seule
+   fois dans data/banc/, lues par /api/banc). La même grammaire que le
+   thermomètre (piste A, choisie par Mathis le 20/11/2026) : une échelle
+   et le verdict en tête, les deux critères côte à côte, le détail
+   replié. Toutes les phrases sont calculées depuis les chiffres, jamais
+   écrites en dur. Des faits sur le passé : jamais une prévision, jamais
+   un conseil, jamais de rouge.
+   ------------------------------------------------------------ */
+const bancNum = (texte) => `<span class="num">${texte}</span>`;
+/** 0,4979 → « 49,80 % » */
+const bancTaux = (x) => PP.pct(x, { signe: false, decimales: 2 });
+/** 0,0074 → « 0,74 » (des points de bonnes réponses) */
+const bancPoints = (x) => PP.nombre(x * 100, 2);
+/** Un montant rond sans ses centimes : 200 → « 200 € ». */
+const bancEurosRond = (x) => (Number.isInteger(x) ? `${PP.nombre(x, 0)}&nbsp;€` : PP.euros(x));
+/** « 2020-09-14 » → « 14/09/2020 » (une date seule est lue à midi). */
+const bancDateCourte = (iso) => {
+  const d = new Date(`${iso}T12:00:00`);
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('fr-FR');
+};
+/** « 2019-11-01 » → « 1ᵉʳ novembre 2019 ». */
+const bancDateLongue = (iso) => {
+  const d = new Date(`${iso}T12:00:00`);
+  return Number.isNaN(d.getTime()) ? '—'
+    : d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }).replace(/^1 /, '1ᵉʳ ');
+};
+/** « 2020-09-14 » → « septembre 2020 ». */
+const bancMois = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+/** Le jour et l'heure de Paris d'une mesure : « 20 novembre 2026 », « 17 h 06 ». */
+const bancJourMesure = (iso) => {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '—'
+    : d.toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris', day: 'numeric', month: 'long', year: 'numeric' });
+};
+const bancHeureMesure = (iso) => {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '—'
+    : d.toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris', hour: '2-digit', minute: '2-digit' }).replace(':', ' h ');
+};
+/* La typographie française : jamais « : », « ; » ni « » » en début de
+   ligne, jamais « « » en fin de ligne (des espaces insécables). Sur le
+   HTML de la section, dont aucun attribut ne contient ces signes. */
+const bancInsecables = (html) => html.replace(/ ([:;»])/g, '&nbsp;$1').replace(/« /g, '«&nbsp;');
+/** Une liste en français : « a », « a et c », « a, c et d ». */
+const bancListe = (mots) => (mots.length < 2 ? mots.join('')
+  : `${mots.slice(0, -1).join(', ')} et ${mots[mots.length - 1]}`);
+/** « de plus de 0,74 à 1,19 point » (le pluriel suit le nombre affiché, comme le thermomètre). */
+const bancFourchette = (valeurs) => {
+  const bas = bancPoints(Math.min(...valeurs));
+  const haut = bancPoints(Math.max(...valeurs));
+  const pluriel = Number((Math.max(...valeurs) * 100).toFixed(2)) >= 2 ? 's' : '';
+  return bas === haut ? `de plus de ${bancNum(bas)} point${pluriel}`
+    : `de plus de ${bancNum(bas)} à ${bancNum(haut)} point${pluriel}`;
+};
+
+/* Les faits du verdict, ou null si une des deux mesures manque : la
+   section dit alors laquelle, sans inventer de verdict. */
+function faitsDuBanc(v) {
+  const m1 = v?.critere1;        // la mesure du critère 1, telle que le serveur la lit
+  const m2 = v?.critere2;        // celle du critère 2
+  if (!m1 || !m2 || m1.etat !== 'mesure' || m2.etat !== 'mesure') return null;
+  const candidates = m1.methodes.filter((m) => m.candidate);
+  const n = candidates.length;
+  const soir = m2.heures.soir;
+  const matin = m2.heures.matin;
+  const combien = (liste) => (!liste.length ? 'aucune ne passe'
+    : `${liste.length} sur ${n} passe${liste.length > 1 ? 'nt' : ''}`);
+
+  /* Le verdict, en tête. */
+  const aucune = !m1.passent.length && !m2.passent.length;
+  const titre = aucune ? `<strong>Aucune</strong> des ${bancNum(n)} méthodes ne passe`
+    : `${bancNum(m1.passent.length)} sur ${bancNum(n)} passe${m1.passent.length > 1 ? 'nt' : ''} le critère 1, `
+      + `${bancNum(m2.passent.length)} le critère 2`;
+  const resume = `Le banc a testé ${n} façons de prévoir le lendemain des ${m1.valeurs} valeurs, sur les séances `
+    + `du ${bancDateLongue(m1.debut)} au ${bancDateLongue(m1.fin)}.`
+    + (aucune ? ' Aucune ne passe le critère 1 (avoir raison plus souvent que le hasard et que « ça monte toujours ») '
+      + 'ni le critère 2 (payer ses frais).' : '');
+
+  /* Critère 1 : voir quelque chose. Le cas qui intrigue : vue face au
+     tirage au sort, pas face à « ça monte toujours » (son taux dépasse
+     pourtant celui de « ça monte toujours »). */
+  const presque = candidates.filter((m) => m.vu_tirage && !m.vu_monte && !m.passe);
+  const c1 = {
+    verdict: combien(m1.passent),
+    passe: m1.passent.length > 0,
+    regle: `Avoir raison plus souvent qu'un tirage au sort et que « ça monte toujours » (${bancNum(bancTaux(m1.monte))} `
+      + `de bonnes réponses), avec ${bancNum(`${PP.nombre(m1.niveau * 100, 0)}&nbsp;%`)} de certitude.`,
+    barre: 'La barre de chaque méthode : le taux qu\'il fallait dépasser pour que son avance ne puisse pas venir du hasard.',
+    porte: m1.porte_a
+      ? 'La porte A s\'ouvre : la dernière année, gardée au coffre, peut être regardée.'
+      : 'La porte A reste fermée : la dernière année, gardée au coffre, n\'a pas été ouverte.',
+    presque: presque.length
+      ? `${bancListe(presque.map((m) => `${esc(m.cle)} (${esc(m.nom)})`))} fai${presque.length > 1 ? 'ont' : 't'} mieux `
+        + 'que le tirage au sort, pas mieux que « ça monte toujours » : dire « hausse » partout fait à peu près aussi bien.'
+      : '',
+    lignes: candidates,
+  };
+
+  /* Ce que le test pouvait voir : un « non » n'est pas une preuve d'absence. */
+  const voyait = 'Ce « non » a une limite : selon la méthode, le test ne voyait que les écarts '
+    + `${bancFourchette(candidates.map((m) => m.seuil_tirage))} face au tirage au sort, et `
+    + `${bancFourchette(candidates.map((m) => m.seuil_monte))} face à « ça monte toujours ». `
+    + 'Un avantage plus petit pourrait exister sans être vu.';
+
+  /* Critère 2 : payer les frais. Une méthode arrêtée à 2 € est dite par
+     sa date, jamais par son capital final, qui ne veut plus rien dire
+     (règle du rapport du critère 2). */
+  const lignes2 = candidates.map((m) => ({ m, soir: soir.methodes[m.cle], matin: matin.methodes[m.cle] }));
+  const ruinees = lignes2.filter((l) => l.soir.arret || l.matin.arret);
+  const debout = lignes2.filter((l) => !l.soir.arret && !l.matin.arret && !(l.soir.passe && l.matin.passe));
+  const dates = ruinees.flatMap((l) => [l.soir.arret, l.matin.arret]).filter(Boolean).sort();
+  let quand = '';
+  if (dates.length) {
+    const [d0, d1] = [dates[0], dates[dates.length - 1]];
+    quand = bancMois(d0) === bancMois(d1) ? `en ${bancMois(d0)}`
+      : d0.slice(0, 4) === d1.slice(0, 4) ? `entre ${bancMois(d0).replace(/ \d{4}$/, '')} et ${bancMois(d1)}`
+        : `entre ${bancMois(d0)} et ${bancMois(d1)}`;
+  }
+  const NOMBRES = ['Aucune', 'Une', 'Deux', 'Trois', 'Quatre'];
+  const c2 = {
+    verdict: combien(m2.passent),
+    passe: m2.passent.length > 0,
+    regle: `${bancNum(bancEurosRond(m2.capital))} sur une seule valeur à la fois, ${bancNum(bancEurosRond(m2.frais_ordre))} `
+      + 'par ordre et l\'écart du courtier. Il fallait finir au-dessus de SPY gardé et du panier des '
+      + `${m1.valeurs} gardé (le soir : ${bancNum(PP.euros(soir.spy))} et ${bancNum(PP.euros(soir.panier))}), `
+      + 'en achetant le soir comme le matin.',
+    ruine: ruinees.length
+      ? `${NOMBRES[ruinees.length] || ruinees.length} ${ruinees.length > 1 ? 'sont ruinées' : 'est ruinée'} par les frais : `
+        + `${bancListe(ruinees.map((l) => esc(l.m.cle)))} tomb${ruinees.length > 1 ? 'ent' : 'e'} à 2&nbsp;€ ${quand}.`
+      : '',
+    debout: debout.map((l) => `${esc(l.m.cle)} (${esc(l.m.nom)}) finit à ${bancNum(PP.euros(l.soir.final))} en achetant `
+      + `le soir et ${bancNum(PP.euros(l.matin.final))} le matin ; il lui fallait plus de ${bancNum(PP.euros(soir.barre))} `
+      + `et ${bancNum(PP.euros(matin.barre))} (le panier des ${m1.valeurs} gardé).`).join(' '),
+    lignes: lignes2,
+    soir,
+    matin,
+  };
+
+  /* Le biais du survivant, avec la valeur que chaque méthode encore
+     debout a gardée le plus longtemps (son rendement sur ces soirs-là,
+     avant les frais). */
+  const exemples = debout.map((l) => ({ cle: l.m.cle, s: m2.survivant[l.m.cle] })).filter((x) => x.s);
+  const survivant = `Les ${m1.valeurs} valeurs ont été choisies en 2026 : toutes ont survécu. « Ça monte toujours » et `
+    + 'les repères gardés en sont flattés, et une méthode peut l\'être aussi'
+    + (exemples.length ? ` : ${exemples.map(({ cle, s }) => `${esc(cle)} a gardé ${esc(s.valeur)} `
+      + `${bancNum(PP.nombre(s.soirs, 0))} soirs (${bancNum(PP.pct(s.rendement, { decimales: 1 }))} sur ces soirs-là, `
+      + 'avant les frais)').join(', ')}` : '')
+    + '. Le coffre, sur les mêmes valeurs, n\'en protège pas.';
+
+  /* Le pied : quand, et ce que ce n'est pas. */
+  const quandMesure = bancJourMesure(m1.date_mesure) === bancJourMesure(m2.date_mesure)
+    ? `le ${bancJourMesure(m1.date_mesure)} (critère 1 à ${bancHeureMesure(m1.date_mesure)}, critère 2 à `
+      + `${bancHeureMesure(m2.date_mesure)})`
+    : `le ${bancJourMesure(m1.date_mesure)} (critère 1) et le ${bancJourMesure(m2.date_mesure)} (critère 2)`;
+  const pied = `Deux mesures faites une seule fois, ${quandMesure}, en euros, dividendes compris. `
+    + 'Des faits sur le passé, pas une prévision ni un conseil.';
+
+  return { n, titre, resume, c1, voyait, c2, survivant, pied };
+}
+
+/* Ce que dit la section quand une mesure manque ou est abîmée. */
+function bancManque(v) {
+  const dire = (partie, nom, fichier) => {
+    if (!partie) return `${nom} : pas de réponse du serveur.`;
+    if (partie.etat === 'absent') return `${nom} : pas encore mesuré (${fichier} n'existe pas).`;
+    if (partie.etat === 'illisible') return `${nom} : le fichier ${fichier} est illisible.`;
+    return '';
+  };
+  return [dire(v?.critere1, 'Le critère 1', 'data/banc/etape1.json'),
+          dire(v?.critere2, 'Le critère 2', 'data/banc/critere2.json')].filter(Boolean).join(' ');
+}
+
+function htmlBanc(f) {
+  const echelle = f.c1.lignes.map((m) => `<i class="${m.passe ? 'on' : ''}"></i>`).join('');
+  const chiffres1 = f.c1.lignes.map((m) => `
+        <li><span class="banc-lettre">${esc(m.cle)}</span> ${esc(m.nom)} : ${bancNum(bancTaux(m.bonnes))}
+          <span class="banc-fallait">(il fallait plus de ${bancNum(bancTaux(m.barre))})</span></li>`).join('');
+  /* Arrêtée à 2 € : sa date, jamais son capital final. */
+  const resultat = (h) => (h.arret ? `à 2&nbsp;€ le ${bancDateCourte(h.arret)}` : bancNum(PP.euros(h.final)));
+  const lignesTable = f.c2.lignes.map((l) => `
+            <tr>
+              <th scope="row"><span class="banc-lettre">${esc(l.m.cle)}</span> ${esc(l.m.nom)}</th>
+              <td class="num-cell">${bancNum(bancTaux(l.m.bonnes))}</td>
+              <td class="num-cell">${bancNum(bancTaux(l.m.barre))}</td>
+              <td class="num-cell">${resultat(l.soir)}</td>
+              <td class="num-cell">${resultat(l.matin)}</td>
+            </tr>`).join('');
+  return `
+    <div class="banc-tete">
+      <span class="banc-echelle" aria-hidden="true">${echelle}</span>
+      <p class="banc-verdict">${f.titre}</p>
+    </div>
+    <p class="banc-phrase">${f.resume}</p>
+
+    <ul class="banc-criteres">
+      <li class="banc-critere">
+        <p class="banc-critere-tete"><span class="banc-nom">Critère 1 · voir quelque chose</span>
+          <span class="badge ${f.c1.passe ? '' : 'muted'} banc-badge">${esc(f.c1.verdict)}</span></p>
+        <p>${f.c1.regle}</p>
+        <ul class="banc-chiffres">${chiffres1}</ul>
+        <p class="banc-mesure">${f.c1.porte}${f.c1.presque ? ` ${f.c1.presque}` : ''}</p>
+      </li>
+      <li class="banc-critere">
+        <p class="banc-critere-tete"><span class="banc-nom">Critère 2 · payer les frais</span>
+          <span class="badge ${f.c2.passe ? '' : 'muted'} banc-badge">${esc(f.c2.verdict)}</span></p>
+        <p>${f.c2.regle}</p>
+        <p>${f.c2.ruine}${f.c2.debout ? ` ${f.c2.debout}` : ''}</p>
+      </li>
+    </ul>
+
+    <p class="banc-phrase banc-limite">${f.voyait}</p>
+    <p class="banc-phrase">${f.survivant}</p>
+
+    <details class="banc-details" data-cle="detail">
+      <summary>Méthode par méthode</summary>
+      <div class="banc-table" tabindex="0" role="region" aria-label="Le banc, méthode par méthode">
+        <table>
+          <thead><tr>
+            <th scope="col">Méthode</th>
+            <th scope="col" class="num-cell">Bonnes réponses</th>
+            <th scope="col" class="num-cell">Il fallait plus de</th>
+            <th scope="col" class="num-cell">200&nbsp;€ achetés le soir</th>
+            <th scope="col" class="num-cell">Le matin</th>
+          </tr></thead>
+          <tbody>${lignesTable}</tbody>
+        </table>
+      </div>
+      <p class="banc-note">${f.c1.barre} Au critère 2, il fallait plus de ${bancNum(PP.euros(f.c2.soir.barre))} le soir
+        et ${bancNum(PP.euros(f.c2.matin.barre))} le matin (le panier gardé). « À 2&nbsp;€ le … » : l'argent disponible
+        est tombé à 2&nbsp;€ ce jour-là, et plus aucun ordre n'a suivi.</p>
+    </details>
+
+    <p class="banc-avertissement">${f.pied}</p>`;
+}
+
+/* Le dernier contenu affiché : s'il n'a pas changé (et il ne change pas :
+   les deux mesures sont faites une fois pour toutes), on ne touche à rien,
+   et le détail ouvert reste ouvert. */
+let bancDernierHtml = '';
+
+async function renderBanc() {
+  const zone = $('#banc');
+  if (!zone || !window.PP) return;
+  let html;
+  let v = null;
+  try {
+    const res = await fetch('/api/banc');
+    if (res.status === 404) {
+      /* Le serveur de l'appli date d'avant cette section : son Python ne
+         se relit qu'en relançant l'appli (les pages, elles, se relisent seules). */
+      html = '<p class="banc-attente">Le verdict du banc s\'affichera quand l\'appli sera relancée : son serveur ne '
+        + 'connaît pas encore cette section.</p>';
+    } else {
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error || 'erreur inconnue');
+      v = json.data;
+      const f = faitsDuBanc(v);
+      html = f ? htmlBanc(f) : `<p class="banc-attente">${esc(bancManque(v))}</p>`;
+    }
+  } catch (e) {
+    if (bancDernierHtml) return;        // la dernière lecture reste affichée
+    html = `<p class="banc-attente">Le banc n'est pas lisible pour l'instant (${esc(e.message)}). Nouvel essai dans une minute.</p>`;
+  }
+  html = bancInsecables(html);
+  const dates = v?.critere1?.etat === 'mesure' && v?.critere2?.etat === 'mesure'
+    ? [bancJourMesure(v.critere1.date_mesure), bancJourMesure(v.critere2.date_mesure)] : [];
+  $('#banc-date').textContent = !dates.length ? ''
+    : dates[0] === dates[1] ? `mesuré le ${dates[0]}` : `mesuré le ${dates[0]} et le ${dates[1]}`;
+  if (html === bancDernierHtml) return;           // rien n'a changé : on ne touche à rien
+
+  // On garde ce que tu as ouvert, et la place du clavier.
+  const ouverts = [...zone.querySelectorAll('details[data-cle]')].filter((d) => d.open).map((d) => d.dataset.cle);
+  const actif = document.activeElement;
+  const focusCle = actif && actif.tagName === 'SUMMARY' ? actif.closest('#banc details[data-cle]')?.dataset.cle : null;
+  zone.innerHTML = html;
+  bancDernierHtml = html;
+  ouverts.forEach((cle) => { const d = zone.querySelector(`details[data-cle="${cle}"]`); if (d) d.open = true; });
+  if (focusCle) zone.querySelector(`details[data-cle="${focusCle}"] > summary`)?.focus({ preventScroll: true });
+  /* Le panneau 5 de la vue baie EST cette section : il se remesure. */
+  document.dispatchEvent(new CustomEvent('stocks:dessine'));
+}
+
+/* Le détail ouvert ou refermé change la hauteur de la section : le
+   panneau 5 de la vue baie se remesure (toggle ne remonte pas : on
+   l'écoute à la descente). */
+$('#banc')?.addEventListener('toggle', () => document.dispatchEvent(new CustomEvent('stocks:dessine')), true);
+
+/* ------------------------------------------------------------
    CYCLE DE VIE
    ------------------------------------------------------------ */
 
@@ -1052,6 +1326,7 @@ function refresh() {
   renderStocks();
   renderPositions();   // à part : la position n'attend pas le scan des 49 valeurs
   renderHistory();
+  renderBanc();
 }
 
 refresh();

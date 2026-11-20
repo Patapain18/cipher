@@ -726,7 +726,8 @@ void main() {
     { id: 'fiabilite', nom: 'Fiabilité du signal', largeurPx: 1020, largeurM: 2.5, sources: ['#quality-section'] },
     { id: 'synthese', nom: 'Synthèse', largeurPx: 1020, largeurM: 2.5, sources: ['.masthead', '#stocks-stats'], extrait: true },
     { id: 'tableau', nom: 'Valeurs suivies', largeurPx: 1428, largeurM: 3.5, sources: ['#section-valeurs'] },
-    { id: 'historique', nom: 'Historique des signaux', largeurPx: 1020, largeurM: 2.5, sources: ['#section-historique', '#section-bascules'] },
+    // Le verdict du banc a pris la place des bascules (choix de Mathis, 20/11/2026).
+    { id: 'historique', nom: 'Historique des signaux et banc des prévisions', largeurPx: 1020, largeurM: 2.5, sources: ['#section-historique', '#section-banc'] },
   ];
   const R_COURANT = 3.0, R_AUTRE = 4.5, PAS_ARC = Math.PI / 6;
   const angleDe = (i) => (i - 2) * PAS_ARC;

@@ -129,8 +129,9 @@ qui reste derrière, et **V** y retourne.
 Les cinq panneaux, de gauche à droite : **mes positions** (le carnet, le seul
 endroit où l'on écrit) · **fiabilité du signal** · **synthèse** (on arrive ici :
 la tête de classement, les quatre chiffres, six lignes) · **le tableau
-complet** (49 lignes, qui défilent dans le panneau) · **historique et
-bascules**. Ce sont les sections RÉELLES de la page, déplacées dans la pièce
+complet** (49 lignes, qui défilent dans le panneau) · **historique et verdict
+du banc des prévisions** (le verdict a pris la place des bascules de l'état
+technique le 20/11/2026). Ce sont les sections RÉELLES de la page, déplacées dans la pièce
 — pas des copies : le formulaire du carnet reste un formulaire, les filtres
 des filtres, et tout se rafraîchit en place. À la fermeture, tout revient à sa
 place dans la page.

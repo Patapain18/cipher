@@ -233,13 +233,15 @@ def stocks_history():
     """
     path = os.path.join("data", "signal_history.json")
     if not os.path.exists(path):
-        return {"series": {}, "events": [], "count": 0}
+        return {"series": {}, "count": 0}
 
     with open(path) as f:
         raw = json.load(f)
 
+    # Les « bascules » (`is_change`) ne sont plus lues ici : leur section a
+    # laissé la place au verdict du banc des prévisions (20/11/2026). Le bot
+    # continue de les noter dans le fichier.
     series = {}
-    events = []
     for entry in raw:
         ticker = entry.get("ticker")
         if not ticker:
@@ -252,21 +254,9 @@ def stocks_history():
             "rsi": entry.get("rsi"),
             "reco": entry.get("recommendation"),
         })
-        # `is_change` marque les instants où la recommandation a basculé.
-        # Ce sont les seuls moments qui méritaient une notification.
-        if entry.get("is_change"):
-            events.append({
-                "t": entry.get("timestamp"),
-                "ticker": ticker,
-                "reco": entry.get("recommendation"),
-                "price": entry.get("price"),
-                "signals": entry.get("signals", []),
-            })
 
-    events.sort(key=lambda e: e["t"] or "", reverse=True)
     return {
         "series": series,
-        "events": events[:40],
         "count": len(raw),
         "from": raw[0].get("timestamp") if raw else None,
         "to": raw[-1].get("timestamp") if raw else None,
@@ -401,6 +391,161 @@ def point_de_la_semaine():
         return json.load(f)
 
 
+# ══════════════════════════════════════════════════════════════════
+#  LE BANC DES PRÉVISIONS  (banc.py --mesurer, puis --critere2)
+#  Deux mesures faites UNE seule fois, écrites dans data/banc/ et jamais
+#  réécrites. Le serveur les LIT : il ne recalcule rien, n'écrit rien, et
+#  n'importe pas le code du banc. Un fichier absent ou abîmé ne fait rien
+#  tomber : sa partie arrive avec son état (« absent » ou « illisible »),
+#  et la page le dit.
+# ══════════════════════════════════════════════════════════════════
+
+BANC_CRITERE1 = os.path.join("data", "banc", "etape1.json")
+BANC_CRITERE2 = os.path.join("data", "banc", "critere2.json")
+
+# Les méthodes du banc, figées avant de regarder, avec les noms du rapport.
+# « comme hier » est un repère : il ne concourt pas.
+BANC_METHODES = (
+    ("a", "le score technique"),
+    ("b", "le momentum 12-1"),
+    ("c", "la régression logistique"),
+    ("d", "le gradient boosting"),
+    ("hier", "« comme hier »"),
+)
+
+
+def _fini(valeur):
+    """Un nombre fini, sinon ValueError (un booléen n'est pas un nombre)."""
+    if isinstance(valeur, bool) or not isinstance(valeur, (int, float)) or not math.isfinite(valeur):
+        raise ValueError(f"nombre attendu, reçu {valeur!r}")
+    return float(valeur)
+
+
+def _jour(valeur):
+    """Une date « AAAA-MM-JJ », sinon ValueError."""
+    datetime.strptime(valeur, "%Y-%m-%d")
+    return valeur
+
+
+def _vraie_mesure(brut):
+    """Refuse ce qui n'est pas LA mesure : un essai à blanc, ou du code modifié."""
+    if brut["resultat"].get("a_blanc") is not False or brut["code"].get("modifie") is not False:
+        raise ValueError("ce n'est pas une mesure faite sur du code commité")
+
+
+def _banc_critere1(brut):
+    """Le critère 1 (data/banc/etape1.json) : bonnes réponses, barres, porte A."""
+    _vraie_mesure(brut)
+    r = brut["resultat"]
+    tout = r["resultats"]["tout"]
+    monte = _fini(tout["a"]["monte"])
+    methodes = []
+    for cle, nom in BANC_METHODES:
+        m = tout[cle]
+        tirage, face_monte = m["face"]["tirage"], m["face"]["monte"]
+        if _fini(m["monte"]) != monte:
+            raise ValueError("« ça monte toujours » n'a pas le même taux pour toutes les méthodes")
+        methodes.append({
+            "cle": cle, "nom": nom, "candidate": cle != "hier",
+            "bonnes": _fini(m["bonnes"]), "barre": _fini(m["barre"]), "passe": m["passe"] is True,
+            "tirage": _fini(m["tirage"]),
+            "ecart_tirage": _fini(tirage["ecart"]), "seuil_tirage": _fini(tirage["seuil"]),
+            "vu_tirage": tirage["vu"] is True,
+            "ecart_monte": _fini(face_monte["ecart"]), "seuil_monte": _fini(face_monte["seuil"]),
+            "vu_monte": face_monte["vu"] is True,
+        })
+    passent = list(r["passent"])
+    if sorted(passent) != sorted(m["cle"] for m in methodes if m["candidate"] and m["passe"]):
+        raise ValueError("la liste des méthodes qui passent ne suit pas leurs résultats")
+    return {
+        "date_mesure": brut["date_mesure"], "commit": str(brut["code"]["commit"])[:7],
+        "debut": _jour(r["debut"]), "fin": _jour(r["fin"]),
+        "seances": int(r["seances"]), "valeurs": int(r["valeurs"]), "valeurs_jours": int(r["valeurs_jours"]),
+        "niveau": _fini(r["reglages"]["niveau"]),
+        "monte": monte, "porte_a": r["porte_a"] is True, "passent": passent,
+        "methodes": methodes,
+    }
+
+
+def _banc_critere2(brut):
+    """Le critère 2 (data/banc/critere2.json) : la stratégie de 200 €, le soir et le matin."""
+    _vraie_mesure(brut)
+    r = brut["resultat"]
+    reglages = r["reglages"]
+    heures = {}
+    for heure in ("soir", "matin"):
+        # La mesure principale : l'écart du courtier à 0,1 % (le contrôle à
+        # 0,3 % ne décide rien).
+        res = r["resultats"][f"{heure}-{reglages['ecart']}"]
+        methodes = {}
+        for cle, _nom in BANC_METHODES:
+            m = res["methodes"][cle]
+            methodes[cle] = {
+                "final": _fini(m["final"]), "passe": m["passe_ici"] is True,
+                "arret": _jour(m["arret"]) if m["arret"] is not None else None,
+                "capital_arret": _fini(m["capital_arret"]) if m["capital_arret"] is not None else None,
+                "ordres": int(m["ordres"]),
+                "frais": _fini(m["frais"]) + _fini(m["ecart"]),   # 1 € par ordre, plus l'écart
+            }
+        heures[heure] = {
+            "spy": _fini(res["spy"]), "panier": _fini(res["panier"]), "barre": _fini(res["barre"]),
+            "dernier_execute": _jour(r["dernier_execute"][heure]),
+            "methodes": methodes,
+        }
+    soir = r["resultats"][f"soir-{reglages['ecart']}"]
+    gardees = {v: _fini(x) for v, x in soir["valeurs"].items()}      # chaque valeur gardée seule
+    ordre = sorted(gardees, key=gardees.get)
+    survivant = {}
+    for cle, s in soir["survivant"].items():
+        if s["longues"]:
+            valeur, soirs, rendement = s["longues"][0]
+            survivant[cle] = {"valeur": str(valeur), "soirs": int(soirs), "rendement": _fini(rendement),
+                              "gardee_seule": gardees.get(valeur)}
+    passent = list(r["passent"])
+    attendu = [cle for cle, _n in BANC_METHODES if cle != "hier"
+               and all(heures[h]["methodes"][cle]["passe"] for h in heures)]
+    if sorted(passent) != sorted(attendu):
+        raise ValueError("la liste des méthodes qui passent ne suit pas leurs résultats")
+    return {
+        "date_mesure": brut["date_mesure"], "commit": str(brut["code"]["commit"])[:7],
+        "debut": _jour(r["debut"]),
+        "capital": _fini(reglages["capital"]), "frais_ordre": _fini(reglages["frais"]),
+        "ecart": _fini(reglages["ecart"]),
+        "passent": passent, "heures": heures, "survivant": survivant,
+        "gardees": {
+            "nombre": len(ordre),
+            "plus_bas": [ordre[0], gardees[ordre[0]]], "plus_haut": [ordre[-1], gardees[ordre[-1]]],
+            "battent_panier": sum(1 for x in gardees.values() if x > heures["soir"]["panier"]),
+        },
+    }
+
+
+def _lire_banc(chemin, extraire):
+    """Une partie du verdict, avec son état : mesuré, absent ou illisible."""
+    if not os.path.exists(chemin):
+        return {"etat": "absent"}
+    if not os.path.isfile(chemin):      # un dossier, ou un tube qui bloquerait open() pour toujours
+        return {"etat": "illisible", "detail": "pas un fichier"}
+    try:
+        with open(chemin, encoding="utf-8") as f:
+            brut = json.load(f)
+        return {"etat": "mesure", **extraire(brut)}
+    except Exception as e:      # un fichier abîmé : on le dit, sans rien faire tomber
+        return {"etat": "illisible", "detail": type(e).__name__}
+
+
+def verdict_du_banc():
+    """
+    Le verdict du banc des prévisions : ce que les deux mesures ont trouvé,
+    en chiffres. La page en tire ses phrases (des faits sur le passé,
+    jamais une prévision ni un conseil).
+    """
+    return {
+        "critere1": _lire_banc(BANC_CRITERE1, _banc_critere1),
+        "critere2": _lire_banc(BANC_CRITERE2, _banc_critere2),
+    }
+
+
 def rang_de(ticker):
     """
     Le rang d'une valeur au momentum, lu dans le dernier scan gardé en
@@ -533,6 +678,7 @@ ROUTES = {
     # chemin              → (fonction, durée de cache en secondes)
     "/api/semaine":        (point_de_la_semaine, 30),
     "/api/thermometre":    (thermometre_du_marche, 3600),   # des cours de clôture : une heure suffit
+    "/api/banc":           (verdict_du_banc, 300),          # deux fichiers écrits une fois, jamais réécrits
     "/api/position":       (ma_position_en_direct, 60),
     "/api/journal":        (mon_journal, 0),      # recalculé à chaque fois, sur la position en cache (60 s)
     "/api/papier":         (mon_defi_papier, 0),  # recalculé à chaque fois : papier.py garde déjà les cours 30 s.
