@@ -1100,9 +1100,10 @@ function faitsDuBanc(v) {
 
   /* Le verdict, en tête. */
   const aucune = !m1.passent.length && !m2.passent.length;
+  const parCritere = (k, i) => (!k ? `aucune ne passe le critère ${i}`
+    : `${bancNum(k)} sur ${bancNum(n)} passe${k > 1 ? 'nt' : ''} le critère ${i}`);
   const titre = aucune ? `<strong>Aucune</strong> des ${bancNum(n)} méthodes ne passe`
-    : `${bancNum(m1.passent.length)} sur ${bancNum(n)} passe${m1.passent.length > 1 ? 'nt' : ''} le critère 1, `
-      + `${bancNum(m2.passent.length)} le critère 2`;
+    : `${parCritere(m1.passent.length, 1)} ; ${parCritere(m2.passent.length, 2)}`.replace(/^a/, 'A');
   const resume = `Le banc a testé ${n} façons de prévoir le lendemain des ${m1.valeurs} valeurs, sur les séances `
     + `du ${bancDateLongue(m1.debut)} au ${bancDateLongue(m1.fin)}.`
     + (aucune ? ' Aucune ne passe le critère 1 (avoir raison nettement plus souvent que le hasard et que « ça monte '
@@ -1121,9 +1122,10 @@ function faitsDuBanc(v) {
     const ecart = Number((m.ecart_monte * 100).toFixed(2));
     const face = ecart > 0 ? `son avance sur lui (${points(m.ecart_monte)}) reste dans la marge du hasard, et dire `
       + '« hausse » partout fait à peu près aussi bien'
-      : ecart < 0 ? `elle fait même moins bien que lui (${points(m.ecart_monte)})` : 'elle fait exactement comme lui';
-    return `${esc(m.cle)} (${esc(m.nom)}) a raison nettement plus souvent que le tirage au sort, pas que « ça monte `
-      + `toujours » : ${face}.`;
+      : ecart < 0 ? `elle fait même moins bien que lui (${points(m.ecart_monte)})`
+        : 'elle fait autant que lui, à moins de 0,01 point près';
+    return `${esc(m.cle)} (${esc(m.nom)}) a raison nettement plus souvent que le tirage au sort, mais pas nettement `
+      + `plus souvent que « ça monte toujours » : ${face}.`;
   };
   const c1 = {
     verdict: combien(m1.passent),

@@ -421,6 +421,13 @@ def _fini(valeur):
     return float(valeur)
 
 
+def _entier(valeur):
+    """Un entier, sinon ValueError (ni texte, ni booléen, ni nombre à virgule)."""
+    if isinstance(valeur, bool) or not isinstance(valeur, int):
+        raise ValueError(f"entier attendu, reçu {valeur!r}")
+    return valeur
+
+
 def _jour(valeur):
     """Une date « AAAA-MM-JJ » écrite en entier (pas « 2020-9-4 »), sinon ValueError."""
     if not isinstance(valeur, str) or datetime.strptime(valeur, "%Y-%m-%d").strftime("%Y-%m-%d") != valeur:
@@ -430,7 +437,9 @@ def _jour(valeur):
 
 def _horodatage(valeur):
     """L'heure d'une mesure, avec son fuseau (« 2026-11-20T17:06:45+01:00 »), sinon ValueError."""
-    if not isinstance(valeur, str) or datetime.fromisoformat(valeur).tzinfo is None:
+    # Le « T » au milieu : Python accepte n'importe quel séparateur, pas le
+    # navigateur, qui écrirait alors « — » à la place de l'heure.
+    if not isinstance(valeur, str) or valeur[10:11] != "T" or datetime.fromisoformat(valeur).tzinfo is None:
         raise ValueError(f"heure de mesure attendue, avec son fuseau, reçu {valeur!r}")
     return valeur
 
@@ -471,7 +480,7 @@ def _banc_critere1(brut):
     return {
         "date_mesure": _horodatage(brut["date_mesure"]), "commit": str(brut["code"]["commit"])[:7],
         "debut": _jour(r["debut"]), "fin": _jour(r["fin"]),
-        "seances": int(r["seances"]), "valeurs": int(r["valeurs"]), "valeurs_jours": int(r["valeurs_jours"]),
+        "seances": _entier(r["seances"]), "valeurs": _entier(r["valeurs"]), "valeurs_jours": _entier(r["valeurs_jours"]),
         "niveau": _fini(r["reglages"]["niveau"]),
         "monte": monte, "porte_a": r["porte_a"] is True, "passent": passent,
         "methodes": methodes,
@@ -495,9 +504,11 @@ def _banc_critere2(brut):
                 "final": _fini(m["final"]), "passe": m["passe_ici"] is True,
                 "arret": _jour(m["arret"]) if m["arret"] is not None else None,
                 "capital_arret": _fini(m["capital_arret"]) if m["capital_arret"] is not None else None,
-                "ordres": int(m["ordres"]),
+                "ordres": _entier(m["ordres"]),
                 "frais": _fini(m["frais"]) + _fini(m["ecart"]),   # 1 € par ordre, plus l'écart
             }
+        if _fini(res["barre"]) != max(_fini(res["spy"]), _fini(res["panier"])):
+            raise ValueError("la barre n'est pas le meilleur de SPY et du panier gardés")
         heures[heure] = {
             "spy": _fini(res["spy"]), "panier": _fini(res["panier"]), "barre": _fini(res["barre"]),
             "dernier_execute": _jour(r["dernier_execute"][heure]),
@@ -510,7 +521,7 @@ def _banc_critere2(brut):
     for cle, s in soir["survivant"].items():
         if s["longues"]:
             valeur, soirs, rendement = s["longues"][0]
-            survivant[cle] = {"valeur": str(valeur), "soirs": int(soirs), "rendement": _fini(rendement),
+            survivant[cle] = {"valeur": str(valeur), "soirs": _entier(soirs), "rendement": _fini(rendement),
                               "gardee_seule": gardees.get(valeur)}
     passent = list(r["passent"])
     attendu = [cle for cle, _n in BANC_METHODES if cle != "hier"
