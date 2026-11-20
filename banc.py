@@ -182,26 +182,36 @@ def part_de_hausses(rendements):
 #  LES DONNÉES (le cache, lu sans rien écrire, coupé avant le coffre)
 # ══════════════════════════════════════════════════════════════════
 
-def _lire(dossier, symbole, fin, colonne):
+def _lire_colonnes(dossier, symbole, fin, colonnes):
     """
-    Une colonne d'un fichier du cache, coupée à `fin` juste après la
-    lecture. Refusée (CacheInvalide, avec un message clair) si le fichier n'a
-    pas cette colonne, s'il a des dates en double, ou si un cours de cette
-    colonne est nul, négatif ou infini avant la coupure. Un cours vide, lui,
-    ne compte simplement pas ; les autres colonnes ne sont pas regardées.
+    Des colonnes d'un fichier du cache, coupées à `fin` juste après la
+    lecture. Refusées (CacheInvalide, avec un message clair) si le fichier
+    n'a pas l'une de ces colonnes, si ses dates sont illisibles, avec un
+    fuseau ou en double, ou si une valeur de ces colonnes est nulle,
+    négative ou infinie avant la coupure. Une valeur vide, elle, ne compte
+    simplement pas ; les autres colonnes ne sont pas regardées.
     """
     nom = f"{symbole}_10y.csv"
-    df = pd.read_csv(os.path.join(dossier, nom), index_col=0, parse_dates=True).sort_index().loc[:fin]
-    if colonne not in df.columns:
-        raise CacheInvalide(f"{nom} n'a pas de colonne « {colonne} » : le cache est à vérifier")
+    df = pd.read_csv(os.path.join(dossier, nom), index_col=0, parse_dates=True)
+    if not isinstance(df.index, pd.DatetimeIndex) or df.index.tz is not None:
+        raise CacheInvalide(f"{nom} a des dates illisibles ou avec un fuseau : le cache est à vérifier")
+    df = df.sort_index().loc[:fin]
+    for colonne in colonnes:
+        if colonne not in df.columns:
+            raise CacheInvalide(f"{nom} n'a pas de colonne « {colonne} » : le cache est à vérifier")
     if df.index.duplicated().any():
         raise CacheInvalide(f"{nom} a des dates en double ({df.index[df.index.duplicated()][0].date()}) : "
                             "le cache est à vérifier")
-    serie = df[colonne].astype(float)
-    x = serie.to_numpy()
+    tableau = df[list(colonnes)].astype(float)
+    x = tableau.to_numpy()
     if (np.isinf(x) | (x <= 0)).any():
         raise CacheInvalide(f"{nom} a un cours nul, négatif ou infini : le cache est à vérifier")
-    return serie
+    return tableau
+
+
+def _lire(dossier, symbole, fin, colonne):
+    """Une colonne d'un fichier du cache, avec les mêmes refus que _lire_colonnes."""
+    return _lire_colonnes(dossier, symbole, fin, [colonne])[colonne]
 
 
 def charger(dossier=MARCHE, tickers=None, fin=FIN_AVANT_COFFRE):
@@ -821,18 +831,32 @@ def afficher_fausses_alarmes(res, methodes):
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     p.add_argument("--frais", action="store_true", help="le mur des frais, sur le cache coupé avant le coffre")
-    p.add_argument("--verifier", action="store_true", help="les cas calculés à la main")
+    p.add_argument("--verifier", action="store_true", help="les cas calculés à la main (étapes 0 et 1)")
     p.add_argument("--fausses-alarmes", action="store_true",
                    help="combien de fois le test dit « vu » sans talent (environ 1 min)")
+    p.add_argument("--mesurer", action="store_true",
+                   help="étape 1 : le test sur 6 ans des quatre méthodes, une seule fois (quelques minutes)")
+    p.add_argument("--a-blanc", action="store_true",
+                   help="avec --mesurer : toute la chaîne, mais des rendements tirés au hasard, sans rien écrire")
     args = p.parse_args()
+    if args.a_blanc and not args.mesurer:
+        p.error("--a-blanc va avec --mesurer")
     if args.verifier:
-        sys.exit(0 if verifier() else 1)
+        import banc_methodes
+        etape0 = verifier()
+        print("\n══════════ ÉTAPE 1 ══════════\n")
+        etape1 = banc_methodes.verifier()
+        sys.exit(0 if etape0 and etape1 else 1)
     try:
         if args.frais:
             afficher(mur_des_frais())
             return
         if args.fausses_alarmes:
             afficher_fausses_alarmes(fausses_alarmes(), FAUSSES_ALARMES_METHODES)
+            return
+        if args.mesurer:
+            import banc_methodes
+            banc_methodes.lancer_la_mesure(a_blanc=args.a_blanc)
             return
     except (CacheInvalide, FileNotFoundError) as erreur:
         sys.exit(f"Rien n'est calculé : {erreur}")
