@@ -1,5 +1,5 @@
 """
-Le banc des prévisions — étape 0 : le mur des frais.
+Le banc des prévisions — étape 0 (le mur des frais) ; la commande de l'étape 1 (banc_methodes.py).
 
 CE QUE ÇA FAIT
     Mathis a demandé (16/11/2026) un système, calé sur son courtier, qui
@@ -35,8 +35,10 @@ LES DONNÉES
 
 LANCER
     python3 banc.py --frais            # le mur des frais (moins de 10 s)
-    python3 banc.py --verifier         # les cas calculés à la main, sans le cache
+    python3 banc.py --verifier         # les cas calculés à la main, étapes 0 et 1, sans le cache (moins d'1 min)
     python3 banc.py --fausses-alarmes  # le test, sans talent, dit-il « vu » 1 fois sur 100 ? (moins d'1 min)
+    python3 banc.py --mesurer          # l'étape 1 (banc_methodes.py) : la mesure, une seule fois
+    python3 banc.py --mesurer --a-blanc  # l'étape 1, des rendements tirés au hasard, rien d'écrit
 """
 
 import argparse
@@ -1408,4 +1410,9 @@ def verifier():
 
 
 if __name__ == "__main__":
-    main()
+    # Lancé en commande, ce fichier est le module « __main__ » ; banc_methodes, lui, importe
+    # « banc », un second exemplaire, dont les CacheInvalide ne seraient pas attrapées par
+    # celui-ci (une trace Python au lieu de « Rien n'est calculé », relecture du 20/11/2026).
+    # Tout tourne donc dans « banc », l'exemplaire qu'importe banc_methodes.
+    import banc
+    banc.main()

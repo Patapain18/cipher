@@ -51,7 +51,10 @@ import io
 import json
 import math
 import os
+import platform
+import shutil
 import subprocess
+import sys
 import tempfile
 import warnings
 from dataclasses import dataclass
@@ -324,11 +327,30 @@ def avis(m, sortie):
 
 def _face(d, t, niveau):
     """Un écart OBSERVÉ et ses tirages : le plus petit écart que le test déclarait « vu », « vu », et
-    « vu_dessous » (l'écart est nettement NÉGATIF : la même règle, dans l'autre sens)."""
+    « vu_dessous » (l'écart est nettement NÉGATIF : la même règle, dans l'autre sens, avec son seuil)."""
     t = np.asarray(t, float)
     seuil = banc.seuil_critique(d, t, niveau)
+    seuil_dessous = banc.seuil_critique(-d, -t, niveau)
     return {"ecart": float(d), "seuil": seuil, "vu": bool(d > seuil),
-            "vu_dessous": bool(-d > banc.seuil_critique(-d, -t, niveau))}
+            "seuil_dessous": seuil_dessous, "vu_dessous": bool(-d > seuil_dessous)}
+
+
+def face_au_sens_du_jour(d_t, t_t, d_h, t_h, niveau=banc.NIVEAU):
+    """
+    L'avance d'une candidate sur le hasard (d_t, et ses tirages t_t), comparée à celle que donne
+    le seul sens du jour, dans ses DEUX versions : « comme hier » (son avance d_h, ses tirages t_h)
+    et son contraire (−d_h, −t_h). Chacune est comptée face à son propre tirage au sort, sur les
+    mêmes blocs. « vu » (nettement mieux que le sens du jour) seulement si la candidate est vue face
+    aux DEUX : aucun sens n'est choisi après avoir regardé. Le choisir sur les chiffres (avec |d_h|)
+    disait « nettement moins bien » 5 à 11 fois sur 100 sans aucun talent (relecture du 20/11/2026).
+    Rend la moins bonne des deux comparaisons (écart d_t − |d_h|, borne basse) et le détail. Pas de
+    « nettement moins bien » : ce test-là n'aurait pas son 1 sur 100.
+    """
+    t_t, t_h = np.asarray(t_t, float), np.asarray(t_h, float)
+    hier, contraire = _face(d_t - d_h, t_t - t_h, niveau), _face(d_t + d_h, t_t + t_h, niveau)
+    return {"ecart": min(hier["ecart"], contraire["ecart"]),
+            "borne": min(hier["ecart"] - hier["seuil"], contraire["ecart"] - contraire["seuil"]),
+            "vu": hier["vu"] and contraire["vu"], "comme_hier": hier, "contraire": contraire}
 
 
 def critere_1(m, y, valide, poids, sens_du_jour=None, niveau=banc.NIVEAU):
@@ -342,9 +364,8 @@ def critere_1(m, y, valide, poids, sens_du_jour=None, niveau=banc.NIVEAU):
     « ça monte toujours ». « barre » : le taux de bonnes réponses qu'il lui
     fallait pour passer.
     `sens_du_jour` (l'écart de « comme hier » face au tirage, et ses tirages
-    sur les MÊMES blocs) : ajoute « sens_du_jour », son avance sur le hasard
-    moins celle que donne le seul sens du jour, dans un sens ou dans l'autre
-    (« comme hier » ou son contraire, dont l'écart est l'opposé).
+    sur les MÊMES blocs) : ajoute « sens_du_jour », la comparaison avec le
+    seul sens du jour dans ses deux versions (face_au_sens_du_jour).
     Rend (résultat, tirages de son écart face au tirage).
     """
     v = np.asarray(valide, bool)
@@ -356,7 +377,7 @@ def critere_1(m, y, valide, poids, sens_du_jour=None, niveau=banc.NIVEAU):
     face = {"tirage": _face(d_t, t_t, niveau), "monte": _face(d_m, t_m, niveau)}
     if sens_du_jour is not None:
         d_h, t_h = sens_du_jour
-        face["sens_du_jour"] = _face(d_t - abs(d_h), np.asarray(t_t) - np.abs(t_h), niveau)
+        face["sens_du_jour"] = face_au_sens_du_jour(d_t, t_t, d_h, t_h, niveau)
     tirage = mm * yy + (1 - mm) * (1 - yy)
     return ({"n": n, "baisse": float(1 - mm), "bonnes": float(bonnes), "tirage": float(tirage), "monte": float(yy),
              "face": face, "passe": face["tirage"]["vu"] and face["monte"]["vu"],
@@ -511,9 +532,15 @@ def rendu(rap):
     dire("   La barre de chaque candidate, et ce que le test pouvait voir :")
     for m in CANDIDATES:
         x = tout[m]
+        s_t, s_m = x["face"]["tirage"]["seuil"], x["face"]["monte"]["seuil"]
+        source = "du tirage" if x["tirage"] + s_t >= x["monte"] + s_m else "de « ça monte toujours »"
         dire(f"     {NOMS[m]} : il lui fallait plus de {banc._pct(x['barre'], 2)} de bonnes réponses ; elle en a eu "
-             f"{banc._pct(x['bonnes'], 2)}. Face au tirage seul, le test voyait les écarts de plus de "
-             f"{banc._pts(x['face']['tirage']['seuil'], 2)}.")
+             f"{banc._pct(x['bonnes'], 2)}. Le test voyait les écarts de plus de {banc._pts(s_t, 2)} face au tirage "
+             f"({banc._pct(x['tirage'], 2)}) et de plus de {banc._pts(s_m, 2)} face à « ça monte toujours » "
+             f"({banc._pct(x['monte'], 2)}) : la barre vient {source}.")
+    dire(f"   Ces seuils portent sur l'écart OBSERVÉ : une méthode dont l'écart vrai vaut le seuil n'est vue qu'une "
+         f"fois sur deux ; pour l'être {banc._nb(banc.PUISSANCE * 10, 0)} fois sur 10, il lui faut environ "
+         f"{banc._nb(banc.facteur_puissance(), 2)} fois le seuil.")
 
     dire(f"\n2. ANNÉE PAR ANNÉE (ne décide rien) : l'écart face au tirage au sort ; « vu » si vu face aux deux repères")
     dire(f"   {'':30}" + "".join(f"{nom:>14}" for nom in rap["annees"]))
@@ -535,35 +562,43 @@ def rendu(rap):
     elif h["vu_dessous"]:
         phrase = "demain va nettement plus souvent dans l'autre sens (un rebond d'un jour)."
     else:
-        phrase = f"rien de net à {banc._pct(reg['niveau'], 0)} : le sens du jour ne dit rien du sens du lendemain."
+        phrase = (f"rien de net à {banc._pct(reg['niveau'], 0)} : le test ne voyait que les écarts de plus de "
+                  f"{banc._pts(max(h['seuil'], h['seuil_dessous']), 2)}, dans un sens ou dans l'autre.")
     dire(f"   « Comme hier » face au tirage au sort : {_ecart_pts(h['ecart'])} ; {phrase}")
-    dire("   Chaque candidate : son avance sur le hasard, moins celle que donne le seul sens du jour (« comme hier » "
-         "ou son contraire) :")
+    dire("   Chaque candidate face au seul sens du jour, dans ses deux versions (« comme hier », puis son contraire), "
+         "chacune face à son propre tirage au sort ; la moins bonne des deux comparaisons, et sa borne basse :")
     for m in CANDIDATES:
         f = tout[m]["face"]["sens_du_jour"]
-        qualif = ("elle fait nettement mieux que le sens du jour" if f["vu"] else
-                  "elle fait nettement moins bien que le sens du jour" if f["vu_dessous"] else
-                  "pas d'écart net avec le sens du jour")
-        dire(f"     {NOMS[m]} : {_ecart_pts(f['ecart'])} ({qualif}).")
+        qualif = ("nettement mieux que le sens du jour, dans un sens comme dans l'autre" if f["vu"]
+                  else "pas nettement mieux que le sens du jour")
+        dire(f"     {NOMS[m]} : {_ecart_pts(f['ecart'])} ({_ecart(f['borne'])}) : {qualif}.")
 
     dire("\n4. LA PORTE A")
     if not rap["porte_a"]:
         dire(f"   Aucune candidate ne passe le critère 1 sur les {duree} : le coffre reste fermé.")
     else:
         dire("   Passe le critère 1 : " + ", ".join(NOMS[m] for m in rap["passent"]) + ".")
-        elle = "elle" if len(rap["passent"]) == 1 else "elles"
-        dire(f"   La porte A s'ouvre pour {elle}, rien de plus : ça ne dit pas que l'argent suivrait (le critère 2). "
-             "Le coffre s'ouvrira une seule fois, après la construction et la répétition de son ouverture.")
+        elle, l_ = ("elle", "l'") if len(rap["passent"]) == 1 else ("elles", "les ")
+        dire(f"   La porte A s'ouvre pour {elle}, rien de plus : ça ne dit pas que l'argent suivrait (le critère 2), "
+             f"et le biais du survivant a pu {l_}aider (voir « À savoir »). Le coffre s'ouvrira une seule fois, "
+             "après la construction et la répétition de son ouverture.")
     for m in CANDIDATES:
         x = tout[m]
         if x["face"]["tirage"]["vu"] and not x["face"]["monte"]["vu"]:
-            dire(f"   {NOMS[m]} est vue face au tirage, pas face à « ça monte toujours » : elle trie mieux que le "
-                 "hasard les valeurs qui montent, mais dire « hausse » partout fait aussi bien. Elle ne passe pas. "
-                 "Le biais du survivant suffit à produire ce cas : les 49 valeurs ont été choisies en 2026.")
+            fin = ("dire « hausse » partout fait nettement mieux" if x["face"]["monte"]["vu_dessous"]
+                   else "dire « hausse » partout fait à peu près aussi bien")
+            dire(f"   {NOMS[m]} est vue face au tirage, pas face à « ça monte toujours » : elle reconnaît mieux que le "
+                 f"hasard les lendemains de hausse, mais {fin}. Elle ne passe pas. Le biais du survivant suffit à "
+                 "produire ce cas : les 49 valeurs ont été choisies en 2026.")
+        elif x["face"]["tirage"]["vu_dessous"]:
+            dire(f"   {NOMS[m]} est nettement EN DESSOUS du tirage au sort : son contraire ferait mieux que le hasard, "
+                 "mais ce contraire n'est pas une candidate (il n'a pas été choisi avant de regarder). Elle ne passe pas.")
 
     dire("\n5. À SAVOIR")
-    dire("   Le biais du survivant : les 49 valeurs ont été choisies en 2026, toutes ont survécu ; « ça monte "
-         "toujours » en est flatté, et le coffre ne protège pas de ce biais.")
+    dire("   Le biais du survivant : les 49 valeurs ont été choisies en 2026, toutes ont survécu. « Ça monte "
+         "toujours » en est flatté ; une méthode peut l'être aussi, si ce qu'elle a appris ne vaut que pour des "
+         "valeurs qui ont survécu (par exemple, dire « hausse » après une baisse). Le coffre, sur les mêmes 49 "
+         "valeurs, ne protège pas de ce biais.")
     dire("   Des faits sur le passé, pas une prévision ni un conseil.")
     return "\n".join(lignes)
 
@@ -609,11 +644,33 @@ def _en_json(x):
     return x
 
 
-def ecrire_mesure(rap, previsions, texte, code, dossier_banc=DOSSIER_BANC, maintenant=None):
+def empreinte_des_donnees(dossier, tickers):
+    """L'empreinte md5 de chaque fichier du cache lu (les valeurs, SPY, l'euro/dollar) : un cache retéléchargé se verrait."""
+    noms = [f"{t}_10y.csv" for t in list(tickers) + [banc.REFERENCE, banc.CHANGE]]
+    return {nom: hashlib.md5(open(os.path.join(dossier, nom), "rb").read()).hexdigest() for nom in noms}
+
+
+def versions_des_bibliotheques():
+    """Python et les versions des bibliothèques qui font les calculs (les indicateurs viennent de ta)."""
+    from importlib import metadata
+    versions = {"python": platform.python_version()}
+    for nom in ("numpy", "pandas", "scikit-learn", "scipy", "ta"):
+        try:
+            versions[nom] = metadata.version(nom)
+        except metadata.PackageNotFoundError:
+            versions[nom] = "inconnue"
+    return versions
+
+
+def ecrire_mesure(rap, previsions, texte, code, dossier_banc=DOSSIER_BANC, maintenant=None, donnees=None,
+                  bibliotheques=None):
     """
-    Écrit le résultat (etape1.json) et les prévisions, une seule fois : le
-    JSON est posé par un lien, qui échoue s'il existe déjà (FileExistsError).
-    Rien n'est jamais écrit dans data/market.
+    Écrit le résultat (etape1.json) et les prévisions, une seule fois. Les
+    prévisions sont posées d'abord, le JSON en dernier, par un lien, qui
+    échoue s'il existe déjà (FileExistsError) : une coupure en route laisse
+    au pire des prévisions sans résultat (la mesure peut alors se refaire :
+    rien n'a été affiché), jamais un résultat sans ses prévisions. Rien
+    n'est jamais écrit dans data/market.
     """
     if os.path.abspath(dossier_banc).startswith(os.path.abspath(banc.MARCHE)):
         raise RuntimeError("le banc n'écrit jamais dans data/market")
@@ -623,18 +680,19 @@ def ecrire_mesure(rap, previsions, texte, code, dossier_banc=DOSSIER_BANC, maint
         raise FileExistsError(f"{chemin} existe déjà : une mesure ne s'écrase pas")
     maintenant = maintenant or datetime.datetime.now(datetime.timezone.utc).astimezone()
     contenu = {"date_mesure": maintenant.isoformat(timespec="seconds"), "code": code,
+               "donnees": donnees or {}, "bibliotheques": bibliotheques or {},
                "choix": {"tirage": "la moyenne exacte de tous les tirages (choix de Mathis, 20/11/2026)",
                          "ordre": "le critère 1 d'abord (choix de Mathis, 20/11/2026)"},
                "resultat": _en_json(rap), "rapport": texte}
     fd, temp = tempfile.mkstemp(dir=dossier_banc, prefix=".etape1-", suffix=".tmp")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(contenu, f, ensure_ascii=False, indent=1, allow_nan=False)
     fd2, temp_prev = tempfile.mkstemp(dir=dossier_banc, prefix=".previsions-", suffix=".tmp")
     os.close(fd2)
     try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(contenu, f, ensure_ascii=False, indent=1, allow_nan=False)
         previsions.to_csv(temp_prev, index=False, compression="gzip")
+        os.replace(temp_prev, os.path.join(dossier_banc, NOM_PREVISIONS))      # les prévisions d'abord…
         os.link(temp, chemin)                       # refusé si le résultat existe déjà
-        os.replace(temp_prev, os.path.join(dossier_banc, NOM_PREVISIONS))
     finally:
         os.remove(temp)
         if os.path.exists(temp_prev):
@@ -643,10 +701,12 @@ def ecrire_mesure(rap, previsions, texte, code, dossier_banc=DOSSIER_BANC, maint
 
 
 def lancer_la_mesure(a_blanc=False, dossier=banc.MARCHE, dossier_banc=DOSSIER_BANC, tickers=None,
-                     annees=banc.ANNEES_NOTEES):
+                     annees=banc.ANNEES_NOTEES, racine_du_code=banc.ROOT):
     """
     `python3 banc.py --mesurer` : la mesure, une seule fois, sur du code
-    commité. Si elle a déjà été faite, son rapport est réaffiché tel quel.
+    commité. Le rapport ne s'affiche qu'une fois écrit, relu dans le fichier :
+    si l'écriture échoue, rien n'a été vu, et la mesure peut se relancer. Si
+    elle a déjà été faite, son rapport est réaffiché tel quel.
     `--a-blanc` : des rendements tirés au hasard, rien n'est écrit.
     """
     chemin = os.path.join(dossier_banc, NOM_MESURE)
@@ -657,16 +717,21 @@ def lancer_la_mesure(a_blanc=False, dossier=banc.MARCHE, dossier_banc=DOSSIER_BA
               "elle ne s'écrase pas. Voici son rapport.\n")
         print(deja["rapport"])
         return deja
-    code = empreinte_du_code()
+    code = empreinte_du_code(racine_du_code)
     if not a_blanc and code["modifie"]:
         raise SystemExit("Rien n'est calculé : banc.py, banc_methodes.py ou stock_engine.py n'est pas commité tel "
                          "quel. La mesure doit tourner sur du code enregistré (git commit d'abord).")
     rap, previsions = mesurer(dossier, tickers, annees, a_blanc=a_blanc)
     texte = rendu(rap)
-    print(texte)
-    if not a_blanc:
-        ecrire_mesure(rap, previsions, texte, code, dossier_banc)
-        print(f"\nÉcrit, une fois pour toutes : {chemin} et {os.path.join(dossier_banc, NOM_PREVISIONS)}.")
+    if a_blanc:
+        print(texte)
+        return rap
+    lues = list(engine.UNIVERSE_TICKERS if tickers is None else tickers)
+    ecrire_mesure(rap, previsions, texte, code, dossier_banc, donnees=empreinte_des_donnees(dossier, lues),
+                  bibliotheques=versions_des_bibliotheques())
+    with open(chemin, encoding="utf-8") as f:
+        print(json.load(f)["rapport"])
+    print(f"\nÉcrit, une fois pour toutes : {chemin} et {os.path.join(dossier_banc, NOM_PREVISIONS)}.")
     return rap
 
 
@@ -837,6 +902,51 @@ def verifier():
        proche(m_geo["r1"].iloc[-1], 0.01, 1e-12) and proche(m_geo["r5"].iloc[-1], 1.01 ** 5 - 1, 1e-12)
        and proche(m_geo["r21"].iloc[-1], 1.01 ** 21 - 1, 1e-12)
        and proche(m_geo["mom12_1"].iloc[-1], 1.01 ** 231 - 1, 1e-9))
+    # Les 14 mesures recalculées à part, depuis les cours bruts d'une valeur et de SPY qui bougent
+    # chacun à leur façon (ouvertures, plus hauts, plus bas et clôtures tous différents) : un
+    # indicateur pris pour un autre (RSI / ADX, ligne MACD / histogramme, moyenne 20 / 50…), SPY
+    # pris sur ses ouvertures ou remplacé par la valeur elle-même ne passent pas.
+    import ta
+    rng_m = np.random.default_rng(14)
+    jours_m = pd.bdate_range("2021-01-04", periods=330)
+
+    def cours_inventes(depart):
+        c = depart * np.cumprod(1 + rng_m.normal(0.0004, 0.015, len(jours_m)))
+        o = c * (1 + rng_m.normal(0, 0.004, len(jours_m)))
+        return pd.DataFrame({"Open": o, "High": np.maximum(o, c) * (1 + np.abs(rng_m.normal(0, 0.006, len(c)))),
+                             "Low": np.minimum(o, c) * (1 - np.abs(rng_m.normal(0, 0.006, len(c)))), "Close": c,
+                             "Volume": np.round(rng_m.lognormal(13, 0.5, len(c)))}, index=jours_m)
+
+    x_m, spy_m = cours_inventes(80.0), cours_inventes(300.0)
+    fx_m = pd.Series(1.1 * np.exp(np.cumsum(rng_m.normal(0, 0.003, 331))), index=pd.bdate_range("2021-01-04", periods=331))
+    d_m = preparer(["X"], {"X": x_m, banc.REFERENCE: spy_m}, fx_m)
+    c_m, v_m, s_m = x_m["Close"], x_m["Volume"], spy_m["Close"]
+    atr_m = ta.volatility.average_true_range(x_m["High"], x_m["Low"], c_m, window=14)
+    ema = {k: c_m.ewm(span=k, min_periods=k, adjust=False).mean() for k in (12, 26)}
+    attendu_m = {
+        "r1": c_m / c_m.shift(1) - 1, "r5": c_m / c_m.shift(5) - 1, "r21": c_m / c_m.shift(21) - 1,
+        "vol20": c_m.pct_change().rolling(20).std(), "rsi14": ta.momentum.rsi(c_m, window=14),
+        "macd_atr": (ema[12] - ema[26]) / atr_m, "ecart20_atr": (c_m - c_m.rolling(20).mean()) / atr_m,
+        "sma20_50": c_m.rolling(20).mean() / c_m.rolling(50).mean() - 1, "volume20": v_m / v_m.rolling(20).mean(),
+        "mom12_1": c_m.shift(21) / c_m.shift(252) - 1,
+        "force": pd.Series({x["date"]: x["strength"] for x in engine.analyze_series(x_m)}, dtype=float),
+        "spy1": s_m / s_m.shift(1) - 1, "spy5": s_m / s_m.shift(5) - 1,
+        "eurusd1": (fx_m / fx_m.shift(1) - 1).reindex(jours_m)}
+
+    def mesure_differente(nom):
+        faite = d_m.X[:, 0, MESURES.index(nom)]
+        voulue = attendu_m[nom].reindex(d_m.dates).to_numpy(float)
+        ici = np.isfinite(voulue)
+        return not (np.array_equal(np.isfinite(faite), ici) and ici.sum() >= 60
+                    and np.allclose(faite[ici], voulue[ici], rtol=1e-9, atol=1e-12))
+
+    differentes = [nom for nom in MESURES if mesure_differente(nom)]
+    ok("les 14 mesures recalculées à part depuis les cours bruts (une valeur et SPY qui bougent chacun à leur "
+       "façon) : rendements 1, 5, 21 ; écart-type des 20 derniers rendements ; RSI 14 ; ligne MACD (EMA 12 − EMA 26) "
+       "÷ ATR 14 ; (cours − moyenne 20) ÷ ATR ; moyenne 20 ÷ moyenne 50 − 1 ; volume ÷ sa moyenne 20 ; momentum "
+       "12-1 ; force ; clôtures de SPY sur 1 et 5 séances ; euro/dollar" + (f" — DIFFÉRENTES : {', '.join(differentes)}"
+                                                                           if differentes else ""),
+       not differentes)
 
     print("\n— Le critère 1, à la main —")
     un = np.ones((1, 2), dtype=np.float32)      # un seul « tirage » : l'échantillon lui-même (seuil 0)
@@ -856,12 +966,27 @@ def verifier():
     args3 = (np.array([[1.0, 0.0, 1.0]]), np.array([[1.0, 0.0, 1.0]]), np.array([[True, True, False]]), seul)
     r3_, _ = critere_1(*args3, sens_du_jour=(-0.3, np.array([-0.3])))
     r3b, _ = critere_1(*args3, sens_du_jour=(0.6, np.array([0.6])))
-    ok("une valeur-jour non comptée ne compte pas (2 sur 2, +50 points face au tirage) ; face au sens du jour, "
-       "dans un sens ou dans l'autre : +50 − |−30| = +20 points (nettement mieux), +50 − 60 = −10 (nettement moins bien)",
+    ok("une valeur-jour non comptée ne compte pas (2 sur 2, +50 points face au tirage) ; face au sens du jour dans "
+       "ses deux versions (« comme hier » à −30 points, son contraire à +30) : +80 et +20 points, la moins bonne "
+       "(+20) est gardée, vue face aux deux ; « comme hier » à +60 : −10 points, pas vue, et jamais « moins bien »",
        r3_["n"] == 2 and proche(r3_["bonnes"], 1.0) and proche(r3_["face"]["tirage"]["ecart"], 0.5)
-       and proche(r3_["face"]["sens_du_jour"]["ecart"], 0.2) and r3_["face"]["sens_du_jour"]["vu"]
-       and proche(r3b["face"]["sens_du_jour"]["ecart"], -0.1) and r3b["face"]["sens_du_jour"]["vu_dessous"]
-       and not r3b["face"]["sens_du_jour"]["vu"])
+       and proche(r3_["face"]["sens_du_jour"]["comme_hier"]["ecart"], 0.8)
+       and proche(r3_["face"]["sens_du_jour"]["contraire"]["ecart"], 0.2)
+       and proche(r3_["face"]["sens_du_jour"]["ecart"], 0.2) and proche(r3_["face"]["sens_du_jour"]["borne"], 0.2)
+       and r3_["face"]["sens_du_jour"]["vu"]
+       and proche(r3b["face"]["sens_du_jour"]["ecart"], -0.1) and not r3b["face"]["sens_du_jour"]["vu"]
+       and "vu_dessous" not in r3b["face"]["sens_du_jour"])
+    rebond_seul = face_au_sens_du_jour(0.3, np.array([0.3, 0.25, 0.35]), -0.3, np.array([-0.3, -0.25, -0.35]), 0.75)
+    ok("une candidate qui ne fait que le contraire de « comme hier » (son avance = celle du rebond) n'est pas "
+       "« nettement mieux que le sens du jour », même si elle bat « comme hier » de loin",
+       rebond_seul["comme_hier"]["vu"] and not rebond_seul["contraire"]["vu"] and not rebond_seul["vu"]
+       and rebond_seul["ecart"] == 0.0)
+    deux_seuils = face_au_sens_du_jour(0.5, np.array([0.5, 0.3, 0.7]), 0.1, np.array([0.1, 0.0, 0.2]), 0.75)
+    ok("la borne face au sens du jour : la plus basse des deux bornes, chacune l'écart MOINS son seuil (face à « comme "
+       "hier » : 0,40 − 0,05 = 0,35 ; face au contraire : 0,60 − 0,15 = 0,45), pas le plus petit écart (0,40)",
+       proche(deux_seuils["ecart"], 0.4) and proche(deux_seuils["borne"], 0.35)
+       and proche(deux_seuils["comme_hier"]["seuil"], 0.05) and proche(deux_seuils["contraire"]["seuil"], 0.15)
+       and deux_seuils["vu"])
     W = np.array([[1, 1, 1, 1], [2, 0, 1, 1], [0, 2, 2, 0], [1, 1, 0, 2]], dtype=np.float32)
     m4 = np.array([[1.0, 0.0], [0.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
     y4 = np.array([[1.0, 1.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]])
@@ -871,15 +996,21 @@ def verifier():
     ok("la barre = le plus haut de (tirage + son seuil) et (« ça monte » + son seuil), sur les tirages donnés",
        proche(r4_["barre"], max(r4_["tirage"] + s_t, r4_["monte"] + s_m))
        and proche(r4_["face"]["tirage"]["seuil"], s_t) and proche(r4_["face"]["monte"]["seuil"], s_m))
-    r4h, t4h = critere_1(1 - m4, y4, np.ones_like(m4, bool), W, niveau=0.75)
-    r4s, _ = critere_1(m4, y4, np.ones_like(m4, bool), W, sens_du_jour=(r4h["face"]["tirage"]["ecart"], t4h),
-                       niveau=0.75)
-    d_s = o_t - abs(r4h["face"]["tirage"]["ecart"])
-    seuil_s = float(np.quantile(d_s - (np.asarray(t_t) - np.abs(t4h)), 0.75))
-    ok("face au sens du jour, tirage par tirage (les mêmes blocs) : l'écart moins |celui du sens du jour|, et son "
-       "seuil recalculé à part",
-       proche(r4s["face"]["sens_du_jour"]["ecart"], d_s) and proche(r4s["face"]["sens_du_jour"]["seuil"], seuil_s)
-       and r4s["face"]["sens_du_jour"]["vu"] == (d_s > seuil_s))
+    h4 = np.array([[1.0, 1.0], [0.0, 1.0], [0.0, 0.0], [1.0, 0.0]])
+    r4h, t4h = critere_1(h4, y4, np.ones_like(m4, bool), W, niveau=0.75)
+    d_h4 = r4h["face"]["tirage"]["ecart"]
+    r4s, _ = critere_1(m4, y4, np.ones_like(m4, bool), W, sens_du_jour=(d_h4, t4h), niveau=0.75)
+    deux = []
+    for signe in (1, -1):                           # « comme hier », puis son contraire
+        g = o_t - signe * d_h4
+        deux.append((g, float(np.quantile(g - (np.asarray(t_t) - signe * np.asarray(t4h)), 0.75))))
+    f4 = r4s["face"]["sens_du_jour"]
+    ok("face au sens du jour, tirage par tirage (les mêmes blocs), recalculé à part : l'écart face à « comme hier » "
+       "et face à son contraire, chacun avec son seuil ; la moins bonne des deux et sa borne ; « vu » face aux deux",
+       proche(f4["comme_hier"]["ecart"], deux[0][0]) and proche(f4["comme_hier"]["seuil"], deux[0][1])
+       and proche(f4["contraire"]["ecart"], deux[1][0]) and proche(f4["contraire"]["seuil"], deux[1][1])
+       and proche(f4["ecart"], min(g for g, _ in deux)) and proche(f4["borne"], min(g - s for g, s in deux))
+       and f4["vu"] == all(g > s for g, s in deux))
     r5_, _ = critere_1(np.array([[0.0, 1.0], [1.0, 0.0]]), np.array([[1.0, 0.0], [0.0, 1.0]]), np.ones((2, 2), bool),
                        un)
     ok("toujours à côté : −50 points face au tirage, nettement EN DESSOUS (vu_dessous), jamais « vu »",
@@ -902,30 +1033,41 @@ def verifier():
            rap0["valeurs_jours"] == int(np.isfinite(R0.to_numpy()).sum()) and rap0["retirees"] == 0
            and list(appris0) == ["2023-2024", "2024-2025"]
            and appris0["2023-2024"][1] == pd.Timestamp("2023-10-30") and appris0["2024-2025"][1] == pd.Timestamp("2024-10-30"))
-        # c et d recalculés à part, pour la première année : mêmes lignes, même centrage, mêmes probabilités.
+        # c et d recalculés à part, chaque année notée : mêmes lignes (TOUTES les séances d'avant, moins la
+        # purge), même centrage, mêmes probabilités.
         from sklearn.ensemble import HistGradientBoostingClassifier
         from sklearn.linear_model import LogisticRegression
         from sklearn.preprocessing import StandardScaler
+
+        def recalcule(a, b):
+            appr = np.flatnonzero(d0.dates < a)[:-1]
+            test = np.flatnonzero((d0.dates >= a) & (d0.dates <= b))
+            Xa, ra = d0.X[appr].reshape(-1, len(MESURES)), d0.r[appr].ravel()
+            garde = np.isfinite(Xa).all(1) & np.isfinite(ra)
+            Xa, ya = Xa[garde], (ra[garde] > 0).astype(int)
+            Xt = d0.X[test].reshape(-1, len(MESURES))
+            okt = np.isfinite(Xt).all(1)
+            echelle = StandardScaler().fit(Xa)
+            with _sans_faux_avertissements():
+                pc = LogisticRegression(C=1.0, max_iter=1000).fit(echelle.transform(Xa), ya).predict_proba(
+                    echelle.transform(Xt[okt]))[:, 1]
+            pdd = HistGradientBoostingClassifier(**REGLAGES_D).fit(Xa, ya).predict_proba(Xt[okt])[:, 1]
+            c_t, d_t = s0["c"][test].ravel(), s0["d"][test].ravel()
+            juste = (np.allclose(c_t[okt], pc, rtol=0, atol=1e-15) and np.array_equal(d_t[okt], pdd)
+                     and np.isnan(c_t[~okt]).all() and np.isnan(d_t[~okt]).all())
+            premiere = d0.dates[appr][garde.reshape(len(appr), -1).any(axis=1)][0]
+            return juste, len(ya), premiere, int((~okt).sum()), test
+
         a1, b1 = ANNEES_FAUSSES[0]
-        appr = np.flatnonzero(d0.dates < a1)[:-1]
-        test = np.flatnonzero((d0.dates >= a1) & (d0.dates <= b1))
-        Xa, ra = d0.X[appr].reshape(-1, len(MESURES)), d0.r[appr].ravel()
-        garde = np.isfinite(Xa).all(1) & np.isfinite(ra)
-        Xa, ya = Xa[garde], (ra[garde] > 0).astype(int)
-        Xt = d0.X[test].reshape(-1, len(MESURES))
-        okt = np.isfinite(Xt).all(1)
-        echelle = StandardScaler().fit(Xa)
-        with _sans_faux_avertissements():
-            pc = LogisticRegression(C=1.0, max_iter=1000).fit(echelle.transform(Xa), ya).predict_proba(
-                echelle.transform(Xt[okt]))[:, 1]
-        pdd = HistGradientBoostingClassifier(**REGLAGES_D).fit(Xa, ya).predict_proba(Xt[okt])[:, 1]
-        c_t, d_t = s0["c"][test].ravel(), s0["d"][test].ravel()
-        ok(f"c et d recalculés à part sur la 1re année : {banc._nb(len(ya), 0)} lignes apprises, centrées et réduites "
-           "sur elles seules ; les probabilités de predict_proba (c, à 10⁻¹⁵ près : son produit de matrices "
-           "additionne dans un autre ordre ; d au bit près), vides là où une mesure manque",
-           appris0["2023-2024"][2] == len(ya) and np.allclose(c_t[okt], pc, rtol=0, atol=1e-15)
-           and np.array_equal(d_t[okt], pdd) and (~okt).sum() == 1
-           and np.isnan(c_t[~okt]).all() and np.isnan(d_t[~okt]).all())
+        juste1, n1, premiere1, vides1, test = recalcule(a1, b1)
+        juste2, n2, premiere2, vides2, _ = recalcule(*ANNEES_FAUSSES[1])
+        ok(f"c et d recalculés à part, chaque année, sur toutes les séances d'avant moins la purge ({banc._nb(n1, 0)} "
+           f"puis {banc._nb(n2, 0)} lignes, depuis la première séance complète), centrées et réduites sur elles "
+           "seules ; les probabilités de predict_proba (c, à 10⁻¹⁵ près : son produit de matrices additionne dans "
+           "un autre ordre ; d au bit près), vides là où une mesure manque",
+           juste1 and juste2 and appris0["2023-2024"][2] == n1 and appris0["2024-2025"][2] == n2 and n2 > n1
+           and appris0["2023-2024"][0] == premiere1 and appris0["2024-2025"][0] == premiere2 == premiere1
+           and vides1 == 1)
         i_f = MESURES.index("force")
         ccc = charger_cours(base, FAUX)[1]["CCC"]
         force_ccc = pd.Series({x["date"]: x["strength"] for x in engine.analyze_series(ccc)}).reindex(d0.dates)
@@ -1110,6 +1252,91 @@ def verifier():
         ok("les nombres non finis deviennent null, les dates AAAA-MM-JJ",
            _en_json({"a": float("nan"), "b": pd.Timestamp("2024-01-02"), "c": np.bool_(True), "d": np.int64(3)})
            == {"a": None, "b": "2024-01-02", "c": True, "d": 3})
+        from unittest import mock
+        banc_coupe = os.path.join(racine, "banc-coupe")
+        coupure = None
+        with mock.patch("os.replace", side_effect=OSError("coupure")):
+            try:
+                ecrire_mesure(rap0, prev_m, "x", {"commit": None, "modifie": False, "md5": {}}, banc_coupe)
+            except OSError as erreur:
+                coupure = erreur
+        ok("une coupure en posant les prévisions ne laisse aucun résultat sans elles (les prévisions d'abord, le "
+           "résultat en dernier), ni aucun fichier temporaire",
+           coupure is not None and os.listdir(banc_coupe) == [])
+
+        print("\n— Le code commité, puis écrire avant d'afficher —")
+        depot = os.path.join(racine, "depot")
+        os.makedirs(depot)
+        for nom in FICHIERS_DU_CODE:
+            shutil.copy(os.path.join(banc.ROOT, nom), depot)
+        git = ["git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=banc", "-c", "user.email=banc@exemple.invalid",
+               "-c", "commit.gpgsign=false"]
+        for commande in (["init", "-q", "--template="], ["add", "."], ["commit", "-q", "-m", "essai"]):
+            subprocess.run(git + commande, cwd=depot, check=True, capture_output=True)
+        propre = empreinte_du_code(depot)
+        retouches = {}
+        for nom in ("banc.py", "banc_methodes.py", "stock_engine.py"):
+            chemin_code = os.path.join(depot, nom)
+            avant = open(chemin_code, "rb").read()
+            with open(chemin_code, "ab") as f:
+                f.write(b"\n# une retouche\n")
+            retouches[nom] = empreinte_du_code(depot)["modifie"]
+            with open(chemin_code, "wb") as f:
+                f.write(avant)
+        ok("l'empreinte du code : le commit et « pas modifié » sur un dépôt propre ; « modifié » dès que banc.py, "
+           "banc_methodes.py OU stock_engine.py change ; les md5 des trois fichiers",
+           not propre["modifie"] and len(propre["commit"] or "") == 40 and all(retouches.values())
+           and propre["md5"] == md5_des_fichiers(depot) and set(propre["md5"]) == set(retouches)
+           and not empreinte_du_code(depot)["modifie"])
+        with open(os.path.join(depot, "banc_methodes.py"), "a", encoding="utf-8") as f:
+            f.write("\n# une retouche pas commitée\n")
+        banc_refus, sortie, refus = os.path.join(racine, "banc-refus"), io.StringIO(), None
+        with contextlib.redirect_stdout(sortie):
+            try:
+                lancer_la_mesure(dossier=base, dossier_banc=banc_refus, tickers=list(FAUX), annees=ANNEES_FAUSSES,
+                                 racine_du_code=depot)
+            except SystemExit as erreur:
+                refus = str(erreur)
+        ok("sur du code pas commité, la mesure refuse : rien n'est calculé, affiché ni écrit",
+           refus is not None and "commit" in refus and sortie.getvalue() == "" and not os.path.exists(banc_refus))
+        subprocess.run(git + ["checkout", "-q", "--", "banc_methodes.py"], cwd=depot, check=True, capture_output=True)
+        pas_un_dossier = os.path.join(racine, "pas-un-dossier")
+        open(pas_un_dossier, "w").close()
+        sortie, echec = io.StringIO(), None
+        with contextlib.redirect_stdout(sortie):
+            try:
+                lancer_la_mesure(dossier=base, dossier_banc=os.path.join(pas_un_dossier, "banc"), tickers=list(FAUX),
+                                 annees=ANNEES_FAUSSES, racine_du_code=depot)
+            except OSError as erreur:
+                echec = erreur
+        ok("si l'écriture échoue, rien n'est affiché : le résultat n'a pas été vu, la mesure peut se refaire",
+           echec is not None and sortie.getvalue() == "")
+        banc_ok, sortie = os.path.join(racine, "banc-ok"), io.StringIO()
+        with contextlib.redirect_stdout(sortie):
+            lancer_la_mesure(dossier=base, dossier_banc=banc_ok, tickers=list(FAUX), annees=ANNEES_FAUSSES,
+                             racine_du_code=depot)
+        with open(os.path.join(banc_ok, NOM_MESURE), encoding="utf-8") as f:
+            ecrit = json.load(f)
+        ok("sur du code commité : la mesure s'écrit, PUIS affiche le rapport relu dans le fichier ; le fichier garde le "
+           f"commit, l'empreinte des {len(FAUX) + 2} fichiers de cours lus et les versions des bibliothèques",
+           sortie.getvalue().startswith(ecrit["rapport"] + "\n") and "Écrit, une fois pour toutes" in sortie.getvalue()
+           and ecrit["code"]["commit"] == propre["commit"] and not ecrit["code"]["modifie"]
+           and ecrit["donnees"] == empreinte_des_donnees(base, FAUX) and len(ecrit["donnees"]) == len(FAUX) + 2
+           and {"python", "numpy", "pandas", "scikit-learn", "scipy", "ta"} <= set(ecrit["bibliotheques"])
+           and os.path.exists(os.path.join(banc_ok, NOM_PREVISIONS)))
+
+        print("\n— La commande —")
+        essai_cli = ("import runpy, sys, banc, banc_methodes\n"
+                     "def refuse(**_):\n    raise banc.CacheInvalide('un cache inventé pour l’essai')\n"
+                     "banc_methodes.lancer_la_mesure = refuse\n"
+                     "sys.argv = ['banc.py', '--mesurer', '--a-blanc']\n"
+                     "runpy.run_path(banc.__file__, run_name='__main__')\n")
+        r_cli = subprocess.run([sys.executable, "-c", essai_cli], cwd=banc.ROOT, capture_output=True,
+                               encoding="utf-8", timeout=120,
+                               env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONIOENCODING": "utf-8"})
+        ok("en commande, un cache refusé à l'étape 1 donne « Rien n'est calculé : … » et le code 1, pas une trace Python",
+           r_cli.returncode == 1 and "Rien n'est calculé : un cache inventé pour l’essai" in r_cli.stderr
+           and "Traceback" not in r_cli.stderr)
 
         print("\n— Le cache abîmé —")
         abime = os.path.join(racine, "abime")
@@ -1142,58 +1369,122 @@ def verifier():
     print("\n— Le rapport —")
     faux = copy.deepcopy(rap0)
     faux.update(apprentissage=appris0, a_blanc=False)
+    for nom in [TOUT] + faux["annees"]:                # au départ, aucun « vu » nulle part
+        for m in METHODES:
+            for cle in ("tirage", "monte"):
+                faux["resultats"][nom][m]["face"][cle].update(vu=False, vu_dessous=False)
+            faux["resultats"][nom][m]["passe"] = False
+            if m in CANDIDATES:
+                faux["resultats"][nom][m]["face"]["sens_du_jour"]["vu"] = False
     x = faux["resultats"][TOUT]["a"]
-    x.update(baisse=0.431, bonnes=0.512, tirage=0.5088, monte=0.5201, barre=0.5291, passe=False)
-    x["face"]["tirage"].update(ecart=0.0032, seuil=0.0037, vu=False, vu_dessous=False)
-    x["face"]["monte"].update(ecart=-0.0081, seuil=0.0090, vu=False, vu_dessous=False)
+    x.update(baisse=0.431, bonnes=0.512, tirage=0.5088, monte=0.5201, barre=0.5291)
+    x["face"]["tirage"].update(ecart=0.0032, seuil=0.0037)
+    x["face"]["monte"].update(ecart=-0.0081, seuil=0.0090)
+    xb = faux["resultats"][TOUT]["b"]
+    xb.update(bonnes=0.531, tirage=0.5300, monte=0.5201, barre=0.5340)
+    xb["face"]["tirage"].update(seuil=0.0040)
+    xb["face"]["monte"].update(seuil=0.0020)
+    an1, an2 = faux["annees"]
+    faux["resultats"][an1]["a"]["monte"], faux["resultats"][an2]["a"]["monte"] = 0.511, 0.533
+    faux["resultats"][an1]["a"]["face"]["tirage"].update(ecart=0.0123, vu=True)       # vu face au tirage SEUL
+    faux["resultats"][an2]["b"]["face"]["tirage"].update(ecart=0.0234, vu=True)
+    faux["resultats"][an2]["b"]["face"]["monte"].update(vu=True)
+    faux["resultats"][an2]["b"]["passe"] = True                                       # vu face aux deux
     texte = rendu(faux)
     ligne_a = next((l for l in texte.splitlines() if l.strip().startswith("a. le score technique ")), "")
     ok("la ligne de a : « baisse » 43,1 %, bonnes réponses 51,20 %, +0,32 (−0,05) face au tirage, −0,81 (−1,71) "
        "face à « ça monte », « ne passe pas »",
        "43,1 %" in ligne_a and "51,20 %" in ligne_a and "+0,32 (−0,05)" in ligne_a and "−0,81 (−1,71)" in ligne_a
        and ligne_a.rstrip().endswith("ne passe pas"))
-    ok("la barre de a : « il lui fallait plus de 52,91 % de bonnes réponses ; elle en a eu 51,20 % », et le test "
-       "voyait les écarts de plus de 0,37 point",
-       "a. le score technique : il lui fallait plus de 52,91 % de bonnes réponses ; elle en a eu 51,20 %. Face au "
-       "tirage seul, le test voyait les écarts de plus de 0,37 point." in texte)
+    ok("la barre de a, et ce que le test voyait face à chaque repère : la barre vient de « ça monte toujours » "
+       "(52,01 % + 0,90 = 52,91 %, plus haut que 50,88 % + 0,37)",
+       "a. le score technique : il lui fallait plus de 52,91 % de bonnes réponses ; elle en a eu 51,20 %. Le test "
+       "voyait les écarts de plus de 0,37 point face au tirage (50,88 %) et de plus de 0,90 point face à « ça monte "
+       "toujours » (52,01 %) : la barre vient de « ça monte toujours »." in texte)
+    ok("… et celle de b vient du tirage (53,00 % + 0,40 = 53,40 %, plus haut que 52,01 % + 0,20)",
+       "b. le momentum 12-1 : il lui fallait plus de 53,40 % de bonnes réponses ; elle en a eu 53,10 %. Le test "
+       "voyait les écarts de plus de 0,40 point face au tirage (53,00 %) et de plus de 0,20 point face à « ça monte "
+       "toujours » (52,01 %) : la barre vient du tirage." in texte)
+    ok("les seuils portent sur l'écart OBSERVÉ : un écart vrai de cette taille n'est vu qu'une fois sur deux, il en "
+       "faut environ 1,36 fois plus pour l'être 8 fois sur 10",
+       "Ces seuils portent sur l'écart OBSERVÉ : une méthode dont l'écart vrai vaut le seuil n'est vue qu'une fois "
+       "sur deux ; pour l'être 8 fois sur 10, il lui faut environ 1,36 fois le seuil." in texte)
+    ok("« ça monte toujours » : son chiffre sur les 2 ans (52,01 %), puis année par année (51,1 % et 53,3 %)",
+       "   « Ça monte toujours » : 52,01 % de bonnes réponses." in texte
+       and f"« ça monte » : {an1} 51,1 %, {an2} 53,3 %." in texte)
+    annees_txt = texte.split("2. ANNÉE PAR ANNÉE")[1].split("3. FACE")[0]
+    ligne_a2 = next((l for l in annees_txt.splitlines() if l.strip().startswith("a. le score technique")), "")
+    ligne_b2 = next((l for l in annees_txt.splitlines() if l.strip().startswith("b. le momentum")), "")
+    ok("année par année, « vu » seulement face aux DEUX repères : pas pour a (vue face au tirage seul, +1,23), "
+       "oui pour b (+2,34)", "+1,23" in ligne_a2 and "+1,23 vu" not in ligne_a2 and "+2,34 vu" in ligne_b2)
     ok("les écarts avec leur unité : +2,30 points, −0,45 point, −2,00 points",
        _ecart_pts(0.023) == "+2,30 points" and _ecart_pts(-0.0045) == "−0,45 point" and _ecart_pts(-0.02) == "−2,00 points")
     ok("aucune candidate ne passe : « le coffre reste fermé »",
        "Aucune candidate ne passe le critère 1 sur les 2 ans : le coffre reste fermé." in texte)
+    ok("aucune phrase des cas particuliers quand rien n'est vu",
+       "est vue face au tirage" not in texte and "EN DESSOUS du tirage" not in texte)
     x["face"]["tirage"]["vu"] = True
-    ok("vue face au tirage, pas face à « ça monte » : la phrase écrite d'avance (elle trie mieux que le hasard…), "
-       "et seulement dans ce cas",
-       "a. le score technique est vue face au tirage, pas face à « ça monte toujours »" in rendu(faux)
-       and "est vue face au tirage" not in texte)
+    texte_vue = rendu(faux)
+    x["face"]["monte"]["vu_dessous"] = True
+    texte_dessous = rendu(faux)
+    x["face"]["tirage"]["vu"] = x["face"]["monte"]["vu_dessous"] = False
+    ok("vue face au tirage, pas face à « ça monte » : la phrase écrite d'avance (« à peu près aussi bien »), ou "
+       "« nettement mieux » si elle est nettement en dessous de « ça monte toujours »",
+       "a. le score technique est vue face au tirage, pas face à « ça monte toujours » : elle reconnaît mieux que le "
+       "hasard les lendemains de hausse, mais dire « hausse » partout fait à peu près aussi bien. Elle ne passe pas. "
+       "Le biais du survivant suffit à produire ce cas : les 49 valeurs ont été choisies en 2026." in texte_vue
+       and "mais dire « hausse » partout fait nettement mieux. Elle ne passe pas." in texte_dessous)
+    xc = faux["resultats"][TOUT]["c"]
+    xc["face"]["tirage"]["vu_dessous"] = True
+    texte_c = rendu(faux)
+    xc["face"]["tirage"]["vu_dessous"] = False
+    ok("nettement EN DESSOUS du tirage : son contraire n'est pas une candidate (écrit d'avance)",
+       "c. la régression logistique est nettement EN DESSOUS du tirage au sort : son contraire ferait mieux que le "
+       "hasard, mais ce contraire n'est pas une candidate (il n'a pas été choisi avant de regarder). Elle ne passe "
+       "pas." in texte_c)
     deux_passent = copy.deepcopy(faux)
     deux_passent["passent"], deux_passent["porte_a"] = ["c", "d"], True
     un_passe = copy.deepcopy(faux)
     un_passe["passent"], un_passe["porte_a"] = ["b"], True
-    ok("la porte A : les candidates qui passent, « pour elle » ou « pour elles »",
+    ok("la porte A : les candidates qui passent, « pour elle » ou « pour elles », et le biais du survivant qui a pu "
+       "les aider",
        "Passe le critère 1 : c. la régression logistique, d. le gradient boosting." in rendu(deux_passent)
-       and "s'ouvre pour elles" in rendu(deux_passent) and "s'ouvre pour elle," in rendu(un_passe))
+       and "s'ouvre pour elles, rien de plus : ça ne dit pas que l'argent suivrait (le critère 2), et le biais du "
+           "survivant a pu les aider" in rendu(deux_passent)
+       and "s'ouvre pour elle, rien de plus : ça ne dit pas que l'argent suivrait (le critère 2), et le biais du "
+           "survivant a pu l'aider" in rendu(un_passe))
     rebond = copy.deepcopy(faux)
     rebond["resultats"][TOUT]["hier"]["face"]["tirage"].update(ecart=-0.012, vu=False, vu_dessous=True)
     elan = copy.deepcopy(faux)
     elan["resultats"][TOUT]["hier"]["face"]["tirage"].update(ecart=0.012, vu=True, vu_dessous=False)
     neutre = copy.deepcopy(faux)
-    neutre["resultats"][TOUT]["hier"]["face"]["tirage"].update(ecart=0.001, vu=False, vu_dessous=False)
-    ok("« comme hier » : « rebond d'un jour » s'il est nettement en dessous du tirage, « élan d'un jour » "
-       "au-dessus, « rien de net » sinon",
-       "−1,20 point ; demain va nettement plus souvent dans l'autre sens (un rebond d'un jour)" in rendu(rebond)
-       and "(un élan d'un jour)" in rendu(elan) and "rien de net à 99 %" in rendu(neutre))
+    neutre["resultats"][TOUT]["hier"]["face"]["tirage"].update(ecart=0.001, seuil=0.0040, seuil_dessous=0.0045)
+    ok("« comme hier » : « rebond d'un jour » s'il est nettement en dessous du tirage, « élan d'un jour » au-dessus ; "
+       "sinon « rien de net », avec ce que le test voyait (le plus grand des deux seuils), sans dire que le sens du "
+       "jour ne dit rien",
+       "« Comme hier » face au tirage au sort : −1,20 point ; demain va nettement plus souvent dans l'autre sens (un "
+       "rebond d'un jour)." in rendu(rebond)
+       and "« Comme hier » face au tirage au sort : +1,20 point ; demain va nettement plus souvent dans le même sens "
+           "qu'aujourd'hui (un élan d'un jour)." in rendu(elan)
+       and "« Comme hier » face au tirage au sort : +0,10 point ; rien de net à 99 % : le test ne voyait que les "
+           "écarts de plus de 0,45 point, dans un sens ou dans l'autre." in rendu(neutre))
     sens = copy.deepcopy(faux)
-    sens["resultats"][TOUT]["c"]["face"]["sens_du_jour"].update(ecart=0.0042, vu=True, vu_dessous=False)
-    sens["resultats"][TOUT]["d"]["face"]["sens_du_jour"].update(ecart=-0.0063, vu=False, vu_dessous=True)
-    sens["resultats"][TOUT]["b"]["face"]["sens_du_jour"].update(ecart=0.0011, vu=False, vu_dessous=False)
+    sens["resultats"][TOUT]["c"]["face"]["sens_du_jour"].update(ecart=0.0042, borne=0.0011, vu=True)
+    sens["resultats"][TOUT]["d"]["face"]["sens_du_jour"].update(ecart=-0.0063, borne=-0.0102, vu=False)
+    sens["resultats"][TOUT]["b"]["face"]["sens_du_jour"].update(ecart=0.0011, borne=-0.0030, vu=False)
     texte_sens = rendu(sens)
-    ok("face au sens du jour : « nettement mieux » (c, +0,42 point), « nettement moins bien » (d, −0,63 point), "
-       "« pas d'écart net » (b)",
-       "c. la régression logistique : +0,42 point (elle fait nettement mieux que le sens du jour)." in texte_sens
-       and "d. le gradient boosting : −0,63 point (elle fait nettement moins bien que le sens du jour)." in texte_sens
-       and "b. le momentum 12-1 : +0,11 point (pas d'écart net avec le sens du jour)." in texte_sens)
-    ok("le rapport rappelle le biais du survivant et finit par « pas une prévision ni un conseil »",
-       "biais du survivant" in texte and texte.endswith("Des faits sur le passé, pas une prévision ni un conseil."))
+    ok("face au sens du jour : la moins bonne des deux comparaisons et sa borne ; « nettement mieux » (c) seulement "
+       "si elle est vue face aux deux, sinon « pas nettement mieux » (d, et b malgré son écart positif), jamais "
+       "« moins bien »",
+       "c. la régression logistique : +0,42 point (+0,11) : nettement mieux que le sens du jour, dans un sens comme "
+       "dans l'autre." in texte_sens
+       and "d. le gradient boosting : −0,63 point (−1,02) : pas nettement mieux que le sens du jour." in texte_sens
+       and "b. le momentum 12-1 : +0,11 point (−0,30) : pas nettement mieux que le sens du jour." in texte_sens
+       and "moins bien que le sens du jour" not in texte_sens)
+    ok("le rapport rappelle le biais du survivant, dans les deux sens (« ça monte toujours » et une méthode), et "
+       "finit par « pas une prévision ni un conseil »",
+       "« Ça monte toujours » en est flatté ; une méthode peut l'être aussi" in texte
+       and texte.endswith("Des faits sur le passé, pas une prévision ni un conseil."))
 
     print(f"\n{sum(cas)}/{len(cas)} vérifications réussies (étape 1)")
     return all(cas)
