@@ -727,10 +727,10 @@ def lire_journalier(valeurs, dossier=CACHE_JOURNALIER):
 
 
 def csv_des_barres(barres):
-    """Le CSV des barres lues : valeur, heure (UTC, écrite en entier avec son fuseau), open, close, sans perte (repr)."""
+    """Le CSV des barres lues : valeur, heure (UTC, écrite en entier avec son fuseau), Open, Close, sans perte (repr)."""
     sortie = io.StringIO()
     w = csv.writer(sortie, lineterminator="\n")
-    w.writerow(["valeur", "heure", "open", "close"])
+    w.writerow(["valeur", "heure", "Open", "Close"])
     for v in sorted(barres):
         d = barres[v]
         for t, o, c in zip(d.index.tz_convert("UTC"), d["Open"].to_numpy(dtype=float), d["Close"].to_numpy(dtype=float)):
@@ -742,7 +742,6 @@ def relire_barres(chemin=BARRES):
     """Les barres d'un fichier écrit par `ecrire` : {valeur: DataFrame (Open, Close, index en UTC)}."""
     d = pd.read_csv(chemin, float_precision="round_trip", dtype={"valeur": str, "heure": str})
     d.index = pd.DatetimeIndex(pd.to_datetime(d["heure"], utc=True))
-    d = d.rename(columns={"open": "Open", "close": "Close"})
     return {v: g[["Open", "Close"]] for v, g in d.groupby("valeur", sort=True)}
 
 
@@ -1117,7 +1116,8 @@ def verifier():
                open(os.path.join(dossier, "b.csv.gz"), "rb").read() == octets)
             avec_jour = pd.read_csv(cb, dtype=str)
             ok("le fichier des barres garde l'heure en UTC avec son fuseau, et les prix sans perte",
-               avec_jour["heure"].iloc[0].endswith("+00:00") and avec_jour["open"].iloc[0] == "100.0")
+               list(avec_jour.columns) == ["valeur", "heure", "Open", "Close"]
+               and avec_jour["heure"].iloc[0].endswith("+00:00") and avec_jour["Open"].iloc[0] == "100.0")
 
             # Les textes de cette mesure, écrits à la main.
             ok("texte : la pastille", t.get("pastille") == f"22 séances")
