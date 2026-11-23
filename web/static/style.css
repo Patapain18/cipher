@@ -1803,6 +1803,21 @@ body.vue3d-active { overflow: hidden; }
     font-size: 12px;
   }
 }
+/* À 320 px, les 238 px du cadre : un corps plus petit et les mots longs
+   coupés (« Mouve-ment », lang="fr"), pour garder la colonne des 50 €. */
+@media (max-width: 359px) {
+  .seance-table[data-cle="fenetres"] th,
+  .seance-table[data-cle="fenetres"] td {
+    font-size: 13px;
+    padding-left: 3px;
+    padding-right: 3px;
+  }
+  .seance-table[data-cle="fenetres"] thead th {
+    font-size: 11px;
+    hyphens: auto;
+    -webkit-hyphens: auto;
+  }
+}
 /* Les heures d'une fenêtre, sous son nom : plus discrètes, sans majuscules. */
 .seance-precision {
   display: block;

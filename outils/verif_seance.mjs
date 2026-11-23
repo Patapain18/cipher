@@ -133,8 +133,10 @@ for (const moteur of ['chromium', 'webkit']) {
           sonde.remove();
           const rouges = [...s.querySelectorAll('*')].filter((el) => getComputedStyle(el).color === rougeCalc).length;
           const resumes = [...s.querySelectorAll('summary')].map((e) => Math.round(e.getBoundingClientRect().height));
+          const f = s.querySelector('.seance-table[data-cle="fenetres"]');
           return { h: Math.round(r.height), dehors: dehors.slice(0, 4), texte: s.innerText,
-            defile: cadres.filter((c) => c.scrollWidth > c.clientWidth).length, rouges, resumes };
+            defile: cadres.filter((c) => c.scrollWidth > c.clientWidth).length, rouges, resumes,
+            fenetres: [f.scrollWidth, f.clientWidth] };
         });
         const ou = `${moteur} ${taille} ${etat}`;
         if (config.hasTouch && etat === 'ferme') {
@@ -142,6 +144,13 @@ for (const moteur of ['chromium', 'webkit']) {
         }
         ok(!m.dehors.length, `${ou} : rien ne dépasse de la carte (h ${m.h} px${m.defile ? `, ${m.defile} tableau(x) défile(nt) dans leur cadre` : ''})${m.dehors.length ? ' — ' + m.dehors.join(', ') : ''}`);
         ok(m.rouges === 0, `${ou} : aucun texte rouge (${m.rouges})`);
+        ok(m.fenetres[0] <= m.fenetres[1], `${ou} : le tableau des fenêtres tient dans son cadre, sans défiler (${m.fenetres[0]} / ${m.fenetres[1]} px)`);
+        if (etat === 'ferme') {
+          // Les mots du plan se lisent SANS ouvrir le détail (relecture du 23/11).
+          const lu = espaces(m.texte);
+          const mots = ['prise au hasard', 'hausses et les baisses mêlées', 'savoir d\'avance', 'un sondage'];
+          ok(mots.every((x) => lu.includes(x)), `${ou} : les mots du plan visibles détail fermé (${mots.filter((x) => !lu.includes(x)).join(', ') || 'tous'})`);
+        }
         if (etat === 'ouvert' && (taille === 'ordi' || taille === 'etroit')) {
           const c = await lireCases(page);
           ok(pareil(c.entetes, attenduEntetes), `${ou} : les en-têtes du tableau des fenêtres${pareil(c.entetes, attenduEntetes) ? '' : ' — lu ' + JSON.stringify(c.entetes)}`);
@@ -250,6 +259,11 @@ const json = (data, status = 200) => (route) => route.fulfill({ status, contentT
 const piegee = JSON.parse(JSON.stringify(vraie));
 piegee.data.textes.notes[0] = '<img src=x onerror="window.__piege=1">';
 piegee.data.textes.valeurs[0].valeur = '<b>X</b>';
+const quarante8 = JSON.parse(JSON.stringify(vraie));
+quarante8.data.textes.valeurs.pop();
+const sansTextes = { ok: true, data: { etat: 'mesure', date_mesure: vraie.data.date_mesure } };
+const autreForme = JSON.parse(JSON.stringify(vraie));
+autreForme.data.textes.lignes = 'pas une liste';
 const cas = [
   ['ancien serveur (404)', (route) => route.fulfill({ status: 404, contentType: 'text/html', body: '<h1>404</h1>' }),
     ['Le mur des frais pendant la séance s\'affichera quand l\'appli sera relancée : son serveur ne connaît pas encore cette section.']],
@@ -264,6 +278,11 @@ const cas = [
   ['mesure illisible', json({ ok: true, data: { etat: 'illisible', detail: 'ce n\'est pas du JSON valide', message: 'La mesure du mur des frais pendant la séance est illisible (ce n\'est pas du JSON valide).' } }),
     ['La mesure du mur des frais pendant la séance est illisible (ce n\'est pas du JSON valide).']],
   ['une donnée piégée', json(piegee), ['<img src=x onerror="window.__piege=1">', '<b>X</b>']],
+  ['48 valeurs', json(quarante8), [T.legende]],
+  ['une mesure sans ses textes', json(sansTextes),
+    ['Le mur des frais pendant la séance est indisponible pour l\'instant (la réponse du serveur n\'a pas la forme attendue : relance l\'appli).']],
+  ['des textes d\'une autre forme', json(autreForme),
+    ['la réponse du serveur n\'a pas la forme attendue : relance l\'appli']],
 ];
 const navigateur = await chromium.launch({ channel: 'chrome' });
 try {
@@ -277,7 +296,10 @@ try {
     ok(!manque.length, `fabriqué, ${nom} : ${manque.length ? 'MANQUE « ' + manque.join(' » « ') + ' » — lu : ' + texte.slice(0, 260) : 'la section le dit'}`);
     const sansErreur = erreurs.filter((e) => !/404|500|502|ERR_FAILED|Failed to load resource/.test(e));
     ok(!sansErreur.length, `fabriqué, ${nom} : console sans erreur de script${sansErreur.length ? ' — ' + sansErreur.join(' | ') : ''}`);
-    if (nom !== 'une donnée piégée') {
+    if (nom === '48 valeurs') {
+      const n = await page.$$eval('#seance .seance-table[data-cle="valeurs"] tbody tr', (l) => l.length);
+      ok(n === T.valeurs.length - 1, `fabriqué, ${nom} : ${n} lignes dans le tableau des valeurs`);
+    } else if (nom !== 'une donnée piégée') {
       const pastille = await page.$eval('#seance-date', (e) => getComputedStyle(e).display);
       ok(pastille === 'none', `fabriqué, ${nom} : pas de pastille vide (display ${pastille})`);
     } else {

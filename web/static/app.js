@@ -1559,8 +1559,13 @@ async function renderSeance() {
       try { json = await res.json(); } catch { throw new Error(`réponse illisible du serveur (${res.status})`); }
       if (!json.ok) throw new Error(json.error || 'erreur inconnue');
       if (json.data?.etat === 'mesure') {
+        /* Une réponse d'une autre forme (un serveur qui garde en mémoire une
+           ancienne version de seance.py) : un message en français, jamais une
+           erreur de JavaScript en anglais, ni une section bloquée. */
+        try { html = htmlSeance(json.data.textes); } catch {
+          throw new Error('la réponse du serveur n\'a pas la forme attendue : relance l\'appli');
+        }
         s = json.data;
-        html = htmlSeance(s.textes);
       } else {
         /* Une mesure absente ou illisible : le message vient du serveur. */
         html = `<p class="seance-attente">${esc(json.data?.message || 'La mesure n\'est pas lisible pour l\'instant.')}</p>`;
@@ -1577,7 +1582,7 @@ async function renderSeance() {
   }
   if (etat) etat.textContent = '';
   if (ancien && seanceLue) return;                   // un 404 après une vraie lecture : on la garde
-  $('#seance-date').textContent = s ? s.textes.pastille : '';
+  $('#seance-date').textContent = (s && typeof s.textes.pastille === 'string') ? s.textes.pastille : '';
   if (html === seanceDernierHtml) return;            // rien n'a changé : on ne touche à rien
 
   // On garde ce que tu as ouvert, la place du clavier et le défilement des tableaux.

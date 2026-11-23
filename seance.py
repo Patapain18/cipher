@@ -53,7 +53,9 @@ LANCER (avec /usr/bin/python3 : pandas et numpy sont dans le dossier de l'utilis
 """
 
 import argparse
+import contextlib
 import csv
+import fcntl
 import gzip
 import hashlib
 import io
@@ -120,6 +122,14 @@ MOIS = ("janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août
 
 class MesureIllisible(ValueError):
     """La mesure écrite n'a pas la forme attendue ; le message dit pourquoi, en français."""
+
+
+class MesureEnCours(RuntimeError):
+    """Une autre mesure est déjà en cours (deux `--mesurer` en même temps)."""
+
+
+class EcritureCoupee(OSError):
+    """Les nouvelles barres sont en place, mais pas la mesure qui va avec : elle est à refaire."""
 
 
 def _insecables(texte):
@@ -440,10 +450,10 @@ def valider(m):
     return m
 
 
-def lire(chemin=MESURE):
+def lire(chemin=None):
     """La mesure écrite, vérifiée (MesureIllisible sinon ; FileNotFoundError si elle n'existe pas)."""
     try:
-        with open(chemin, encoding="utf-8") as f:
+        with open(chemin or MESURE, encoding="utf-8") as f:
             m = json.load(f)
     except UnicodeDecodeError:
         raise MesureIllisible("ce n'est pas du texte UTF-8") from None
@@ -599,7 +609,8 @@ def textes(m):
         f"{texte_part(v['max'][0], v['max'][1])} selon la période de {v['periode']} séances, entre "
         f"{texte_mois(date.fromisoformat(v['debut']))} et {texte_mois(date.fromisoformat(v['fin']))}.")
     notes = [
-        "Le mouvement médian mêle les hausses et les baisses : un achat suivi d'une vente ne gagne que sur une hausse.",
+        "Le mouvement médian compte les hausses et les baisses mêlées : un achat suivi d'une vente ne gagne que sur une "
+        "hausse.",
         f"{s} séances seulement (Yahoo ne garde pas les barres de 5 minutes plus longtemps), et les {nv} valeurs "
         f"bougent ensemble : un sondage, pas une loi.{periode}",
         f"En dollars, aux cours de New York. L'écart du courtier, vu à {texte_pct(m['ecart'], 1)} un matin, n'a pas "
@@ -608,7 +619,8 @@ def textes(m):
         "commence une heure plus tôt à Paris : les fenêtres suivent New York.",
     ]
     if m["refusees"]:
-        notes.append(f"Yahoo n'a pas donné les barres de {_liste(sorted(m['refusees']))} : la mesure porte sur {nv} valeurs.")
+        notes.append(f"Les barres de {_liste(sorted(m['refusees']))} n'ont pas pu être mesurées : la mesure porte sur "
+                     f"{nv} valeurs.")
     notes.append(f"Mesuré le {texte_moment(m['date_mesure'])}, sur les barres de 5 minutes de Yahoo. Des faits sur "
                  "le passé, pas une prévision ni un conseil.")
     t = {
@@ -665,7 +677,7 @@ def rapport(m):
                       + ", ".join(f"{n} « {f} »" for f, n in comptes.items()))
     if not m["retirees_par_jour"]:
         lignes.append("  aucune")
-    lignes.append("Valeurs refusées par Yahoo : " + (", ".join(f"{k} ({r})" for k, r in m["refusees"].items()) or "aucune"))
+    lignes.append("Valeurs pas mesurées : " + (", ".join(f"{k} ({r})" for k, r in m["refusees"].items()) or "aucune"))
     v = m["variation"]
     if v:
         lignes.append(f"Variation (cache journalier, {v['valeurs']} valeurs, du {v['debut']} au {v['fin']}, par "
@@ -745,8 +757,16 @@ def relire_barres(chemin=BARRES):
     return {v: g[["Open", "Close"]] for v, g in d.groupby("valeur", sort=True)}
 
 
-def _ecrire_atomique(chemin, donnees):
-    """Un fichier temporaire au nom unique dans le même dossier, puis os.replace : jamais un fichier à moitié écrit."""
+def _effacer(chemin):
+    """Retire un fichier temporaire à nous (s'il est encore là)."""
+    try:
+        os.unlink(chemin)
+    except FileNotFoundError:
+        pass
+
+
+def _temporaire(chemin, donnees):
+    """Écrit `donnees` en entier dans un fichier temporaire au nom unique, dans le dossier de `chemin`."""
     dossier = os.path.dirname(chemin)
     os.makedirs(dossier, exist_ok=True)
     fd, temporaire = tempfile.mkstemp(dir=dossier, prefix=".seance-", suffix=".tmp")
@@ -755,11 +775,10 @@ def _ecrire_atomique(chemin, donnees):
             f.write(donnees)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(temporaire, chemin)
     except BaseException:
-        if os.path.exists(temporaire):
-            os.unlink(temporaire)
+        _effacer(temporaire)
         raise
+    return temporaire
 
 
 def provenance():
@@ -781,25 +800,79 @@ def provenance():
 def ecrire(mesure, barres, chemin_mesure=MESURE, chemin_barres=BARRES):
     """
     Écrit les barres des valeurs mesurées (gzip sans date d'écriture : les mêmes
-    barres donnent les mêmes octets), puis la mesure avec le md5 du CSV
-    décompressé. Renvoie la mesure écrite.
+    barres donnent les mêmes octets) et la mesure, qui garde le md5 du CSV
+    décompressé des barres. Renvoie la mesure écrite.
+    Les deux fichiers sont d'abord écrits EN ENTIER à côté (fichiers
+    temporaires), puis mis en place l'un après l'autre par os.replace : un
+    disque plein ou une erreur en route laisse l'ancienne paire intacte. Si
+    seule la seconde mise en place échoue, les barres sont nouvelles et la
+    mesure ancienne : EcritureCoupee le dit, et `--afficher` voit l'écart des md5.
     """
     donnees = csv_des_barres({v: barres[v] for v in mesure["valeurs"]}).encode("utf-8")
     mesure = dict(mesure, md5_barres=hashlib.md5(donnees).hexdigest())
     valider(mesure)
-    _ecrire_atomique(chemin_barres, gzip.compress(donnees, mtime=0))
-    _ecrire_atomique(chemin_mesure, (json.dumps(mesure, ensure_ascii=False, indent=1) + "\n").encode("utf-8"))
+    temp_barres = _temporaire(chemin_barres, gzip.compress(donnees, mtime=0))
+    try:
+        temp_mesure = _temporaire(chemin_mesure, (json.dumps(mesure, ensure_ascii=False, indent=1) + "\n").encode("utf-8"))
+    except BaseException:
+        _effacer(temp_barres)
+        raise
+    try:
+        os.replace(temp_barres, chemin_barres)
+    except BaseException:
+        _effacer(temp_barres)
+        _effacer(temp_mesure)
+        raise
+    try:
+        os.replace(temp_mesure, chemin_mesure)
+    except BaseException as e:
+        _effacer(temp_mesure)
+        raise EcritureCoupee(f"les nouvelles barres sont en place, mais pas la mesure qui va avec ({e}) : "
+                             "refais python3 seance.py --mesurer") from e
     return mesure
+
+
+def barres_assorties(mesure, chemin_barres=None):
+    """
+    Le fichier des barres va-t-il avec la mesure (le md5 de son CSV décompressé) ?
+    True, False, ou None s'il n'existe pas.
+    """
+    chemin_barres = chemin_barres or BARRES
+    if not os.path.exists(chemin_barres):
+        return None
+    try:
+        with gzip.open(chemin_barres, "rb") as f:
+            donnees = f.read()
+    except (OSError, EOFError):
+        return False
+    return hashlib.md5(donnees).hexdigest() == mesure["md5_barres"]
+
+
+@contextlib.contextmanager
+def verrou(chemin):
+    """Une seule mesure à la fois : un second `--mesurer` lancé pendant la première est refusé (MesureEnCours)."""
+    os.makedirs(os.path.dirname(chemin), exist_ok=True)
+    with open(chemin, "w") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise MesureEnCours("une autre mesure est déjà en cours") from None
+        yield
 
 
 def faire_la_mesure(tickers, maintenant=None, chemin_mesure=MESURE, chemin_barres=BARRES,
                     dossier_journalier=CACHE_JOURNALIER, dormir=time.sleep):
-    """Yahoo, puis la mesure, puis l'écriture. ValueError (et rien d'écrit) s'il n'y a pas assez de barres."""
+    """
+    Yahoo, puis la mesure, puis l'écriture, sous un verrou (le fichier
+    « seance.json.verrou », à côté de la mesure). ValueError (et rien d'écrit)
+    s'il n'y a pas assez de barres ; MesureEnCours si une autre mesure tourne.
+    """
     maintenant = maintenant or datetime.now(timezone.utc)
-    barres, refusees = lire_barres(tickers, dormir=dormir)
-    mesure = mesurer(barres, maintenant, refusees, lire_journalier(sorted(barres), dossier_journalier))
-    mesure.update(provenance())
-    return ecrire(mesure, barres, chemin_mesure, chemin_barres)
+    with verrou(f"{chemin_mesure}.verrou"):
+        barres, refusees = lire_barres(tickers, dormir=dormir)
+        mesure = mesurer(barres, maintenant, refusees, lire_journalier(sorted(barres), dossier_journalier))
+        mesure.update(provenance())
+        return ecrire(mesure, barres, chemin_mesure, chemin_barres)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -925,6 +998,18 @@ def verifier():
        dict(r["mouvements"]["ouverture"]) == {J1: 102.0 / 100.0 - 1, J2: 101.0 / 100.0 - 1}
        and not any(r["retirees"][f] for f in FENETRES))
 
+    hors = preparer(faire({J1: {**plate(), 565: (1.0, 1.0), 571: (1.0, 1.0), 960: (1.0, 1.0)}}))
+    ok("des barres hors de la grille (9 h 25, 9 h 31, 16 h) sont ignorées : les 78 de la séance restent",
+       sorted(hors[J1]) == GRILLE)
+    with tempfile.TemporaryDirectory(prefix="seance-csv-") as dc:
+        chemin_csv = os.path.join(dc, "b.csv.gz")
+        with open(chemin_csv, "wb") as f:
+            f.write(gzip.compress(csv_des_barres({"VAA": en_utc}).encode("utf-8"), mtime=0))
+        relu = relire_barres(chemin_csv)["VAA"]
+        ok("le fichier des barres, écrit puis relu de part et d'autre du 01/11 (−04:00 puis −05:00) : les mêmes mouvements",
+           mouvements(preparer(relu), [J1, J2]) == mouvements(preparer(en_utc), [J1, J2])
+           and list(relu["Open"]) == list(en_utc["Open"]))
+
     # 7. Deux barres à la même heure, des heures sans fuseau : la valeur est refusée.
     double = pd.concat([en_utc.iloc[:3], en_utc.iloc[:1]])
     for nom, df, raison in (("deux barres à la même heure", double, "deux barres à la même heure"),
@@ -1028,6 +1113,17 @@ def verifier():
     ok("variation : moins de séances que la période, None", variation(cache, S200, periode=6) is None)
     ok("variation : une seule période de 5 séances, 4 hausses sur 9 (B n'a pas le 09/01)",
        variation(cache, S200, periode=5)["min"] == [4, 9, "2026-01-09"] == variation(cache, S200, periode=5)["max"])
+    j61 = [d.date() for d in pd.bdate_range("2026-01-05", periods=61)]
+    hausse30 = pd.DataFrame({"Open": [100.0] * 61, "Close": [102.0] * 30 + [100.0] * 31}, index=pd.Index(j61))
+    cache_v = {v: hausse30 for v in valeurs}
+    cache_v["VZZ"] = pd.DataFrame({"Open": [100.0] * 61, "Close": [102.0] * 61}, index=pd.Index(j61))
+    avec_vzz = dict(synth, VZZ=faire({aujourd_hui: plate()}))           # VZZ n'a que des barres d'aujourd'hui : refusée
+    mv = mesurer(avec_vzz, maintenant, journalier=cache_v)
+    # 45 valeurs × 60 séances = 2 700 ; +2 % les 30 premières séances : 1 350 hausses, puis 1 305 (29 × 45).
+    ok("mesure : la variation, sur les 45 valeurs mesurées (pas VZZ, refusée), au seuil de 200 €",
+       mv["variation"] == {"debut": "2026-01-05", "fin": j61[-1].isoformat(), "periode": 60, "valeurs": 45,
+                           "min": [1305, 2700, j61[-1].isoformat()], "max": [1350, 2700, j61[-2].isoformat()],
+                           "mediane": float((Fraction(1305, 2700) + Fraction(1350, 2700)) / 2)})
     nul = {"A": jour_([0, 100, 100, 100, 100], [102, 102, 100, 100, 100])}
     ok("variation : une ouverture nulle est écartée (1 hausse sur 4, pas 2 sur 5)",
        variation(nul, S200, periode=5)["min"] == [1, 4, "2026-01-09"])
@@ -1076,6 +1172,7 @@ def verifier():
     class FauxTicker:
         appels = {}
         refus = set()
+        vides = set()
 
         def __init__(self, t):
             self.t = t
@@ -1086,6 +1183,8 @@ def verifier():
                 raise ValueError("mauvaise demande")
             if self.t in FauxTicker.refus:
                 raise TypeError("'NoneType' object is not subscriptable")
+            if self.t in FauxTicker.vides:
+                return synth[self.t].iloc[:0]
             return synth[self.t].assign(High=1.0, Low=1.0, Volume=0)
 
     ancien_yf = sys.modules.get("yfinance")
@@ -1131,13 +1230,29 @@ def verifier():
                t.get("colonnes") == ["Fenêtre", "Mouvement médian", f"Une hausse de plus de 1,106{n_}% (200{n_}€)",
                                      f"De plus de 4,186{n_}% (50{n_}€)"])
             lignes_ = t.get("lignes", [])
-            ok("texte : les cinq lignes, dans l'ordre, avec leur médiane et leurs parts",
-               [(x["cle"], x["mediane"], x["parts"]) for x in lignes_] == [
-                   ("ouverture", f"1,50{n_}%", [f"50,0{n_}%", f"0{n_}%"]),
-                   ("suivantes", f"0,00{n_}%", [f"0{n_}%", f"0{n_}%"]),
-                   ("quart", f"0,00{n_}%", [f"1,9{n_}%", f"0{n_}%"]),
-                   ("tranche", f"0,00{n_}%", [f"2,1{n_}%", f"0{n_}%"]),
-                   ("seance", f"1,50{n_}%", [f"50,0{n_}%", f"0{n_}%"])])
+            h_ouv, h_suiv, h_seance = (f"15{n_}h{n_}30{n_}– 15{n_}h{n_}45", f"15{n_}h{n_}45{n_}– 16{n_}h{n_}30",
+                                       f"15{n_}h{n_}30{n_}– 22{n_}h")
+            ok("texte : les cinq lignes, dans l'ordre : nom, heures, médiane et parts",
+               [(x["cle"], x["nom"], x["precision"], x["mediane"], x["parts"]) for x in lignes_] == [
+                   ("ouverture", "Le premier quart d'heure", h_ouv, f"1,50{n_}%", [f"50,0{n_}%", f"0{n_}%"]),
+                   ("suivantes", "Les 45 minutes suivantes", h_suiv, f"0,00{n_}%", [f"0{n_}%", f"0{n_}%"]),
+                   ("quart", "Un quart d'heure", "à tout moment", f"0,00{n_}%", [f"1,9{n_}%", f"0{n_}%"]),
+                   ("tranche", "45 minutes", "à tout moment", f"0,00{n_}%", [f"2,1{n_}%", f"0{n_}%"]),
+                   ("seance", "Toute la séance", h_seance, f"1,50{n_}%", [f"50,0{n_}%", f"0{n_}%"])])
+            ok("texte : les en-têtes du tableau des valeurs, dans l'ordre des fenêtres",
+               t.get("entete_valeur") == "Valeur" and t.get("detail") == "Valeur par valeur"
+               and [(c["nom"], c["precision"]) for c in t.get("colonnes_valeurs", [])] == [
+                   ("Le premier quart d'heure", h_ouv), ("Les 45 minutes suivantes", h_suiv),
+                   ("Un quart d'heure", "à tout moment"), ("45 minutes", "à tout moment"), ("Toute la séance", h_seance)])
+            pv = {f: dict(x["par_valeur"]) for f, x in mesure["fenetres"].items()}
+            for f, y in zip(FENETRES, (0.0101, 0.0202, 0.0303, 0.0404, 0.0505)):
+                pv[f]["VAA"] = y
+            pv["tranche"]["VAB"] = None
+            m6 = dict(mesure, fenetres={f: dict(x, par_valeur=pv[f]) for f, x in mesure["fenetres"].items()})
+            t6 = textes(m6)["valeurs"]
+            ok("texte : les cinq médianes d'une valeur, chacune dans sa colonne ; une médiane absente s'écrit « — »",
+               t6[0]["medianes"] == [f"1,01{n_}%", f"2,02{n_}%", f"3,03{n_}%", f"4,04{n_}%", f"5,05{n_}%"]
+               and t6[1]["medianes"][3] == "—")
             ok("texte : la conclusion",
                t.get("conclusion") == (f"Achetée au hasard avec 200{n_}€, une des 45 n'a donc rien rapporté 50,0{n_}% des fois "
                                        f"dans le premier quart d'heure, et 50,0{n_}% des fois sur la séance entière. Au moins "
@@ -1147,11 +1262,30 @@ def verifier():
                [x["valeur"] for x in t.get("valeurs", [])] == valeurs
                and t["valeurs"][0]["medianes"] == [f"1,50{n_}%", f"0,00{n_}%", f"0,00{n_}%", f"0,00{n_}%", f"1,50{n_}%"])
             notes_ = t.get("notes", [])
-            ok("texte : les notes (sans cache journalier : pas de variation ; la valeur refusée ; la date)",
-               len(notes_) == 6 and notes_[1] == (f"22 séances seulement (Yahoo ne garde pas les barres de 5 minutes plus "
-                                                  f"longtemps), et les 45 valeurs bougent ensemble{n_}: un sondage, pas une loi.")
-               and notes_[4] == f"Yahoo n'a pas donné les barres de VZZ{n_}: la mesure porte sur 45 valeurs."
-               and notes_[5].startswith(f"Mesuré le 2 octobre 2026 à 17{n_}h{n_}00, sur les barres"))
+            ok("texte : les six notes (sans cache journalier : pas de variation ; la valeur pas mesurée ; la date)",
+               notes_ == [
+                   f"Le mouvement médian compte les hausses et les baisses mêlées{n_}: un achat suivi d'une vente ne gagne "
+                   "que sur une hausse.",
+                   f"22 séances seulement (Yahoo ne garde pas les barres de 5 minutes plus longtemps), et les 45 valeurs "
+                   f"bougent ensemble{n_}: un sondage, pas une loi.",
+                   f"En dollars, aux cours de New York. L'écart du courtier, vu à 0,1{n_}% un matin, n'a pas été mesuré à "
+                   "l'ouverture, où il peut être plus large.",
+                   f"Les heures sont celles de Paris. Quelques semaines par an, au changement d'heure, la séance de New York "
+                   f"commence une heure plus tôt à Paris{n_}: les fenêtres suivent New York.",
+                   f"Les barres de VZZ n'ont pas pu être mesurées{n_}: la mesure porte sur 45 valeurs.",
+                   f"Mesuré le 2 octobre 2026 à 17{n_}h{n_}00, sur les barres de 5 minutes de Yahoo. Des faits sur le passé, "
+                   "pas une prévision ni un conseil."])
+            ok("texte : la légende du tableau des valeurs",
+               t.get("legende_valeurs") == "Le mouvement médian de chaque valeur, hausses et baisses mêlées, sur les 22 dernières séances.")
+            trois = textes(dict(mesure, refusees={"VZX": "a", "VZY": "b", "VZZ": "c"}))["notes"][4]
+            ok("texte : trois valeurs pas mesurées, « VZX, VZY et VZZ »",
+               trois == f"Les barres de VZX, VZY et VZZ n'ont pas pu être mesurées{n_}: la mesure porte sur 45 valeurs.")
+            un = textes(dict(mesure, ouverture_par_jour={"jours": 22, "avec_une": 1}))["conclusion"]
+            seul = textes(dict(mesure, ouverture_par_jour={"jours": 1, "avec_une": 0},
+                               fenetres=dict(mesure["fenetres"], ouverture=dict(mesure["fenetres"]["ouverture"], hausses=[0, 0]))))
+            ok("texte : « 1 jour sur 22 » et « sur 1 séance », au singulier",
+               "dès le premier quart d'heure 1 jour sur 22, mais" in un
+               and seul["conclusion"].endswith("Aucune n'a monté assez dès le premier quart d'heure, sur 1 séance."))
 
             # La variation, dite dans la note 2.
             m3 = dict(mesure, variation={"debut": "2016-09-06", "fin": "2026-09-03", "periode": 60, "valeurs": 49,
@@ -1168,6 +1302,28 @@ def verifier():
                       fenetres=dict(mesure["fenetres"], ouverture=dict(mesure["fenetres"]["ouverture"], hausses=[0, 0])))
             ok("texte : aucune hausse assez grande à l'ouverture",
                textes(m4)["conclusion"].endswith("Aucune n'a monté assez dès le premier quart d'heure, sur 22 séances."))
+
+            # Le rapport du terminal : les colonnes dans l'ordre, les comptes, les retirées, les valeurs pas mesurées.
+            rp = rapport(mesure).splitlines()
+            ligne_ouv = next((x for x in rp if x.startswith("  Le premier quart d'heure, ")), "")
+            ok("rapport : la ligne du premier quart d'heure (médiane, part à 200 €, part à 50 €, puis les comptes)",
+               re.fullmatch(rf"  Le premier quart d'heure, {h_ouv} +1,50{n_}% +50,0{n_}% +0{n_}%  495 et 0 hausses sur 990 "
+                            r"\(0 retirées\)", ligne_ouv) is not None)
+            ligne_q = next((x for x in rp if x.startswith("  Un quart d'heure, ")), "")
+            ok("rapport : la ligne des quarts d'heure", re.fullmatch(
+                rf"  Un quart d'heure, à tout moment +0,00{n_}% +1,9{n_}% +0{n_}%  495 et 0 hausses sur 25740 \(0 retirées\)",
+                ligne_q) is not None)
+            ok("rapport : aucune fenêtre retirée, et la valeur pas mesurée avec sa raison",
+               "  aucune" in rp and "Valeurs pas mesurées : VZZ (3 essais : 'NoneType' object is not subscriptable)" in rp)
+            m2r = dict(m2, commit="x", modifie=False, yfinance="y", md5_barres="0" * 32)
+            ok("rapport : les fenêtres retirées d'un jour, chacune avec son nom",
+               "  04/09/2026 : 1 « ouverture », 1 « suivantes », 26 « quart », 24 « tranche », 1 « seance »"
+               in rapport(m2r).splitlines())
+            mvr = dict(mv, commit="x", modifie=False, yfinance="y", md5_barres="0" * 32)
+            ok("rapport : la variation (la plus basse, puis la plus haute)",
+               f"Variation (cache journalier, 45 valeurs, du 2026-01-05 au {j61[-1].isoformat()}, par 60 séances) : de "
+               f"48,3{n_}% (période finie le {j61[-1].isoformat()}) à 50,0{n_}% (finie le {j61[-2].isoformat()}), médiane "
+               f"49,2{n_}%." in rapport(mvr).splitlines())
 
             # Les mots : aucun conseil, et ceux du plan.
             tous = [t["pastille"], t["intro"], t["legende"], t["conclusion"], t["legende_valeurs"], t["detail"],
@@ -1250,13 +1406,29 @@ def verifier():
                                                                        "valeurs": 49, "min": [9, 10, "2017-01-03"],
                                                                        "max": [1, 10, "2018-01-03"], "mediane": 0.2}), "envers"),
                     ("une empreinte bizarre", poser(["md5_barres"], "pas un md5"), "empreinte"),
-                    ("un écart du courtier de 15 %", poser(["ecart"], 0.15), "trop grand")):
+                    ("un écart du courtier de 15 %", poser(["ecart"], 0.15), "trop grand"),
+                    ("un jour retiré hors des séances", poser(["retirees_par_jour"], {"2026-08-03": {"quart": 1}}), "hors des séances"),
+                    ("une provenance d'un autre type", poser(["modifie"], "non"), "provenance"),
+                    ("un commit qui n'est pas du texte", poser(["commit"], 123), "provenance"),
+                    ("plus de jours d'ouverture que de séances", poser(["ouverture_par_jour", "jours"], 23), "ne suivent pas"),
+                    ("une variation avec plus de hausses que de comptes", poser(["variation"], {
+                        "debut": "2016-09-06", "fin": "2026-09-03", "periode": 60, "valeurs": 49,
+                        "min": [11, 10, "2017-01-03"], "max": [11, 10, "2018-01-03"], "mediane": 0.2}), "ne se tient pas"),
+                    ("une variation datée hors du cache", poser(["variation"], {
+                        "debut": "2016-09-06", "fin": "2026-09-03", "periode": 60, "valeurs": 49,
+                        "min": [1, 10, "2030-01-03"], "max": [2, 10, "2018-01-03"], "mediane": 0.2}), "ne se tient pas")):
                 abime(nom, changer, attendu)
             os.mkdir(os.path.join(dossier, "dossier.json"))
             s = section(os.path.join(dossier, "dossier.json"))
             ok("refusé, un dossier à la place du fichier", s["etat"] == "illisible" and s["detail"] == "ce n'est pas un fichier")
             s = section(os.path.join(dossier, "absent.json"))
             ok("absent : « pas encore mesuré », sans erreur", s["etat"] == "absent" and "pas encore mesuré" in s["message"])
+
+            FauxTicker.vides = {"VAB"}
+            vide = lire_barres(["VAA", "VAB"], dormir=lambda s: None)
+            FauxTicker.vides = set()
+            ok("Yahoo : une réponse vide trois fois, la valeur est refusée (« réponse vide »)",
+               list(vide[0]) == ["VAA"] and vide[1] == {"VAB": "3 essais : réponse vide"})
 
             # 13. Presque toutes les valeurs refusées : rien n'est écrit.
             FauxTicker.refus = set(valeurs[:5])
@@ -1279,6 +1451,86 @@ def verifier():
                     ok("une écriture qui échoue lève une erreur", True)
             ok("l'ancienne mesure reste entière, et aucun fichier temporaire ne traîne",
                open(cm, "rb").read() == avant and not [f for f in os.listdir(dossier) if f.startswith(".seance-")])
+            avant_b = open(cb, "rb").read()
+            with mock.patch("json.dumps", side_effect=OSError("disque plein")):
+                try:
+                    ecrire(mesure, synth, cm, cb)
+                    ok("la mesure qui ne s'écrit pas (disque plein) lève une erreur", False)
+                except OSError:
+                    ok("la mesure qui ne s'écrit pas (disque plein) lève une erreur", True)
+            ok("disque plein avant la mise en place : les deux anciens fichiers restent, aucun fichier temporaire",
+               open(cm, "rb").read() == avant and open(cb, "rb").read() == avant_b
+               and not [f for f in os.listdir(dossier) if f.startswith(".seance-")])
+            synth_x = dict(synth, VAA=synth["VAA"].assign(Open=synth["VAA"]["Open"] * 1.5, Close=synth["VAA"]["Close"] * 1.5))
+            mesure_x = dict(mesurer(synth_x, maintenant), commit="x", modifie=False, yfinance="y")
+            reel, vus = os.replace, []
+
+            def seconde_echoue(a, b):
+                vus.append(b)
+                if len(vus) == 2:
+                    raise OSError("disque plein")
+                return reel(a, b)
+
+            with mock.patch("os.replace", side_effect=seconde_echoue):
+                try:
+                    ecrire(mesure_x, synth_x, cm, cb)
+                    coupee = None
+                except EcritureCoupee as ex:
+                    coupee = str(ex)
+            ok("une mesure pas mise en place après les barres : EcritureCoupee, en français",
+               coupee is not None and coupee.startswith("les nouvelles barres sont en place, mais pas la mesure qui va avec"))
+            ok("…les barres nouvelles et la mesure ancienne se voient (empreintes différentes), aucun fichier temporaire",
+               open(cm, "rb").read() == avant and barres_assorties(json.loads(avant), cb) is False
+               and not [f for f in os.listdir(dossier) if f.startswith(".seance-")])
+            ecrire(mesure, synth, cm, cb)
+            ok("une paire écrite en entier va ensemble ; sans fichier des barres, on le sait",
+               barres_assorties(lire(cm), cb) is True and barres_assorties(lire(cm), os.path.join(dossier, "absent.gz")) is None)
+            try:
+                ecrire(dict(mesure, seances=19), synth, os.path.join(dossier, "c.json"), os.path.join(dossier, "c.csv.gz"))
+                ok("une mesure mal formée n'est jamais écrite", False)
+            except MesureIllisible:
+                ok("une mesure mal formée n'est jamais écrite (MesureIllisible, aucun fichier)",
+                   not os.path.exists(os.path.join(dossier, "c.json")) and not os.path.exists(os.path.join(dossier, "c.csv.gz")))
+            with verrou(os.path.join(dossier, "v.verrou")):
+                try:
+                    with verrou(os.path.join(dossier, "v.verrou")):
+                        pass
+                    ok("deux mesures en même temps : la seconde est refusée", False)
+                except MesureEnCours:
+                    ok("deux mesures en même temps : la seconde est refusée (MesureEnCours)", True)
+            with verrou(os.path.join(dossier, "v.verrou")):
+                ok("le verrou se rend à la fin de la mesure", True)
+
+            # 15. Les messages de la commande, en français (jamais une trace Python).
+            ici = sys.modules[__name__]
+
+            def commande(option, mesure_chemin, barres_chemin):
+                sortie = io.StringIO()
+                with mock.patch.object(ici, "MESURE", mesure_chemin), mock.patch.object(ici, "BARRES", barres_chemin), \
+                        mock.patch.object(sys, "argv", ["seance.py", option]), contextlib.redirect_stdout(sortie):
+                    try:
+                        main()
+                        return 0, sortie.getvalue()
+                    except SystemExit as ex:
+                        return ex.code, sortie.getvalue()
+
+            code, _ = commande("--afficher", os.path.join(dossier, "dossier.json"), cb)
+            ok(f"--afficher sur un dossier : un message en français (« {code} »)",
+               isinstance(code, str) and code.startswith("La mesure écrite ne se lit pas"))
+            code, texte = commande("--afficher", cm, cb)
+            ok("--afficher sur une paire qui va ensemble : le rapport, sans avertissement",
+               code == 0 and texte.startswith("LE MUR DES FRAIS PENDANT LA SÉANCE") and "Attention" not in texte)
+            code, texte = commande("--afficher", cm, os.path.join(dossier, "b.csv.gz.autre"))
+            ok("--afficher sans fichier des barres : il le dit", code == 0 and "n'existe pas : pas de recompte possible" in texte)
+            with open(os.path.join(dossier, "faux.csv.gz"), "wb") as f:
+                f.write(gzip.compress(b"valeur,heure,Open,Close\n", mtime=0))
+            code, texte = commande("--afficher", cm, os.path.join(dossier, "faux.csv.gz"))
+            ok("--afficher avec des barres qui ne vont pas avec la mesure : il le dit", code == 0 and "ne va pas avec cette mesure" in texte)
+            # Si le verrou laissait passer, Yahoo serait lu : un faux lire_barres le fait échouer tout de suite.
+            with verrou(f"{cm}.verrou"), mock.patch.object(ici, "lire_barres", side_effect=AssertionError("Yahoo lu malgré le verrou")):
+                code, _ = commande("--mesurer", cm, cb)
+            ok(f"--mesurer pendant une autre mesure : refusé en français, sans lire Yahoo (« {code} »)",
+               code == "Rien n'est mesuré : une autre mesure est déjà en cours.")
     finally:
         if ancien_yf is None:
             sys.modules.pop("yfinance", None)
@@ -1304,19 +1556,34 @@ def main():
         print(f"Lecture des barres de 5 minutes chez Yahoo, une valeur à la fois "
               f"({len(stock_engine.UNIVERSE_TICKERS)} valeurs, environ 2 min)…", flush=True)
         try:
-            mesure = faire_la_mesure(stock_engine.UNIVERSE_TICKERS)
+            mesure = faire_la_mesure(stock_engine.UNIVERSE_TICKERS, chemin_mesure=MESURE, chemin_barres=BARRES)
+        except MesureEnCours as e:
+            sys.exit(f"Rien n'est mesuré : {e}.")
         except ValueError as e:
             sys.exit(f"Rien n'est écrit : {e}.")
+        except EcritureCoupee as e:
+            sys.exit(f"Écriture coupée : {e}.")
+        except OSError as e:
+            sys.exit(f"Rien n'est remplacé : l'écriture a échoué ({e.strerror or e}). L'ancienne mesure reste.")
         print(rapport(mesure))
         print(f"\nÉcrit : {os.path.relpath(MESURE, ROOT)} et {os.path.relpath(BARRES, ROOT)}.")
         return
     if args.afficher:
         try:
-            print(rapport(lire()))
+            m = lire(MESURE)
         except FileNotFoundError:
             sys.exit("Pas encore de mesure : python3 seance.py --mesurer.")
         except MesureIllisible as e:
             sys.exit(f"La mesure écrite est illisible : {e}.")
+        except OSError as e:
+            sys.exit(f"La mesure écrite ne se lit pas ({e.strerror or type(e).__name__}).")
+        print(rapport(m))
+        assorties = barres_assorties(m, BARRES)
+        if assorties is None:
+            print(f"\nAttention : {os.path.relpath(BARRES, ROOT)} n'existe pas : pas de recompte possible.")
+        elif not assorties:
+            print(f"\nAttention : {os.path.relpath(BARRES, ROOT)} ne va pas avec cette mesure (empreintes différentes) : "
+                  "refais python3 seance.py --mesurer avant un recompte.")
         return
     p.print_help()
 
