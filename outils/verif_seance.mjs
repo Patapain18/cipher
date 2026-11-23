@@ -261,6 +261,7 @@ piegee.data.textes.notes[0] = '<img src=x onerror="window.__piege=1">';
 piegee.data.textes.valeurs[0].valeur = '<b>X</b>';
 const quarante8 = JSON.parse(JSON.stringify(vraie));
 quarante8.data.textes.valeurs.pop();
+quarante8.data.textes.legende = T.legende.replace(`Une des ${T.valeurs.length} valeurs`, `Une des ${T.valeurs.length - 1} valeurs`);
 const sansTextes = { ok: true, data: { etat: 'mesure', date_mesure: vraie.data.date_mesure } };
 const autreForme = JSON.parse(JSON.stringify(vraie));
 autreForme.data.textes.lignes = 'pas une liste';
@@ -278,7 +279,7 @@ const cas = [
   ['mesure illisible', json({ ok: true, data: { etat: 'illisible', detail: 'ce n\'est pas du JSON valide', message: 'La mesure du mur des frais pendant la séance est illisible (ce n\'est pas du JSON valide).' } }),
     ['La mesure du mur des frais pendant la séance est illisible (ce n\'est pas du JSON valide).']],
   ['une donnée piégée', json(piegee), ['<img src=x onerror="window.__piege=1">', '<b>X</b>']],
-  ['48 valeurs', json(quarante8), [T.legende]],
+  ['48 valeurs', json(quarante8), [`Une des ${T.valeurs.length - 1} valeurs, prise au hasard`]],
   ['une mesure sans ses textes', json(sansTextes),
     ['Le mur des frais pendant la séance est indisponible pour l\'instant (la réponse du serveur n\'a pas la forme attendue : relance l\'appli).']],
   ['des textes d\'une autre forme', json(autreForme),

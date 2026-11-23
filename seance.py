@@ -55,6 +55,7 @@ LANCER (avec /usr/bin/python3 : pandas et numpy sont dans le dossier de l'utilis
 import argparse
 import contextlib
 import csv
+import errno
 import fcntl
 import gzip
 import hashlib
@@ -374,7 +375,11 @@ def valider(m):
         raise MesureIllisible("l'heure de la mesure est illisible") from None
     _exige(moment.tzinfo is not None, "l'heure de la mesure n'a pas de fuseau")
     aujourd_hui = _jour(m.get("aujourd_hui"), "la date de la mesure")
-    _exige(moment.astimezone(NY).date() == aujourd_hui, "la date de la mesure ne suit pas son heure")
+    try:
+        jour_ny = moment.astimezone(NY).date()
+    except (OverflowError, ValueError, OSError):        # « 0001-01-01T00:00:00+14:00 » sort des dates possibles
+        raise MesureIllisible("l'heure de la mesure est hors des dates possibles") from None
+    _exige(jour_ny == aujourd_hui, "la date de la mesure ne suit pas son heure")
     seances = _entier(m.get("seances"), "le nombre de séances", SEANCES_MIN)
     debut, fin = _jour(m.get("debut"), "la première séance"), _jour(m.get("fin"), "la dernière séance")
     _exige(debut <= fin < aujourd_hui, "les dates des séances ne se suivent pas")
@@ -459,6 +464,8 @@ def lire(chemin=None):
         raise MesureIllisible("ce n'est pas du texte UTF-8") from None
     except json.JSONDecodeError:
         raise MesureIllisible("ce n'est pas du JSON valide") from None
+    except RecursionError:
+        raise MesureIllisible("ce JSON est trop imbriqué pour être lu") from None
     return valider(m)
 
 
@@ -827,7 +834,7 @@ def ecrire(mesure, barres, chemin_mesure=MESURE, chemin_barres=BARRES):
         os.replace(temp_mesure, chemin_mesure)
     except BaseException as e:
         _effacer(temp_mesure)
-        raise EcritureCoupee(f"les nouvelles barres sont en place, mais pas la mesure qui va avec ({e}) : "
+        raise EcritureCoupee(f"les nouvelles barres sont en place, mais pas la mesure qui va avec ({raison_systeme(e)}) : "
                              "refais python3 seance.py --mesurer") from e
     return mesure
 
@@ -840,12 +847,23 @@ def barres_assorties(mesure, chemin_barres=None):
     chemin_barres = chemin_barres or BARRES
     if not os.path.exists(chemin_barres):
         return None
+    if not os.path.isfile(chemin_barres):      # un dossier, ou un tube qui bloquerait la lecture pour toujours
+        return False
     try:
         with gzip.open(chemin_barres, "rb") as f:
             donnees = f.read()
-    except (OSError, EOFError):
+    except Exception:       # gzip abîmé (zlib.error, EOFError), fichier illisible : il ne va pas
         return False
     return hashlib.md5(donnees).hexdigest() == mesure["md5_barres"]
+
+
+RAISONS_SYSTEME = {errno.ENOSPC: "disque plein", errno.EACCES: "accès refusé", errno.EPERM: "accès refusé",
+                   errno.EISDIR: "c'est un dossier", errno.ENOENT: "fichier introuvable", errno.EROFS: "disque en lecture seule"}
+
+
+def raison_systeme(e):
+    """Une erreur du système dite en français (« disque plein ») ; sinon son nom."""
+    return RAISONS_SYSTEME.get(getattr(e, "errno", None), f"erreur du système {type(e).__name__}")
 
 
 @contextlib.contextmanager
@@ -861,7 +879,7 @@ def verrou(chemin):
 
 
 def faire_la_mesure(tickers, maintenant=None, chemin_mesure=MESURE, chemin_barres=BARRES,
-                    dossier_journalier=CACHE_JOURNALIER, dormir=time.sleep):
+                    dossier_journalier=CACHE_JOURNALIER, dormir=time.sleep, annoncer=None):
     """
     Yahoo, puis la mesure, puis l'écriture, sous un verrou (le fichier
     « seance.json.verrou », à côté de la mesure). ValueError (et rien d'écrit)
@@ -869,6 +887,8 @@ def faire_la_mesure(tickers, maintenant=None, chemin_mesure=MESURE, chemin_barre
     """
     maintenant = maintenant or datetime.now(timezone.utc)
     with verrou(f"{chemin_mesure}.verrou"):
+        if annoncer:
+            annoncer()
         barres, refusees = lire_barres(tickers, dormir=dormir)
         mesure = mesurer(barres, maintenant, refusees, lire_journalier(sorted(barres), dossier_journalier))
         mesure.update(provenance())
@@ -1375,11 +1395,16 @@ def verifier():
             with open(os.path.join(dossier, "abime.json"), "w", encoding="utf-8") as f:
                 f.write("[]")
             ok("refusé, un tableau JSON", section(os.path.join(dossier, "abime.json"))["detail"] == "ce n'est pas un objet JSON")
+            with open(os.path.join(dossier, "abime.json"), "w", encoding="utf-8") as f:
+                f.write("[" * 100000 + "]" * 100000)
+            ok("refusé, un JSON trop imbriqué (sans trace Python)",
+               section(os.path.join(dossier, "abime.json"))["detail"] == "ce JSON est trop imbriqué pour être lu")
             for nom, changer, attendu in (
                     ("un objet vide", lambda d: d.clear(), "version"),
                     ("une autre version", poser(["version"], 2), "version"),
                     ("une heure sans fuseau", poser(["date_mesure"], "2026-10-02T17:00:00"), "fuseau"),
                     ("une heure sans « T »", poser(["date_mesure"], "2026-10-02 17:00:00+02:00"), "illisible"),
+                    ("une heure hors des dates possibles", poser(["date_mesure"], "0001-01-01T00:00:00+14:00"), "hors des dates possibles"),
                     ("une date qui ne suit pas l'heure", poser(["aujourd_hui"], "2026-10-03"), "ne suit pas"),
                     ("19 séances", poser(["seances"], 19), "séances"),
                     ("des séances à l'envers", lambda d: d.update(debut="2026-10-01", fin="2026-09-30"), "ne se suivent pas"),
@@ -1477,14 +1502,35 @@ def verifier():
                     coupee = None
                 except EcritureCoupee as ex:
                     coupee = str(ex)
-            ok("une mesure pas mise en place après les barres : EcritureCoupee, en français",
-               coupee is not None and coupee.startswith("les nouvelles barres sont en place, mais pas la mesure qui va avec"))
+            ok("une mesure pas mise en place après les barres : EcritureCoupee, en français, avec la marche à suivre",
+               coupee == "les nouvelles barres sont en place, mais pas la mesure qui va avec (erreur du système OSError) : "
+                         "refais python3 seance.py --mesurer")
+            ok("les erreurs du système dites en français",
+               raison_systeme(OSError(errno.ENOSPC, "No space left on device")) == "disque plein"
+               and raison_systeme(PermissionError(errno.EACCES, "Permission denied")) == "accès refusé"
+               and raison_systeme(OSError("autre chose")) == "erreur du système OSError")
             ok("…les barres nouvelles et la mesure ancienne se voient (empreintes différentes), aucun fichier temporaire",
                open(cm, "rb").read() == avant and barres_assorties(json.loads(avant), cb) is False
                and not [f for f in os.listdir(dossier) if f.startswith(".seance-")])
             ecrire(mesure, synth, cm, cb)
             ok("une paire écrite en entier va ensemble ; sans fichier des barres, on le sait",
                barres_assorties(lire(cm), cb) is True and barres_assorties(lire(cm), os.path.join(dossier, "absent.gz")) is None)
+            abimees = bytearray(open(cb, "rb").read())
+            for i in range(len(abimees) // 2, len(abimees) // 2 + 400):
+                abimees[i] ^= 0x5A
+            with open(os.path.join(dossier, "abime.csv.gz"), "wb") as f:
+                f.write(bytes(abimees))
+            ok("des barres abîmées au milieu (gzip illisible) : « ne va pas », sans trace Python",
+               barres_assorties(lire(cm), os.path.join(dossier, "abime.csv.gz")) is False)
+            os.mkfifo(os.path.join(dossier, "tube.csv.gz"))
+            import threading
+            reponse = []
+            fil = threading.Thread(target=lambda: reponse.append(barres_assorties(lire(cm), os.path.join(dossier, "tube.csv.gz"))),
+                                   daemon=True)
+            fil.start()
+            fil.join(3)
+            ok("un tube à la place des barres : « ne va pas », sans bloquer", not fil.is_alive() and reponse == [False])
+            ok("un dossier à la place des barres : « ne va pas »", barres_assorties(lire(cm), dossier) is False)
             try:
                 ecrire(dict(mesure, seances=19), synth, os.path.join(dossier, "c.json"), os.path.join(dossier, "c.csv.gz"))
                 ok("une mesure mal formée n'est jamais écrite", False)
@@ -1531,6 +1577,24 @@ def verifier():
                 code, _ = commande("--mesurer", cm, cb)
             ok(f"--mesurer pendant une autre mesure : refusé en français, sans lire Yahoo (« {code} »)",
                code == "Rien n'est mesuré : une autre mesure est déjà en cours.")
+            with verrou(f"{cm}.verrou"), mock.patch.object(ici, "lire_barres", side_effect=AssertionError("Yahoo lu malgré le verrou")):
+                _, sortie_refus = commande("--mesurer", cm, cb)
+            ok("--mesurer refusé : il n'annonce pas la lecture chez Yahoo", "Lecture des barres" not in sortie_refus)
+            with mock.patch.object(ici, "lire_barres", side_effect=ValueError("arrêt du test")):
+                code, sortie_libre = commande("--mesurer", cm, cb)
+            ok("--mesurer, le verrou libre : il annonce la lecture chez Yahoo, puis s'arrête en français",
+               "Lecture des barres de 5 minutes chez Yahoo" in sortie_libre and code == "Rien n'est écrit : arrêt du test.")
+            for nom, erreur, attendu in (
+                    ("une écriture coupée", EcritureCoupee("x"), "Écriture coupée : x."),
+                    ("un disque plein", OSError(errno.ENOSPC, "No space left on device"),
+                     "Rien n'est remplacé : l'écriture a échoué (disque plein). L'ancienne mesure reste.")):
+                with mock.patch.object(ici, "faire_la_mesure", side_effect=erreur):
+                    code, _ = commande("--mesurer", cm, cb)
+                ok(f"--mesurer, {nom} : « {code} »", code == attendu)
+            with mock.patch.object(ici, "lire", side_effect=OverflowError("date")):
+                code, _ = commande("--afficher", cm, cb)
+            ok(f"--afficher, une erreur inattendue : un message en français (« {code} »)",
+               code == "La mesure écrite est illisible (erreur inattendue : OverflowError).")
     finally:
         if ancien_yf is None:
             sys.modules.pop("yfinance", None)
@@ -1553,10 +1617,13 @@ def main():
         sys.exit(0 if verifier() else 1)
     if args.mesurer:
         import stock_engine
-        print(f"Lecture des barres de 5 minutes chez Yahoo, une valeur à la fois "
-              f"({len(stock_engine.UNIVERSE_TICKERS)} valeurs, environ 2 min)…", flush=True)
+        tickers = stock_engine.UNIVERSE_TICKERS
+
+        def annoncer():         # seulement une fois le verrou pris (sinon l'annonce précédait un refus)
+            print(f"Lecture des barres de 5 minutes chez Yahoo, une valeur à la fois "
+                  f"({len(tickers)} valeurs, environ 2 min)…", flush=True)
         try:
-            mesure = faire_la_mesure(stock_engine.UNIVERSE_TICKERS, chemin_mesure=MESURE, chemin_barres=BARRES)
+            mesure = faire_la_mesure(tickers, chemin_mesure=MESURE, chemin_barres=BARRES, annoncer=annoncer)
         except MesureEnCours as e:
             sys.exit(f"Rien n'est mesuré : {e}.")
         except ValueError as e:
@@ -1564,7 +1631,7 @@ def main():
         except EcritureCoupee as e:
             sys.exit(f"Écriture coupée : {e}.")
         except OSError as e:
-            sys.exit(f"Rien n'est remplacé : l'écriture a échoué ({e.strerror or e}). L'ancienne mesure reste.")
+            sys.exit(f"Rien n'est remplacé : l'écriture a échoué ({raison_systeme(e)}). L'ancienne mesure reste.")
         print(rapport(mesure))
         print(f"\nÉcrit : {os.path.relpath(MESURE, ROOT)} et {os.path.relpath(BARRES, ROOT)}.")
         return
@@ -1576,14 +1643,16 @@ def main():
         except MesureIllisible as e:
             sys.exit(f"La mesure écrite est illisible : {e}.")
         except OSError as e:
-            sys.exit(f"La mesure écrite ne se lit pas ({e.strerror or type(e).__name__}).")
+            sys.exit(f"La mesure écrite ne se lit pas ({raison_systeme(e)}).")
+        except Exception as e:      # une donnée piégée que valider() n'a pas prévue : jamais une trace Python
+            sys.exit(f"La mesure écrite est illisible (erreur inattendue : {type(e).__name__}).")
         print(rapport(m))
         assorties = barres_assorties(m, BARRES)
         if assorties is None:
             print(f"\nAttention : {os.path.relpath(BARRES, ROOT)} n'existe pas : pas de recompte possible.")
         elif not assorties:
-            print(f"\nAttention : {os.path.relpath(BARRES, ROOT)} ne va pas avec cette mesure (empreintes différentes) : "
-                  "refais python3 seance.py --mesurer avant un recompte.")
+            print(f"\nAttention : {os.path.relpath(BARRES, ROOT)} ne va pas avec cette mesure (fichier abîmé, ou d'une "
+                  "autre mesure) : refais python3 seance.py --mesurer avant un recompte.")
         return
     p.print_help()
 
