@@ -264,6 +264,23 @@
     </div>
   </section>
 
+  <!-- Le mur des frais pendant la séance (seance.py, mesuré à la main par
+       `python3 seance.py --mesurer`, relu par /api/seance) : de combien bouge
+       une des 49 valeurs en 15 minutes, en 45 minutes et sur la séance
+       entière, face au coût d'un achat suivi d'une vente. Vue plan seulement
+       (choix de Mathis, 23/11/2026) : la vue baie ne prend pas cette section.
+       Des faits sur le passé, jamais une prévision ni un conseil. -->
+  <section class="section" id="section-seance">
+    <div class="section-head">
+      <span class="eyebrow">Pendant la séance · le mur des frais</span>
+      <span class="badge muted" id="seance-date"></span>
+    </div>
+    <div class="card seance" id="seance">
+      <p class="seance-attente">Lecture de la mesure…</p>
+    </div>
+    <p class="seance-etat" id="seance-etat" aria-live="polite"></p>
+  </section>
+
   <footer>
     <span id="footer-note">Serveur local — aucun ordre réel, aucune clé d'API. Il n'écrit que deux choses : ton journal et ton défi papier, fictif.</span>
   </footer>

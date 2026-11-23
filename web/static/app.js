@@ -1478,6 +1478,126 @@ async function renderBanc() {
 $('#banc')?.addEventListener('toggle', () => document.dispatchEvent(new CustomEvent('stocks:dessine')), true);
 
 /* ------------------------------------------------------------
+   LE MUR DES FRAIS PENDANT LA SÉANCE
+   ------------------------------------------------------------
+   De combien bouge une des 49 valeurs pendant la séance de New York,
+   face au coût d'un achat suivi d'une vente (seance.py, mesuré à la
+   main, relu par /api/seance). Tous les textes viennent du serveur,
+   calculés depuis les comptes de la mesure : la page ne fait que les
+   insérer (par esc). Vue plan seulement. Des faits sur le passé :
+   jamais une prévision, jamais un conseil, jamais de rouge.
+   ------------------------------------------------------------ */
+function htmlSeance(t) {
+  /* Le nom d'une fenêtre, et ses heures en dessous, plus discrètes. */
+  const nom = (x) => `${esc(x.nom)}<span class="seance-precision">${esc(x.precision)}</span>`;
+  const lignes = t.lignes.map((x) => `
+            <tr>
+              <th scope="row">${nom(x)}</th>
+              <td class="num-cell num">${esc(x.mediane)}</td>
+              <td class="num-cell num">${esc(x.parts[0])}</td>
+              <td class="num-cell num">${esc(x.parts[1])}</td>
+            </tr>`).join('');
+  const valeurs = t.valeurs.map((v) => `
+            <tr>
+              <th scope="row">${esc(v.valeur)}</th>
+              ${v.medianes.map((x) => `<td class="num-cell num">${esc(x)}</td>`).join('')}
+            </tr>`).join('');
+  /* Les légendes sont HORS des cadres qui défilent (au téléphone, une
+     <caption> prend la largeur du tableau et s'y coupe : piège connu). */
+  return `
+    <p class="seance-phrase">${esc(t.intro)}</p>
+    <p class="seance-legende" id="seance-legende">${esc(t.legende)}</p>
+    <div class="seance-table" tabindex="0" role="region" aria-labelledby="seance-legende" data-cle="fenetres">
+      <table>
+        <thead><tr>${t.colonnes.map((c, i) => `<th scope="col"${i ? ' class="num-cell"' : ''}>${esc(c)}</th>`).join('')}</tr></thead>
+        <tbody>${lignes}
+        </tbody>
+      </table>
+    </div>
+    <p class="seance-phrase">${esc(t.conclusion)}</p>
+    <details class="seance-details" data-cle="valeurs">
+      <summary>${esc(t.detail)}</summary>
+      <div class="seance-table" tabindex="0" role="region" aria-label="${esc(t.detail)}" data-cle="valeurs">
+        <table>
+          <thead><tr><th scope="col">${esc(t.entete_valeur)}</th>${t.colonnes_valeurs.map((c) => `
+            <th scope="col" class="num-cell">${nom(c)}</th>`).join('')}</tr></thead>
+          <tbody>${valeurs}
+          </tbody>
+        </table>
+      </div>
+      <p class="seance-note">${esc(t.legende_valeurs)}</p>
+    </details>
+    <ul class="seance-notes">${t.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>`;
+}
+
+/* Le dernier contenu affiché : s'il n'a pas changé (la mesure ne change
+   qu'à la main, la page se rafraîchit chaque minute), on ne touche à rien.
+   `seanceLue` : une vraie mesure est affichée (pas un message). */
+let seanceDernierHtml = '';
+let seanceLue = false;
+
+async function renderSeance() {
+  const zone = $('#seance');
+  const etat = $('#seance-etat');
+  if (!zone) return;
+  let html;
+  let s = null;
+  let ancien = false;        // un serveur pas encore relancé (404)
+  try {
+    let res;
+    /* Un serveur muet : fetch lève une erreur du navigateur, en anglais
+       (« Load failed », « Failed to fetch ») ; la page le dit en français. */
+    try { res = await fetch('/api/seance'); } catch { throw new Error('le serveur de l\'appli ne répond pas'); }
+    if (res.status === 404) {
+      /* Le serveur de l'appli date d'avant cette section : son Python ne
+         se relit qu'en relançant l'appli (les pages, elles, se relisent seules). */
+      ancien = true;
+      html = '<p class="seance-attente">Le mur des frais pendant la séance s\'affichera quand l\'appli sera '
+        + 'relancée&nbsp;: son serveur ne connaît pas encore cette section.</p>';
+    } else {
+      let json;
+      try { json = await res.json(); } catch { throw new Error(`réponse illisible du serveur (${res.status})`); }
+      if (!json.ok) throw new Error(json.error || 'erreur inconnue');
+      if (json.data?.etat === 'mesure') {
+        s = json.data;
+        html = htmlSeance(s.textes);
+      } else {
+        /* Une mesure absente ou illisible : le message vient du serveur. */
+        html = `<p class="seance-attente">${esc(json.data?.message || 'La mesure n\'est pas lisible pour l\'instant.')}</p>`;
+      }
+    }
+  } catch (e) {
+    /* Une panne du serveur n'efface pas la dernière mesure affichée. */
+    if (seanceLue) {
+      if (etat) etat.textContent = `Mise à jour impossible pour l'instant (${e.message}) : la mesure affichée est la dernière connue.`;
+      return;
+    }
+    html = `<p class="seance-attente">Le mur des frais pendant la séance est indisponible pour l'instant (${esc(e.message)}). `
+      + 'Nouvel essai dans une minute.</p>';
+  }
+  if (etat) etat.textContent = '';
+  if (ancien && seanceLue) return;                   // un 404 après une vraie lecture : on la garde
+  $('#seance-date').textContent = s ? s.textes.pastille : '';
+  if (html === seanceDernierHtml) return;            // rien n'a changé : on ne touche à rien
+
+  // On garde ce que tu as ouvert, la place du clavier et le défilement des tableaux.
+  const ouverts = [...zone.querySelectorAll('details[data-cle]')].filter((d) => d.open).map((d) => d.dataset.cle);
+  const defile = new Map([...zone.querySelectorAll('.seance-table[data-cle]')].map((t) => [t.dataset.cle, t.scrollLeft]));
+  const actif = document.activeElement;
+  let focus = null;
+  if (actif && zone.contains(actif)) {
+    if (actif.tagName === 'SUMMARY') focus = `details[data-cle="${actif.closest('details[data-cle]')?.dataset.cle}"] > summary`;
+    else if (actif.classList.contains('seance-table')) focus = `.seance-table[data-cle="${actif.dataset.cle}"]`;
+  }
+  zone.innerHTML = html;
+  seanceDernierHtml = html;
+  seanceLue = Boolean(s);
+  ouverts.forEach((cle) => { const d = zone.querySelector(`details[data-cle="${cle}"]`); if (d) d.open = true; });
+  defile.forEach((x, cle) => { const t = zone.querySelector(`.seance-table[data-cle="${cle}"]`); if (t) t.scrollLeft = x; });
+  if (focus) zone.querySelector(focus)?.focus({ preventScroll: true });
+}
+
+/* ------------------------------------------------------------
    CYCLE DE VIE
    ------------------------------------------------------------ */
 
@@ -1493,6 +1613,7 @@ function refresh() {
   renderPositions();   // à part : la position n'attend pas le scan des 49 valeurs
   renderHistory();
   renderBanc();
+  renderSeance();      // un fichier relu par le serveur : rien chez Yahoo
 }
 
 refresh();

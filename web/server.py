@@ -402,6 +402,18 @@ def creux_des_indices():
         return valeur
 
 
+def mur_de_la_seance():
+    """
+    Le mur des frais pendant la séance (seance.py) : la mesure écrite à la
+    main par `python3 seance.py --mesurer`, RELUE ici sans jamais lire Yahoo.
+    Une mesure absente ou abîmée arrive avec son état (« absent »,
+    « illisible ») et son message en français, sans faire tomber la route.
+    Tous les textes viennent de seance.py : la page ne fait que les insérer.
+    """
+    import seance
+    return seance.section()
+
+
 def point_de_la_semaine():
     """
     Le dernier point de la semaine, préparé par le bot chaque dimanche à
@@ -726,6 +738,7 @@ ROUTES = {
     "/api/thermometre":    (thermometre_du_marche, 3600),   # des cours de clôture : une heure suffit
     "/api/creux":          (creux_des_indices, 3600),       # des cours de clôture aussi
     "/api/banc":           (verdict_du_banc, 300),          # deux fichiers écrits une fois, jamais réécrits
+    "/api/seance":         (mur_de_la_seance, 300),         # data/seance.json, réécrit à la main par seance.py --mesurer
     "/api/position":       (ma_position_en_direct, 60),
     "/api/journal":        (mon_journal, 0),      # recalculé à chaque fois, sur la position en cache (60 s)
     "/api/papier":         (mon_defi_papier, 0),  # recalculé à chaque fois : papier.py garde déjà les cours 30 s.
