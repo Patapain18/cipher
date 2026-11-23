@@ -378,6 +378,30 @@ def thermometre_du_marche():
         return valeur
 
 
+_creux_verrou = threading.Lock()
+_creux_recent = {"valeur": None, "quand": 0.0}
+
+
+def creux_des_indices():
+    """
+    Le creux du marché (creux.py) : de combien le S&P 500 et le Nasdaq
+    Composite sont sous leur record, et les baisses de 20 % ou plus du
+    passé. Des faits du passé : jamais de date de fin, jamais de conseil.
+
+    Même forme que le thermomètre : deux requêtes en même temps ne lisent
+    Yahoo qu'une fois. Un indice que Yahoo refuse garde sa dernière bonne
+    lecture ; sans aucune lecture, l'erreur remonte et `cached` ne la garde
+    pas (la page réessaie au rafraîchissement suivant).
+    """
+    import creux
+    with _creux_verrou:
+        if _creux_recent["valeur"] is not None and time.time() - _creux_recent["quand"] < 120:
+            return _creux_recent["valeur"]
+        valeur = creux.creux_du_marche()
+        _creux_recent.update(valeur=valeur, quand=time.time())
+        return valeur
+
+
 def point_de_la_semaine():
     """
     Le dernier point de la semaine, préparé par le bot chaque dimanche à
@@ -700,6 +724,7 @@ ROUTES = {
     # chemin              → (fonction, durée de cache en secondes)
     "/api/semaine":        (point_de_la_semaine, 30),
     "/api/thermometre":    (thermometre_du_marche, 3600),   # des cours de clôture : une heure suffit
+    "/api/creux":          (creux_des_indices, 3600),       # des cours de clôture aussi
     "/api/banc":           (verdict_du_banc, 300),          # deux fichiers écrits une fois, jamais réécrits
     "/api/position":       (ma_position_en_direct, 60),
     "/api/journal":        (mon_journal, 0),      # recalculé à chaque fois, sur la position en cache (60 s)

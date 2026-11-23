@@ -1534,6 +1534,84 @@ body.vue3d-active { overflow: hidden; }
 
 
 /* ------------------------------------------------------------
+   LE CREUX DU MARCHÉ — juste après le thermomètre, à son style
+   ------------------------------------------------------------
+   L'encre, jamais de rouge ni de vert : une baisse de l'indice est
+   un fait, pas une alarme ni un ordre. Vue plan seulement. */
+.creux { padding: var(--space-3) var(--space-4) var(--space-4); }
+/* La place gardée pendant la première lecture (après le thermomètre). */
+.creux-charge { min-height: 420px; }
+.creux-attente { margin: 0; color: var(--text-muted); font-size: 14px; }
+.creux-etat { margin: var(--space-2) 0 0; font-size: 12px; color: var(--text-muted); }
+.creux-etat:empty { display: none; }
+/* Pas de date tant qu'aucune lecture n'est arrivée : pas de pastille vide. */
+#creux-date:empty { display: none; }
+
+/* En tête : la baisse des deux indices à la dernière clôture. */
+.creux-tete { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2) var(--space-5); }
+.creux-chiffre { margin: 0; font-size: 16px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--space-2); }
+.creux-indice { color: var(--text-muted); }
+.creux-valeur { font-weight: 600; color: var(--text); }
+
+/* Puis une phrase par indice, côte à côte comme les aiguilles du thermomètre.
+   min(100 %, …) : sous 390 px, une colonne fixe déborderait de la carte. */
+.creux-blocs {
+  list-style: none;
+  margin: var(--space-4) 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: var(--space-4);
+}
+.creux-bloc p { margin: 0; line-height: 1.5; font-size: 14px; }
+.creux-bloc p + p { margin-top: var(--space-2); }
+.creux-nom { font-weight: 600; }
+.creux-ancien,
+.creux-barre { color: var(--text-muted); font-size: 13px; }
+
+/* Le détail replié de chaque indice : le tableau des baisses. */
+.creux-details { margin-top: var(--space-4); border-top: 1px solid var(--border); padding-top: var(--space-3); }
+.creux-details + .creux-details { margin-top: var(--space-3); }
+.creux-details summary { cursor: pointer; font-weight: 600; font-size: 14px; line-height: 1.5; }
+.creux-details summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Au téléphone, le tableau défile dans son cadre : le clavier peut le
+   prendre (tabindex), son focus se voit. */
+.creux-table { overflow-x: auto; margin-top: var(--space-2); }
+.creux-table:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--radius-md); }
+.creux-table table {
+  width: auto;
+  min-width: min(100%, 640px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+.creux-table thead th { position: static; }
+/* La date du record, en tête de ligne : à gauche, sur une ligne, avec le
+   même filet que les cellules. */
+.creux-table tbody th {
+  text-align: left;
+  font-weight: 600;
+  white-space: nowrap;
+  padding: 0.75rem var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+.creux-table tbody tr:last-child th { border-bottom: 0; }
+.creux-niveau { color: var(--text-muted); font-weight: 400; margin-left: var(--space-1); }
+.creux-note { color: var(--text-muted); font-size: 13px; line-height: 1.5; max-width: 80ch; }
+
+/* Les notes fixes, en bas, comme l'avertissement du thermomètre. */
+.creux-notes {
+  margin: var(--space-4) 0 0;
+  padding-left: 1.1em;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  max-width: 90ch;
+}
+.creux-notes li + li { margin-top: var(--space-1); }
+
+
+/* ------------------------------------------------------------
    LE BANC DES PRÉVISIONS — le verdict, à la place des bascules
    ------------------------------------------------------------
    La même grammaire que le thermomètre (piste A, choisie par Mathis

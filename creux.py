@@ -760,10 +760,11 @@ def verifier():
                                        or re.search(r"(?<![\d])-\d[\d,]*\s?%", t))]
     ok("typographie : aucune espace ordinaire avant « : », « ; », « % », et le vrai signe moins"
        + (f" — {mal[0]!r}" if mal else ""), not mal)
-    # « garde » n'y est pas : « le tableau ne garde que… » est un fait, pas un conseil.
-    interdits = ("achète", "achetez", "acheter", "vends", "vendez", "vendre", "prévoi", "prédi", "reste à",
-                 "il reste", "remontera", "rebondira", "finira le", "reviendra")
-    conseils = [t for t in textes if t and any(x in t.lower() for x in interdits)]
+    # Des mots entiers (« vendredi » n'est pas « vendre »). « garde » n'y est pas : « le tableau ne
+    # garde que… » est un fait, pas un conseil.
+    interdits = re.compile(r"\b(achète|achetez|acheter|vends|vendez|vendre|prévoi\w*|prédi\w*|reste à|il reste|"
+                           r"remontera|rebondira|finira le|reviendra)\b", re.IGNORECASE)
+    conseils = [t for t in textes if t and interdits.search(t)]
     ok("aucun conseil ni date de fin dans les textes" + (f" — {conseils[0]!r}" if conseils else ""), not conseils)
     visibles = " ".join(NOTES)
     ok("les mots du plan : « prix seul », « les baisses finies sont revenues », « une action seule peut ne jamais revenir »",

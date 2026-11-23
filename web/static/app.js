@@ -1025,6 +1025,123 @@ async function renderThermometre() {
 }
 
 /* ------------------------------------------------------------
+   LE CREUX DU MARCHÉ
+   ------------------------------------------------------------
+   De combien le S&P 500 et le Nasdaq Composite sont sous leur record,
+   et les baisses de 20 % ou plus du passé (creux.py, /api/creux). Tous
+   les textes viennent du serveur, calculés depuis les chiffres : la
+   page ne fait que les insérer (par esc). Des faits du passé : jamais
+   une date de fin, jamais un conseil, jamais de rouge.
+   ------------------------------------------------------------ */
+function htmlCreux(c) {
+  const tete = c.indices.map((x) => `
+      <p class="creux-chiffre"><span class="creux-indice">${esc(x.nom)}</span>
+        <span class="${x.en_cours?.au_record ? '' : 'num '}creux-valeur">${esc(x.textes.tete)}</span></p>`).join('');
+  const blocs = c.indices.map((x) => `
+      <li class="creux-bloc">
+        <p class="creux-nom">${esc(x.nom)}</p>
+        ${x.etat ? `<p class="creux-ancien">${esc(x.etat)}</p>` : ''}
+        <p>${esc(x.textes.en_cours)}</p>
+        <p>${esc(x.textes.histoire)}</p>
+        <p class="creux-barre">${esc(x.textes.barre)}</p>
+      </li>`).join('');
+  /* Un détail à ouvrir par indice. La légende est HORS du cadre qui
+     défile (au téléphone, une <caption> prend la largeur du tableau et
+     s'y coupe : piège connu). */
+  const details = c.indices.filter((x) => x.textes.detail).map((x) => `
+      <details class="creux-details" data-cle="${esc(x.symbole)}">
+        <summary>${esc(x.textes.detail)}</summary>
+        <div class="creux-table" tabindex="0" role="region" aria-label="${esc(x.textes.detail)}" data-cle="${esc(x.symbole)}">
+          <table>
+            <thead><tr>
+              <th scope="col">Record</th>
+              <th scope="col">Creux</th>
+              <th scope="col" class="num-cell">Baisse</th>
+              <th scope="col" class="num-cell">Descente</th>
+              <th scope="col" class="num-cell">Retour depuis le record</th>
+              <th scope="col" class="num-cell">Retour depuis le creux</th>
+            </tr></thead>
+            <tbody>${x.baisses.map((b) => `
+              <tr>
+                <th scope="row"><span class="num">${esc(b.textes.record)}</span>
+                  <span class="num creux-niveau">${esc(b.textes.niveau)}</span></th>
+                <td class="num">${esc(b.textes.creux)}</td>
+                <td class="num-cell num">${esc(b.textes.baisse)}</td>
+                <td class="num-cell">${esc(b.textes.descente)}</td>
+                <td class="num-cell">${esc(b.textes.retour_record)}</td>
+                <td class="num-cell">${esc(b.textes.retour_creux)}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+        <p class="creux-note">${esc(c.legende)}</p>
+      </details>`).join('');
+  return `
+    <div class="creux-tete">${tete}</div>
+    <ul class="creux-blocs">${blocs}</ul>
+    ${details}
+    <ul class="creux-notes">${c.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>`;
+}
+
+/* Le dernier contenu affiché : s'il n'a pas changé (le cache du serveur
+   dure une heure, la page se rafraîchit chaque minute), on ne touche à
+   rien. `creuxLu` : une vraie lecture est affichée (pas un message). */
+let creuxDernierHtml = '';
+let creuxLu = false;
+
+async function renderCreux() {
+  const zone = $('#creux');
+  const etat = $('#creux-etat');
+  if (!zone) return;
+  let html;
+  let c = null;
+  try {
+    const res = await fetch('/api/creux');
+    if (res.status === 404) {
+      /* Le serveur de l'appli date d'avant cette section : son Python ne
+         se relit qu'en relançant l'appli (les pages, elles, se relisent seules). */
+      html = '<p class="creux-attente">Le creux du marché s\'affichera quand l\'appli sera relancée&nbsp;: son serveur '
+        + 'ne connaît pas encore cette section.</p>';
+    } else {
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error || 'erreur inconnue');
+      c = json.data;
+      html = htmlCreux(c);
+    }
+  } catch (e) {
+    /* Une panne (Yahoo, le serveur) n'efface pas la dernière lecture et ne
+       passe pas au rouge (le rouge dit « baisse » dans cette appli). */
+    if (creuxLu) {
+      if (etat) etat.textContent = `Mise à jour impossible pour l'instant (${e.message}) : la lecture affichée est la dernière connue.`;
+      return;
+    }
+    html = `<p class="creux-attente">Le creux du marché est indisponible pour l'instant (${esc(e.message)}). `
+      + 'Nouvel essai dans une minute.</p>';
+  }
+  if (etat) etat.textContent = '';
+  if (c || !creuxLu) $('#creux-date').textContent = c ? c.cloture : '';
+  if (!c && creuxLu) return;                          // un 404 après une vraie lecture : on la garde
+  if (html === creuxDernierHtml) return;             // rien n'a changé : on ne touche à rien
+
+  // On garde ce que tu as ouvert, la place du clavier et le défilement des tableaux.
+  const ouverts = [...zone.querySelectorAll('details[data-cle]')].filter((d) => d.open).map((d) => d.dataset.cle);
+  const defile = new Map([...zone.querySelectorAll('.creux-table[data-cle]')].map((t) => [t.dataset.cle, t.scrollLeft]));
+  const actif = document.activeElement;
+  let focus = null;
+  if (actif && zone.contains(actif)) {
+    if (actif.tagName === 'SUMMARY') focus = `details[data-cle="${actif.closest('details[data-cle]')?.dataset.cle}"] > summary`;
+    else if (actif.classList.contains('creux-table')) focus = `.creux-table[data-cle="${actif.dataset.cle}"]`;
+  }
+  zone.innerHTML = html;
+  creuxDernierHtml = html;
+  creuxLu = Boolean(c);
+  zone.classList.remove('creux-charge');
+  ouverts.forEach((cle) => { const d = zone.querySelector(`details[data-cle="${cle}"]`); if (d) d.open = true; });
+  defile.forEach((x, cle) => { const t = zone.querySelector(`.creux-table[data-cle="${cle}"]`); if (t) t.scrollLeft = x; });
+  if (focus) zone.querySelector(focus)?.focus({ preventScroll: true });
+}
+
+/* ------------------------------------------------------------
    LE BANC DES PRÉVISIONS
    ------------------------------------------------------------
    Le verdict des deux mesures du banc (banc.py, écrites une seule
@@ -1361,7 +1478,10 @@ function refresh() {
   renderStatus();
   renderQuality();
   renderSemaine();
-  renderThermometre();
+  /* Le creux part APRÈS la réponse du thermomètre, pas en même temps : au
+     lancement, le scan des 49 valeurs et les 14 demandes du thermomètre
+     partent déjà ensemble chez Yahoo. */
+  renderThermometre().finally(renderCreux);
   renderStocks();
   renderPositions();   // à part : la position n'attend pas le scan des 49 valeurs
   renderHistory();
