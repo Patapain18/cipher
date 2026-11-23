@@ -493,8 +493,8 @@ def lire_cours(symbole, essais=3):
     premier = PREMIERS_COURS.get(symbole)
     debut = _jour(cours.index[0])
     if premier is not None and (debut - premier).days > MARGE_DEBUT:
-        raise ValueError(f"la série {symbole} de Yahoo commence le {texte_date(debut)}, "
-                         f"pas le {texte_date(premier)} : elle est coupée")
+        raise ValueError(_insecables(f"la série {symbole} de Yahoo commence le {texte_date(debut)}, "
+                                     f"pas le {texte_date(premier)} : elle est coupée"))
     return cours
 
 
@@ -521,7 +521,7 @@ def creux_du_marche(maintenant=None, lire=lire_cours):
         except ValueError as e:
             ancienne = _dernieres.get(symbole)
             if ancienne is None:
-                raise ValueError(f"aucune lecture du {nom} pour l'instant ({e})") from e
+                raise ValueError(_insecables(f"aucune lecture du {nom} pour l'instant ({e})")) from e
             # Un refus OU des cours inutilisables : un seul message, vrai dans les deux cas.
             lecture = dict(ancienne, frais=False, etat=_insecables(
                 f"Yahoo n'a pas donné de nouveaux cours utilisables : dernière lecture du "
@@ -760,6 +760,9 @@ def verifier():
             demandes.append((self.symbole, period, start, auto_adjust))
             if self.symbole in refuses:
                 raise RuntimeError("Yahoo refuse")
+            if echecs.get(self.symbole, 0) > 0:
+                echecs[self.symbole] -= 1
+                raise RuntimeError("Yahoo refuse, pour cette fois")
             if start is not None:
                 jours = pd.bdate_range(debuts.get(self.symbole, "2026-11-16"), periods=4)
                 idx = jours.insert(2, jours[1]).tz_localize(NY)
@@ -771,6 +774,7 @@ def verifier():
     refuses = set()
     demandes = []
     debuts = {}
+    echecs = {}
     ancien_yf = sys.modules.get("yfinance")
     anciennes = dict(_dernieres)
     sys.modules["yfinance"] = types.SimpleNamespace(Ticker=FauxTicker)
@@ -846,8 +850,50 @@ def verifier():
             ok("lire_cours : une série coupée au début (le S&P 500 le 01/03/1928) est refusée", False)
         except ValueError as err:
             ok("lire_cours : une série coupée au début (le S&P 500 le 01/03/1928) est refusée, et c'est dit",
-               str(err) == "la série ^GSPC de Yahoo commence le 1ᵉʳ mars 1928, pas le 30 décembre 1927 : elle est coupée")
+               str(err) == f"la série ^GSPC de Yahoo commence le 1ᵉʳ mars 1928, pas le 30 décembre 1927{n}: elle est coupée")
+        ok("les premiers cours connus : 30/12/1927 (S&P 500) et 05/02/1971 (Nasdaq), avec une marge de 31 jours",
+           PREMIERS_COURS == {"^GSPC": D("1927-12-30"), "^IXIC": D("1971-02-05")} and MARGE_DEBUT == 31)
+        debuts.update({"^GSPC": "1928-01-30"})
+        ok("lire_cours : une série qui commence 31 jours après le premier cours passe encore",
+           len(lire_cours("^GSPC", essais=1)) == 4)
+        debuts.update({"^GSPC": "1928-01-31"})
+        try:
+            lire_cours("^GSPC", essais=1)
+            ok("lire_cours : 32 jours après, elle est refusée", False)
+        except ValueError:
+            ok("lire_cours : 32 jours après, elle est refusée", True)
+        refuses.discard("^IXIC")
+        debuts.update({"^IXIC": "1971-04-01"})
+        try:
+            lire_cours("^IXIC", essais=1)
+            ok("lire_cours : le Nasdaq coupé au début (le 01/04/1971) est refusé", False)
+        except ValueError as err:
+            ok("lire_cours : le Nasdaq coupé au début (le 01/04/1971) est refusé", "^IXIC" in str(err) and "coupée" in str(err))
+        refuses.add("^IXIC")
         ok("lire_cours : un symbole sans premier cours connu n'est pas contrôlé", len(lire_cours("^AUTRE", essais=1)) == 4)
+        import time as horloge
+        vraie_pause, pauses = horloge.sleep, []
+        horloge.sleep = pauses.append
+        try:
+            del demandes[:]
+            lire_cours("^AUTRE")
+            ok("lire_cours : une réponse au premier essai, une seule demande, aucune pause",
+               len(demandes) == 1 and pauses == [])
+            del demandes[:]
+            echecs["^AUTRE"] = 2
+            lire_cours("^AUTRE")
+            ok("lire_cours : deux refus puis une réponse, 3 demandes et des pauses de 2 puis 6 s",
+               len(demandes) == 3 and pauses == [2, 6])
+            del demandes[:], pauses[:]
+            refuses.add("^REFUS")
+            try:
+                lire_cours("^REFUS")
+                ok("lire_cours : toujours refusé, 3 essais par défaut puis une erreur", False)
+            except ValueError as err:
+                ok("lire_cours : toujours refusé, 3 essais par défaut (2 pauses) puis une erreur qui le dit",
+                   len(demandes) == 3 and pauses == [2, 6] and "aucun cours reçu pour ^REFUS" in str(err))
+        finally:
+            horloge.sleep = vraie_pause
         _dernieres.clear()
         try:
             creux_du_marche(maintenant=apres, lire=lire_vite)
@@ -884,6 +930,12 @@ def verifier():
     ok("lecture : la phrase et le titre comptent les baisses de 20 %, pas celles de 19 % (une seule, pas 2)",
        l3["textes"]["histoire"].startswith("Sur les clôtures, une seule baisse")
        and l3["textes"]["detail"] == f"La seule baisse de 20{n}% ou plus du S&P 500 depuis janvier 2026, sur les clôtures")
+    l5 = lire_indice("Nasdaq Composite", serie([100, 80.5, 90]), ny(2026, 1, 20, 9, 0))
+    l6 = lire_indice("Nasdaq Composite", serie([100, 80.5, 79, 85]), ny(2026, 1, 20, 9, 0))
+    ok("lecture : une baisse en cours restée à −19,5 % ne dit rien de −20 % ; à −21 %, la phrase donne le jour où −20 % est atteint",
+       "atteint" not in l5["textes"]["en_cours"] and l5["en_cours"]["seuil_date"] is None
+       and l6["textes"]["en_cours"].endswith(f"a atteint {m}20{n}% le 7 janvier 2026.")
+       and l6["en_cours"]["seuil_date"] == "2026-01-07")
     l4 = lire_indice("S&P 500", serie([100, 99.96]), ny(2026, 1, 20, 9, 0))
     ok("en tête, une baisse tronquée à 0 s'écrit « à moins de 0,1 % » (en mots), jamais « 0,0 % » ni « à son record »",
        l4["textes"]["tete"] == f"à moins de 0,1{n}%" and not l4["tete_num"] and l4["textes"]["tete_suite"] == "de son record")
@@ -893,6 +945,9 @@ def verifier():
        n_record[0] == "Des faits du passé, pas une prévision. Aucun conseil d'achat ou de vente."
        and n_record[1].startswith("Le tableau ne garde que les baisses finies, et les baisses finies sont revenues à leur "
                                   "record. Ailleurs") and not any("en cours" in x for x in n_record))
+    n_mixte = notes([au_record, l3])
+    ok("les notes, le S&P 500 à son record et l'autre en baisse : elles parlent de la baisse en cours",
+       "la baisse en cours peut finir demain" in n_mixte[0] and "celle en cours n'y est pas comptée" in n_mixte[1])
     ok("les notes, une baisse en cours : elles en parlent",
        n_baisse[0] == (f"Des faits du passé, pas une prévision{n}: la baisse en cours peut finir demain ou durer des "
                        f"années. Aucun conseil d'achat ou de vente.")

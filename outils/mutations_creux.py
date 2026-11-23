@@ -92,7 +92,7 @@ ERREURS = [
     # La lecture et la panne.
     ([("if not len(v) or not np.isfinite(v).all() or (v <= 0).any():", "if not len(v):")], "un cours nul ou infini accepté"),
     ([("            _dernieres[symbole] = lecture\n", "            pass\n")], "la dernière bonne lecture jamais gardée"),
-    ([('raise ValueError(f"aucune lecture du {nom} pour l\'instant ({e})") from e', "continue")],
+    ([('raise ValueError(_insecables(f"aucune lecture du {nom} pour l\'instant ({e})")) from e', "continue")],
      "un indice sans lecture oublié en silence (réponse à moitié vide)"),
     ([("        except ValueError as e:\n            ancienne", "        except KeyError as e:\n            ancienne")],
      "un refus de Yahoo fait tomber les deux indices"),
@@ -129,8 +129,10 @@ ERREURS = [
      "« à son record de son record »"),
     ([('None if d == derniere else f"(clôture du', 'None if True else f"(clôture du')],
      "une vieille lecture sans sa date en tête"),
-    ([('sortie.append(dict(x, textes=dict(x["textes"], tete_date=(',
-       'sortie.append(x) or x["textes"].update(tete_date=(')], "la lecture gardée modifiée par la réponse"),
+    ([('sortie.append(dict(x, textes=dict(x["textes"], tete_date=(\n'
+       '            None if d == derniere else f"(clôture du {texte_date_courte(d)})"))))',
+       'x["textes"]["tete_date"] = None if d == derniere else f"(clôture du {texte_date_courte(d)})"\n'
+       '        sortie.append(x)')], "la lecture gardée modifiée par la réponse"),
     ([('en_baisse = any(not x["en_cours"]["au_record"] for x in indices)', "en_baisse = True")],
      "les notes parlent d'une baisse en cours qui n'existe pas"),
     ([("Yahoo n'a pas donné de nouveaux cours utilisables : dernière", "Yahoo ne répond pas : dernière")],
@@ -138,6 +140,18 @@ ERREURS = [
     ([('derniere = f" ; dernière clôture : {texte_date(dates[0], True)}."', 'derniere = "."')],
      "la date de la dernière clôture absente des notes"),
     ([("    if len(set(dates)) == 1:", "    if True:")], "deux clôtures différentes dites comme une seule"),
+    # La seconde relecture (23/11/2026).
+    ([("ec = en_cours(c)\n", "ec = en_cours(c, SEUIL_PROCHE)\n")], "la page dit −20 % atteint dès −19 %"),
+    ([('cours = thermometre._nettoyer(h["Close"])\n                break', 'cours = thermometre._nettoyer(h["Close"])')],
+     "Yahoo relu 3 fois même quand il répond"),
+    ([("for n in range(essais):", "for n in range(1):")], "un seul essai"),
+    ([("time.sleep(2 + 4 * n)", "time.sleep(60)")], "une minute de pause entre deux essais"),
+    ([("def lire_cours(symbole, essais=3):", "def lire_cours(symbole, essais=1):")], "un seul essai par défaut"),
+    ([("MARGE_DEBUT = 31 ", "MARGE_DEBUT = 61 ")], "une série coupée de deux mois acceptée"),
+    ([('"^IXIC": date(1971, 2, 5)}', '"^IXIC": date(2000, 1, 3)}')], "le premier cours du Nasdaq faux"),
+    ([('en_baisse = any(not x["en_cours"]["au_record"] for x in indices)', 'en_baisse = not indices[0]["en_cours"]["au_record"]')],
+     "les notes ne regardent que le S&P 500"),
+    ([('raise ValueError(_insecables(f"la série', 'raise ValueError((f"la série')], "un message d'erreur sans espace insécable"),
 ]
 
 
@@ -152,6 +166,12 @@ def essayer(numero, changements):
             if texte.count(avant) != 1:
                 return numero, "INTROUVABLE", f"« {avant[:60]} » apparaît {texte.count(avant)} fois"
             texte = texte.replace(avant, apres)
+        # Une copie qui ne se compile pas ne teste rien : « invalide », jamais « attrapée »
+        # (une erreur mal écrite était comptée attrapée : seconde relecture du 23/11/2026).
+        try:
+            compile(texte, chemin, "exec")
+        except SyntaxError as e:
+            return numero, "INVALIDE", f"la copie ne se compile pas ({e.msg}, ligne {e.lineno})"
         with open(chemin, "w", encoding="utf-8") as f:
             f.write(texte)
         env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}

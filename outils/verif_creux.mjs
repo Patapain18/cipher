@@ -37,7 +37,14 @@ const ok = (cond, quoi) => { lignes.push(`${cond ? 'ok ' : 'NON'} ${quoi}`); ret
 const espaces = (s) => s.replace(/[\s  ]+/g, ' ').trim();
 
 // La vraie réponse du serveur d'essai (Yahoo lu une fois, puis gardée une heure par le serveur).
-const vraie = await (await fetch(`${BASE}/api/creux`)).json();
+// Yahoo refuse parfois une rafale (« 'NoneType' object is not subscriptable ») : 3 essais, 15 s d'écart.
+let vraie;
+for (let essai = 1; essai <= 3; essai++) {
+  vraie = await (await fetch(`${BASE}/api/creux`)).json();
+  if (vraie.ok || essai === 3) break;
+  console.error(`/api/creux, essai ${essai} : ${vraie.error} ; nouvel essai dans 15 s`);
+  await new Promise((r) => setTimeout(r, 15000));
+}
 if (!vraie.ok) { console.error('/api/creux ne répond pas :', vraie.error); process.exit(1); }
 const textesServeur = [vraie.data.cloture, vraie.data.legende, ...vraie.data.notes,
   ...vraie.data.indices.flatMap((x) => [x.nom, ...Object.values(x.textes).filter((t) => t && t !== x.textes.source),
