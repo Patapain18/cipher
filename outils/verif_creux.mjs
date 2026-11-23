@@ -100,10 +100,14 @@ for (const moteur of ['chromium', 'webkit']) {
           const rougeCalc = getComputedStyle(sonde).color;
           sonde.remove();
           const rouges = [...s.querySelectorAll('*')].filter((el) => getComputedStyle(el).color === rougeCalc).length;
+          const resumes = [...s.querySelectorAll('summary')].map((e) => Math.round(e.getBoundingClientRect().height));
           return { h: Math.round(r.height), dehors: dehors.slice(0, 4), texte: s.innerText,
-            defile: cadres.some((c) => c.scrollWidth > c.clientWidth), rouges };
+            defile: cadres.some((c) => c.scrollWidth > c.clientWidth), rouges, resumes };
         });
         const ou = `${moteur} ${taille} ${etat}`;
+        if (config.hasTouch && etat === 'fermes') {
+          ok(m.resumes.length === 2 && m.resumes.every((x) => x >= 44), `${ou} : les résumés sont des cibles de doigt de 44 px au moins (${m.resumes.join(' et ')} px)`);
+        }
         ok(!m.dehors.length, `${ou} : rien ne dépasse de la carte (h ${m.h} px${m.defile ? ', un tableau défile dans son cadre' : ''})${m.dehors.length ? ' — ' + m.dehors.join(', ') : ''}`);
         ok(m.rouges === 0, `${ou} : aucun texte rouge (${m.rouges})`);
         if (etat === 'ouverts' && (taille === 'ordi' || taille === 'etroit')) {
