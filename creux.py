@@ -52,6 +52,12 @@ sys.path.insert(0, ROOT)
 import thermometre       # noqa: E402  ses cours : même nettoyage, mêmes 3 essais (thermometre.py ne change pas)
 
 INDICES = (("^GSPC", "S&P 500"), ("^IXIC", "Nasdaq Composite"))
+DEBUT_YAHOO = "1927-01-01"   # un début demandé à Yahoo avant son premier cours (^GSPC : 30/12/1927)
+# Le premier cours de chaque indice chez Yahoo (vu le 23/11/2026). Une série qui commence plus
+# d'un mois après a été coupée (par Yahoo ou par yfinance) : ses baisses seraient fausses sans le
+# dire, elle est donc refusée comme un refus de Yahoo.
+PREMIERS_COURS = {"^GSPC": date(1927, 12, 30), "^IXIC": date(1971, 2, 5)}
+MARGE_DEBUT = 31         # jours
 SEUIL = 0.20             # une baisse de 20 % ou plus
 SEUIL_PROCHE = 0.19      # « la barre compte » : ce qu'on aurait compté avec −19 %
 JOURS_PAR_MOIS = Fraction("30.44")
@@ -295,7 +301,8 @@ def phrase_en_cours(nom, ec):
     if ec["creux_date"] == ec["derniere_date"]:
         p += " ; c'est aussi son creux pour l'instant."
     else:
-        p += (f". Son creux pour l'instant : {texte_baisse(ec['creux'], ec['record'])}, "
+        dc = dixiemes_de_baisse(ec["creux"], ec["record"])
+        p += (f". Son creux pour l'instant : {texte_pct(dc) if dc else 'à moins de 0,1 % du record'}, "
               f"le {texte_date(ec['creux_date'])}.")
     if ec["seuil_date"] is not None:
         p += (f" La baisse commencée le {texte_date(ec['record_date'])} a atteint {MOINS}20 % "
@@ -362,21 +369,45 @@ LEGENDE = _insecables(
     "de la baisse. Descente : du record au creux. Retour : jusqu'à la première clôture au niveau "
     "du record ou au-dessus, compté depuis le record et depuis le creux.")
 
-NOTES = tuple(_insecables(n) for n in (
-    "Des faits du passé, pas une prévision : la baisse en cours peut finir demain ou durer des années. "
-    "Aucun conseil d'achat ou de vente.",
-    "Le tableau ne garde que les baisses finies, et les baisses finies sont revenues à leur record : "
-    "celle en cours n'y est pas comptée. Ailleurs, un retour a pris bien plus longtemps : le Nikkei "
-    f"japonais, 34,1 ans (record du 29/12/1989, dépassé le 22/02/2024 ; {MOINS}81,8 % au plus bas).",
+# Le Nikkei : relu chez Yahoo le 23/11/2026 (record de clôture du 29/12/1989 à 38 915,87, première
+# clôture au-dessus le 22/02/2024, soit 12 473 jours ; plus bas le 10/03/2009, −81,87 %).
+NIKKEI = ("Ailleurs, un retour a pris bien plus longtemps : le Nikkei japonais, 34,1 ans (record du "
+          f"29/12/1989, dépassé le 22/02/2024 ; {MOINS}81,8 % au plus bas).")
+NOTES_FIXES = (
     "En prix seul et en dollars courants : avec les dividendes, les retours seraient plus courts ; "
     "corrigés de l'inflation, plus longs.",
     "Un indice remplace les entreprises qui tombent : une action seule peut ne jamais revenir à son record.",
     "Une baisse dure jusqu'au record suivant : un second krach avant ce record en fait partie "
     "(pour le Nasdaq, 2007-2009 est dans 2000-2015).",
+    # Confirmé le 23/11/2026 chez S&P Global : S&P 500 lancé le 4 mars 1957 ; avant, un indice
+    # composite de 90 valeurs, calculé chaque jour depuis 1926.
     "Avant le 4 mars 1957, date de naissance du S&P 500, l'indice de Yahoo suit 90 valeurs "
     "(l'indice composite de Standard & Poor's, calculé chaque jour depuis 1926).",
     "Le Nasdaq-100 (QQQ), souvent cité, n'est pas suivi ici.",
-))
+)
+
+
+def notes(indices):
+    """
+    Les notes du bas, comme l'avertissement du thermomètre. Les deux premières
+    ne parlent de « la baisse en cours » que s'il y en a une (un indice sous
+    son record). La dernière donne les sources et la date de la dernière
+    clôture de chaque indice.
+    """
+    en_baisse = any(not x["en_cours"]["au_record"] for x in indices)
+    n1 = ("Des faits du passé, pas une prévision : la baisse en cours peut finir demain ou durer des années."
+          if en_baisse else "Des faits du passé, pas une prévision.") + " Aucun conseil d'achat ou de vente."
+    n2 = ("Le tableau ne garde que les baisses finies, et les baisses finies sont revenues à leur record"
+          + (" : celle en cours n'y est pas comptée. " if en_baisse else ". ") + NIKKEI)
+    dates = [date.fromisoformat(x["cloture"]) for x in indices]
+    if len(set(dates)) == 1:
+        derniere = f" ; dernière clôture : {texte_date(dates[0], True)}."
+    else:
+        derniere = " ; dernières clôtures : " + ", ".join(
+            f"{x['nom']} le {texte_date(d)}" for x, d in zip(indices, dates)) + "."
+    sources = ("Cours de clôture de Yahoo, en prix seul : "
+               + ", ".join(x["textes"]["source"] for x in indices) + derniere)
+    return [_insecables(n) for n in (n1, n2, *NOTES_FIXES, sources)]
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -399,10 +430,15 @@ def lire_indice(nom, cours, maintenant):
     proche = la_plus_proche(c)
     debut = _jour(c.index[0])
     iso = lambda d: d.isoformat() if d is not None else None    # noqa: E731
+    # L'en-tête : « −11,6 % de son record », « à moins de 0,1 % de son record » (jamais « 0,0 % »),
+    # ou « à son record ». Seul un pourcentage s'écrit en chiffres (tete_num).
+    d_tete = None if ec["au_record"] else dixiemes_de_baisse(ec["derniere"], ec["record"])
+    tete = "à son record" if ec["au_record"] else (texte_pct(d_tete) if d_tete else "à moins de 0,1 %")
     return {
         "nom": nom,
         "debut": iso(debut),
         "cloture": iso(ec["derniere_date"]),
+        "tete_num": bool(d_tete),
         "en_cours": {"record_date": iso(ec["record_date"]), "record": ec["record"],
                      "derniere": ec["derniere"], "au_record": ec["au_record"],
                      "creux_date": iso(ec["creux_date"]), "creux": ec["creux"],
@@ -410,7 +446,8 @@ def lire_indice(nom, cours, maintenant):
         "nombre": len(liste),
         "nombre_proche": n_proche,
         "textes": {
-            "tete": "à son record" if ec["au_record"] else texte_baisse(ec["derniere"], ec["record"]),
+            "tete": _insecables(tete),
+            "tete_suite": None if ec["au_record"] else "de son record",
             "en_cours": phrase_en_cours(nom, ec),
             "histoire": phrase_histoire(liste, debut),
             "barre": phrase_barre(len(liste), n_proche, proche),
@@ -424,9 +461,41 @@ def lire_indice(nom, cours, maintenant):
     }
 
 
-def lire_cours(symbole):
-    """Les clôtures d'un indice depuis le début, par thermometre._cours (prix seul, même nettoyage, 3 essais)."""
-    return thermometre._cours(symbole, "max")
+def lire_cours(symbole, essais=3):
+    """
+    Les clôtures d'un indice depuis son premier jour, en prix seul.
+
+    PAS `thermometre._cours(symbole, "max")` : dans yfinance 1.2.0, « max » en
+    journalier ne remonte que 99 ans (`yfinance/scrapers/history.py`). Le
+    30/12/1927 du S&P 500 sortirait de la série dès le 05/12/2026, et la
+    baisse de 1929 deviendrait fausse en août 2028, sans aucun message
+    (trouvé par la relecture du 23/11/2026). On demande donc un début
+    explicite. Le reste est celui du thermomètre, qui ne change pas : son
+    nettoyage (`thermometre._nettoyer`) et 3 essais (2 s puis 6 s de pause).
+    Une série coupée au début (voir PREMIERS_COURS) lève ValueError.
+    """
+    import time
+    import yfinance as yf
+    erreur, cours = None, None
+    for n in range(essais):
+        try:
+            h = yf.Ticker(symbole).history(start=DEBUT_YAHOO, interval="1d", auto_adjust=False)
+            if h is not None and not h.empty:
+                cours = thermometre._nettoyer(h["Close"])
+                break
+            erreur = "réponse vide"
+        except Exception as e:          # yfinance lève des erreurs variées quand Yahoo refuse
+            erreur = str(e)
+        if n < essais - 1:
+            time.sleep(2 + 4 * n)
+    if cours is None or not len(cours):
+        raise ValueError(f"aucun cours reçu pour {symbole} ({erreur})")
+    premier = PREMIERS_COURS.get(symbole)
+    debut = _jour(cours.index[0])
+    if premier is not None and (debut - premier).days > MARGE_DEBUT:
+        raise ValueError(f"la série {symbole} de Yahoo commence le {texte_date(debut)}, "
+                         f"pas le {texte_date(premier)} : elle est coupée")
+    return cours
 
 
 # La dernière bonne lecture de chaque indice, avec son heure. Le serveur
@@ -453,15 +522,21 @@ def creux_du_marche(maintenant=None, lire=lire_cours):
             ancienne = _dernieres.get(symbole)
             if ancienne is None:
                 raise ValueError(f"aucune lecture du {nom} pour l'instant ({e})") from e
+            # Un refus OU des cours inutilisables : un seul message, vrai dans les deux cas.
             lecture = dict(ancienne, frais=False, etat=_insecables(
-                f"Yahoo ne répond pas : dernière lecture du "
+                f"Yahoo n'a pas donné de nouveaux cours utilisables : dernière lecture du "
                 f"{texte_heure(datetime.fromisoformat(ancienne['lu_le']))}."))
         indices.append(lecture)
     derniere = max(date.fromisoformat(x["cloture"]) for x in indices)
-    sources = _insecables("Cours de clôture de Yahoo, en prix seul : "
-                          + ", ".join(x["textes"]["source"] for x in indices) + ".")
-    return {"indices": indices, "cloture": f"clôture du {texte_date(derniere, True)}",
-            "legende": LEGENDE, "notes": list(NOTES) + [sources]}
+    # Un indice dont la clôture est plus ancienne que celle de la pastille (une vieille lecture) le
+    # dit à côté de son chiffre, en tête. Des copies : la lecture gardée dans _dernieres ne change pas.
+    sortie = []
+    for x in indices:
+        d = date.fromisoformat(x["cloture"])
+        sortie.append(dict(x, textes=dict(x["textes"], tete_date=(
+            None if d == derniere else f"(clôture du {texte_date_courte(d)})"))))
+    return {"indices": sortie, "cloture": f"clôture du {texte_date(derniere, True)}",
+            "legende": LEGENDE, "notes": notes(sortie)}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -560,6 +635,16 @@ def verifier():
        phrase_en_cours("S&P 500", e) == (f"À la clôture du 6 janvier 2026, le S&P 500 est à moins de 0,1{n}% de "
                                          f"son record de clôture du 5 janvier 2026{n}; c'est aussi son creux pour "
                                          f"l'instant."))
+    e = en_cours(serie([100, 80.5, 79, 85]))
+    ok("baisse en cours : une clôture à −19,5 % ne compte pas, la première à −20 % ou plus (−21 %) oui",
+       e["seuil_date"] == serie([100, 80.5, 79, 85]).index[2].date())
+    e = en_cours(serie([100, 80.5, 90]))
+    ok("baisse en cours restée à −19,5 % : pas de date à −20 %, pas de phrase dessus",
+       e["seuil_date"] is None and "atteint" not in phrase_en_cours("Nasdaq Composite", e))
+    e = en_cours(serie([6000, 6010, 6004.5, 6006]))
+    ok("un creux pour l'instant tronqué à 0 : « à moins de 0,1 % du record », jamais « 0,0 % »",
+       phrase_en_cours("S&P 500", e).endswith(f"Son creux pour l'instant{n}: à moins de 0,1{n}% du record, le 7 janvier 2026.")
+       and f"0,0{n}%" not in phrase_en_cours("S&P 500", e))
     ok("une seule clôture : à son record", en_cours(serie([42]))["au_record"] and baisses(serie([42])) == [])
     try:
         en_cours(serie([]))
@@ -641,6 +726,9 @@ def verifier():
        "ni celle de −31 % (gardée), ni celle en cours", pp is not None and pp["creux_date"] == D("2026-01-06"))
     ok("barre : −19,5 % compte avec −19 % (2 baisses au lieu de 1)", len(baisses(s)) == 1 and len(baisses(s, SEUIL_PROCHE)) == 2)
     ok("la plus proche : aucune baisse finie restée au-dessus → None", la_plus_proche(serie([100, 70, 100])) is None)
+    pp = la_plus_proche(serie([100, 80.5, 101, 1000, 830, 1001]))
+    ok("la plus proche se mesure en %, pas en points : −19,5 % (19,5 points) avant −17 % (170 points)",
+       pp is not None and pp["creux"] == 80.5)
 
     # Les autres textes.
     ok("dates : « 6 octobre 2026 », « 1ᵉʳ juin 1932 », « vendredi 20 novembre 2026 », « 16/09/1929 », « octobre 1990 »",
@@ -668,16 +756,21 @@ def verifier():
         def __init__(self, symbole):
             self.symbole = symbole
 
-        def history(self, period, interval, auto_adjust):
-            demandes.append((self.symbole, period, auto_adjust))
+        def history(self, period=None, interval=None, auto_adjust=None, start=None):
+            demandes.append((self.symbole, period, start, auto_adjust))
             if self.symbole in refuses:
                 raise RuntimeError("Yahoo refuse")
+            if start is not None:
+                jours = pd.bdate_range(debuts.get(self.symbole, "2026-11-16"), periods=4)
+                idx = jours.insert(2, jours[1]).tz_localize(NY)
+                return pd.DataFrame({"Close": [10.0, 11.0, 9.0, 12.0, 13.0], "Adj Close": [9.0] * 5}, index=idx)
             idx = pd.DatetimeIndex(["2026-11-16", "2026-11-17", "2026-11-17", "2026-11-18", "2026-11-19"]).tz_localize(NY)
             brut = [100.0, 90.0, 70.0, 75.0, 80.0] if self.symbole == "^GSPC" else [50.0, 51.0, 52.0, 52.0, 53.0]
             return pd.DataFrame({"Close": brut, "Adj Close": [x * 1.1 for x in brut]}, index=idx)
 
     refuses = set()
     demandes = []
+    debuts = {}
     ancien_yf = sys.modules.get("yfinance")
     anciennes = dict(_dernieres)
     sys.modules["yfinance"] = types.SimpleNamespace(Ticker=FauxTicker)
@@ -698,10 +791,20 @@ def verifier():
            and sp["en_cours"]["seuil_date"] == "2026-11-17")
         ok("Nasdaq inventé : à son record (53), après une égalité à 52", nq["textes"]["tete"] == "à son record"
            and nq["en_cours"]["record_date"] == "2026-11-19")
-        ok("la date de clôture de l'en-tête et la ligne des sources",
+        ok("la date de clôture de l'en-tête, et la ligne des sources avec la dernière clôture",
            r["cloture"] == "clôture du jeudi 19 novembre 2026"
            and r["notes"][-1] == (f"Cours de clôture de Yahoo, en prix seul{n}: S&P 500 depuis le 16 novembre 2026, "
-                                  f"Nasdaq Composite depuis le 16 novembre 2026."))
+                                  f"Nasdaq Composite depuis le 16 novembre 2026{n}; dernière clôture{n}: "
+                                  f"jeudi 19 novembre 2026."))
+        cles = ["pas une prévision", "Nikkei", "prix seul", "action seule", "second krach", "90 valeurs",
+                "Nasdaq-100", "Cours de clôture de Yahoo"]
+        ok("la réponse porte la légende et les 8 notes, chacune à sa place",
+           r["legende"] == LEGENDE and len(r["notes"]) == 8 and all(k in x for k, x in zip(cles, r["notes"])))
+        ok("une baisse en cours (le S&P 500) : les notes en parlent",
+           "la baisse en cours peut finir demain" in r["notes"][0] and "celle en cours n'y est pas comptée" in r["notes"][1])
+        ok("en tête, un pourcentage s'écrit en chiffres, « à son record » en mots, avec « de son record » après le chiffre",
+           sp["tete_num"] and not nq["tete_num"] and sp["textes"]["tete_suite"] == "de son record"
+           and nq["textes"]["tete_suite"] is None and sp["textes"]["tete_date"] is None)
         ok("la réponse s'écrit en JSON valide (aucun NaN, aucune date brute)",
            bool(json.dumps(r, allow_nan=False, ensure_ascii=False)))
 
@@ -710,16 +813,41 @@ def verifier():
         r2 = creux_du_marche(maintenant=ny(2026, 11, 23, 5, 0), lire=lire_vite)
         ok("panne avec une lecture d'avant : le Nasdaq garde sa dernière lecture, dite avec son heure (Paris)",
            not r2["indices"][1]["frais"] and r2["indices"][0]["frais"]
-           and r2["indices"][1]["etat"] == f"Yahoo ne répond pas{n}: dernière lecture du lundi 23 novembre 2026 à 10 h 00."
+           and r2["indices"][1]["etat"] == (f"Yahoo n'a pas donné de nouveaux cours utilisables{n}: dernière lecture "
+                                            f"du lundi 23 novembre 2026 à 10 h 00.")
            and r2["indices"][1]["textes"] == nq["textes"])
         ok("panne : la dernière lecture n'est pas remplacée par la copie « ancienne »", _dernieres["^IXIC"]["frais"])
         _dernieres["^IXIC"] = dict(nq, cloture="2026-11-18")
         r4 = creux_du_marche(maintenant=ny(2026, 11, 23, 5, 0), lire=lire_vite)
-        ok("panne : l'en-tête garde la clôture la plus récente des deux (19/11), pas celle de la vieille lecture",
+        ok("panne : la pastille garde la clôture la plus récente des deux (19/11), pas celle de la vieille lecture",
            r4["cloture"] == "clôture du jeudi 19 novembre 2026")
+        ok("panne : le chiffre de la vieille lecture dit sa clôture en tête, l'autre non",
+           r4["indices"][1]["textes"]["tete_date"] == "(clôture du 18/11/2026)" and r4["indices"][0]["textes"]["tete_date"] is None)
+        ok("panne : la ligne des sources donne les deux dernières clôtures",
+           r4["notes"][-1].endswith(f"dernières clôtures{n}: S&P 500 le 19 novembre 2026, Nasdaq Composite le 18 novembre 2026."))
+        ok("panne : la lecture gardée n'est pas changée par la copie envoyée", "tete_date" not in _dernieres["^GSPC"]["textes"])
+
+        # lire_cours : un début explicite (pas « max », qui ne remonte que 99 ans dans yfinance 1.2.0),
+        # le nettoyage du thermomètre, et une série coupée au début refusée.
         del demandes[:]
-        lire_cours("^GSPC")
-        ok("lire_cours demande à Yahoo tout l'historique (max), en prix seul", demandes == [("^GSPC", "max", False)])
+        debuts.update({"^GSPC": "1927-12-30"})
+        c = lire_cours("^GSPC", essais=1)
+        ok("lire_cours demande à Yahoo un début explicite (1927), en prix seul, jamais « max »",
+           demandes == [("^GSPC", None, DEBUT_YAHOO, False)] and DEBUT_YAHOO == "1927-01-01")
+        ok("lire_cours : fuseau retiré, date en double gardée une fois (la dernière), premier jour le 30/12/1927",
+           list(c.index.strftime("%Y-%m-%d")) == ["1927-12-30", "1928-01-02", "1928-01-03", "1928-01-04"]
+           and list(c.values) == [10.0, 9.0, 12.0, 13.0] and c.index.tz is None)
+        debuts.update({"^GSPC": "1928-01-20"})
+        ok("lire_cours : une série qui commence 21 jours après le premier cours connu passe",
+           len(lire_cours("^GSPC", essais=1)) == 4)
+        debuts.update({"^GSPC": "1928-03-01"})
+        try:
+            lire_cours("^GSPC", essais=1)
+            ok("lire_cours : une série coupée au début (le S&P 500 le 01/03/1928) est refusée", False)
+        except ValueError as err:
+            ok("lire_cours : une série coupée au début (le S&P 500 le 01/03/1928) est refusée, et c'est dit",
+               str(err) == "la série ^GSPC de Yahoo commence le 1ᵉʳ mars 1928, pas le 30 décembre 1927 : elle est coupée")
+        ok("lire_cours : un symbole sans premier cours connu n'est pas contrôlé", len(lire_cours("^AUTRE", essais=1)) == 4)
         _dernieres.clear()
         try:
             creux_du_marche(maintenant=apres, lire=lire_vite)
@@ -753,7 +881,24 @@ def verifier():
        l3["nombre"] == 1 and l3["nombre_proche"] == 2 and l3["textes"]["barre"]
        == f"Avec {m}19{n}% au lieu de {m}20{n}%, il y en aurait 2. La plus proche de la barre s'est arrêtée à "
           f"{m}19,5{n}%, en janvier 2026.")
-    textes = [LEGENDE, *NOTES, *l3["textes"].values(), *[v for b in l3["baisses"] for v in b["textes"].values()],
+    ok("lecture : la phrase et le titre comptent les baisses de 20 %, pas celles de 19 % (une seule, pas 2)",
+       l3["textes"]["histoire"].startswith("Sur les clôtures, une seule baisse")
+       and l3["textes"]["detail"] == f"La seule baisse de 20{n}% ou plus du S&P 500 depuis janvier 2026, sur les clôtures")
+    l4 = lire_indice("S&P 500", serie([100, 99.96]), ny(2026, 1, 20, 9, 0))
+    ok("en tête, une baisse tronquée à 0 s'écrit « à moins de 0,1 % » (en mots), jamais « 0,0 % » ni « à son record »",
+       l4["textes"]["tete"] == f"à moins de 0,1{n}%" and not l4["tete_num"] and l4["textes"]["tete_suite"] == "de son record")
+    au_record = lire_indice("S&P 500", serie([100, 90, 101]), ny(2026, 1, 20, 9, 0))
+    n_baisse, n_record = notes([l3]), notes([au_record, au_record])
+    ok("les notes, deux indices à leur record : rien sur « la baisse en cours »",
+       n_record[0] == "Des faits du passé, pas une prévision. Aucun conseil d'achat ou de vente."
+       and n_record[1].startswith("Le tableau ne garde que les baisses finies, et les baisses finies sont revenues à leur "
+                                  "record. Ailleurs") and not any("en cours" in x for x in n_record))
+    ok("les notes, une baisse en cours : elles en parlent",
+       n_baisse[0] == (f"Des faits du passé, pas une prévision{n}: la baisse en cours peut finir demain ou durer des "
+                       f"années. Aucun conseil d'achat ou de vente.")
+       and f"record{n}: celle en cours n'y est pas comptée. Ailleurs" in n_baisse[1])
+    textes = [LEGENDE, *n_baisse, *n_record, *l3["textes"].values(), *l4["textes"].values(),
+              *[v for b in l3["baisses"] for v in b["textes"].values()],
               phrase_en_cours("S&P 500", en_cours(serie([100, 90, 80, 85]))), phrase_barre(1, 2, proche)]
     import re
     mal = [t for t in textes if t and (any(x in t for x in (" :", " ;", " %", "« ", " »"))
@@ -766,7 +911,7 @@ def verifier():
                            r"remontera|rebondira|finira le|reviendra)\b", re.IGNORECASE)
     conseils = [t for t in textes if t and interdits.search(t)]
     ok("aucun conseil ni date de fin dans les textes" + (f" — {conseils[0]!r}" if conseils else ""), not conseils)
-    visibles = " ".join(NOTES)
+    visibles = " ".join(n_baisse)
     ok("les mots du plan : « prix seul », « les baisses finies sont revenues », « une action seule peut ne jamais revenir »",
        all(x in visibles for x in ("prix seul", "les baisses finies sont revenues", "une action seule peut ne jamais revenir")))
     ok("« sur les clôtures » dans les phrases et le titre du détail",

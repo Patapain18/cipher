@@ -117,6 +117,16 @@ for (const moteur of ['chromium', 'webkit']) {
           const mots = ['Sur les clôtures', 'prix seul', 'les baisses finies sont revenues', 'une action seule peut ne jamais revenir'];
           ok(mots.every((x) => lu.includes(x)), `${ou} : les mots du plan visibles (${mots.filter((x) => !lu.includes(x)).join(', ') || 'tous'})`);
           // Des mots entiers : « vendredi » n'est pas « vendre ».
+          const lignes1 = await page.evaluate(() => [...document.querySelectorAll('#creux .creux-table tbody tr:first-child')]
+            .map((tr) => [...tr.querySelectorAll('th > span, td')].map((c) => c.textContent.trim())));
+          const attendu = vraie.data.indices.filter((x) => x.baisses.length).map((x) => {
+            const t = x.baisses[0].textes;
+            return [t.record, t.niveau, t.creux, t.baisse, t.descente, t.retour_record, t.retour_creux];
+          });
+          ok(JSON.stringify(lignes1) === JSON.stringify(attendu), `${ou} : chaque colonne du tableau a le bon texte (première ligne de chaque indice)${JSON.stringify(lignes1) === JSON.stringify(attendu) ? '' : ' — lu ' + JSON.stringify(lignes1)}`);
+          const tete = espaces(await page.locator('#creux .creux-tete').innerText());
+          const teteAttendue = vraie.data.indices.map((x) => espaces([x.nom, x.textes.tete, x.textes.tete_suite, x.textes.tete_date].filter(Boolean).join(' ')));
+          ok(teteAttendue.every((t) => tete.includes(t)), `${ou} : l'en-tête dit « ${teteAttendue.join(' » et « ')} »`);
           const interdits = /(?<![a-zà-ÿ])(achète|acheter|vends|vendre|prévoi\S*|il reste|reste à|remontera|rebondira|reviendra|finira le)(?![a-zà-ÿ])/i;
           ok(!interdits.test(lu), `${ou} : aucun conseil ni date de fin${interdits.test(lu) ? ' — ' + lu.match(interdits)[0] : ''}`);
         }
@@ -205,13 +215,21 @@ const cas = [
   ['un indice en « dernière lecture »', json({ ok: true, data: (() => {
     const d = copie();
     d.indices[1].frais = false;
-    d.indices[1].etat = 'Yahoo ne répond pas : dernière lecture du lundi 23 novembre 2026 à 10 h 05.';
+    d.indices[1].etat = 'Yahoo n\'a pas donné de nouveaux cours utilisables : dernière lecture du lundi 23 novembre 2026 à 10 h 05.';
+    d.indices[1].textes.tete_date = '(clôture du 19/11/2026)';
     return d;
-  })() }), ['Yahoo ne répond pas : dernière lecture du lundi 23 novembre 2026 à 10 h 05.']],
+  })() }), ['Yahoo n\'a pas donné de nouveaux cours utilisables : dernière lecture du lundi 23 novembre 2026 à 10 h 05.',
+    'Nasdaq Composite −18,0 % de son record (clôture du 19/11/2026)']],
+  ['un serveur muet', (route) => route.abort('failed'),
+    ['Le creux du marché est indisponible pour l\'instant (le serveur de l\'appli ne répond pas). Nouvel essai dans une minute.']],
+  ['une réponse illisible (une page d\'erreur HTML)', (route) => route.fulfill({ status: 502, contentType: 'text/html', body: '<h1>502</h1>' }),
+    ['Le creux du marché est indisponible pour l\'instant (réponse illisible du serveur (502)).']],
   ['à son record, aucune baisse finie, une baisse qui a touché −20 %', json({ ok: true, data: (() => {
     const d = copie();
     const sp = d.indices[0];
     sp.textes.tete = 'à son record';
+    sp.textes.tete_suite = null;
+    sp.tete_num = false;
     sp.en_cours.au_record = true;
     sp.textes.en_cours = 'À la clôture du 20 novembre 2026, le S&P 500 est à son record.';
     const nq = d.indices[1];
@@ -232,9 +250,9 @@ try {
     const texte = espaces(await page.locator('#section-creux').innerText());
     const manque = attendus.filter((a) => !texte.includes(espaces(a)));
     ok(!manque.length, `fabriqué, ${nom} : ${manque.length ? 'MANQUE « ' + manque.join(' » « ') + ' » — lu : ' + texte.slice(0, 260) : 'la section le dit'}`);
-    const sansErreur = erreurs.filter((e) => !e.includes('404') && !e.includes('500'));
+    const sansErreur = erreurs.filter((e) => !/404|500|502|ERR_FAILED|Failed to load resource/.test(e));
     ok(!sansErreur.length, `fabriqué, ${nom} : console sans erreur de script${sansErreur.length ? ' — ' + sansErreur.join(' | ') : ''}`);
-    if (nom === 'ancien serveur (404)' || nom.startsWith('panne')) {
+    if (nom === 'ancien serveur (404)' || nom.startsWith('panne') || nom === 'un serveur muet') {
       const pastille = await page.$eval('#creux-date', (e) => getComputedStyle(e).display);
       ok(pastille === 'none', `fabriqué, ${nom} : pas de pastille de date vide (display ${pastille})`);
     }

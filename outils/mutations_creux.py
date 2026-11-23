@@ -10,7 +10,7 @@ CE QUE ÇA FAIT
     modifiés, et rien n'est lu chez Yahoo.
 
 LANCER
-    python3 outils/mutations_creux.py           # toutes (environ une minute)
+    python3 outils/mutations_creux.py           # toutes (quelques secondes)
     python3 outils/mutations_creux.py 3 17      # seulement les erreurs n° 3 et 17
 """
 
@@ -76,7 +76,7 @@ ERREURS = [
      "la baisse en cours datée de son creux"),
     ([('    if ec["seuil_date"] is not None:', '    if ec["seuil_date"] is not None and False:')],
      "la phrase des −20 % touchés oubliée"),
-    ([("{texte_baisse(ec['creux'], ec['record'])}, \"", "{texte_baisse(ec['derniere'], ec['record'])}, \"")],
+    ([('dc = dixiemes_de_baisse(ec["creux"], ec["record"])', 'dc = dixiemes_de_baisse(ec["derniere"], ec["record"])')],
      "le creux pour l'instant pris à la dernière clôture"),
     ([("retour('retour_creux', 'depuis le creux')", "retour('retour_record', 'depuis le creux')")],
      "la médiane depuis le record dite « depuis le creux »"),
@@ -97,10 +97,47 @@ ERREURS = [
     ([("        except ValueError as e:\n            ancienne", "        except KeyError as e:\n            ancienne")],
      "un refus de Yahoo fait tomber les deux indices"),
     ([("derniere = max(date.fromisoformat", "derniere = min(date.fromisoformat")], "l'en-tête prend la clôture la plus ancienne"),
-    ([('thermometre._cours(symbole, "max")', 'thermometre._cours(symbole, "10y")')], "seulement dix ans de cours"),
+    ([("history(start=DEBUT_YAHOO, interval", 'history(period="max", interval')],
+     "« max » (99 ans dans yfinance 1.2.0) au lieu d'un début explicite"),
+    ([("(debut - premier).days > MARGE_DEBUT", "(debut - premier).days > 3650")], "une série coupée au début acceptée"),
+    ([('cours = thermometre._nettoyer(h["Close"])', 'cours = h["Close"]')], "les cours de Yahoo pas nettoyés"),
     ([('("^IXIC", "Nasdaq Composite")', '("^NDX", "Nasdaq Composite")')], "le Nasdaq-100 à la place du Composite"),
     ([("lecture.update(symbole=symbole, lu_le=maintenant.isoformat(), frais=True",
        "lecture.update(symbole=symbole, lu_le=maintenant.isoformat(), frais=False")], "une lecture fraîche dite ancienne"),
+    # La première relecture (23/11/2026) : des erreurs qui passaient, puis une par correction.
+    ([("def en_cours(cours, seuil=SEUIL):", "def en_cours(cours, seuil=SEUIL_PROCHE):")],
+     "la baisse en cours dite à −20 % dès −19 %"),
+    ([("restees = [(v[c] / v[r], r, c, f)", "restees = [(v[c] - v[r], r, c, f)")], "la plus proche mesurée en points"),
+    ([('"histoire": phrase_histoire(liste, debut),', '"histoire": phrase_histoire(baisses(c, SEUIL_PROCHE), debut),')],
+     "la phrase compte les baisses de 19 %"),
+    ([('"detail": titre_detail(nom, len(liste), debut),', '"detail": titre_detail(nom, n_proche, debut),')],
+     "le titre du détail compte les baisses de 19 %"),
+    ([('"legende": LEGENDE, "notes": notes(sortie)}', '"legende": "", "notes": notes(sortie)}')], "la légende vide"),
+    ([("return [_insecables(n) for n in (n1, n2, *NOTES_FIXES, sources)]",
+       "return [_insecables(n) for n in (n1, n2, sources)]")], "les notes fixes perdues dans la réponse"),
+    ([("    \"Le Nasdaq-100 (QQQ), souvent cité, n'est pas suivi ici.\",\n", "")], "la note du Nasdaq-100 retirée"),
+    ([("un second krach avant ce record en fait partie", "un autre krach compte à part")], "la note du second krach changée"),
+    ([('tete = "à son record" if ec["au_record"] else (texte_pct(d_tete) if d_tete else "à moins de 0,1 %")',
+       'tete = "à son record" if ec["au_record"] or not d_tete else texte_pct(d_tete)')],
+     "« à son record » quand la baisse tronquée vaut 0"),
+    ([('(texte_pct(d_tete) if d_tete else "à moins de 0,1 %")',
+       '(texte_pct(d_tete) if d_tete is not None else "à moins de 0,1 %")')], "« 0,0 % » en tête"),
+    ([("{texte_pct(dc) if dc else 'à moins de 0,1 % du record'}", "{texte_pct(dc)}")],
+     "« 0,0 % » pour le creux pour l'instant"),
+    ([('"tete_num": bool(d_tete),', '"tete_num": not ec["au_record"],')], "« à moins de 0,1 % » écrit en chiffres"),
+    ([('"tete_suite": None if ec["au_record"] else "de son record",', '"tete_suite": "de son record",')],
+     "« à son record de son record »"),
+    ([('None if d == derniere else f"(clôture du', 'None if True else f"(clôture du')],
+     "une vieille lecture sans sa date en tête"),
+    ([('sortie.append(dict(x, textes=dict(x["textes"], tete_date=(',
+       'sortie.append(x) or x["textes"].update(tete_date=(')], "la lecture gardée modifiée par la réponse"),
+    ([('en_baisse = any(not x["en_cours"]["au_record"] for x in indices)', "en_baisse = True")],
+     "les notes parlent d'une baisse en cours qui n'existe pas"),
+    ([("Yahoo n'a pas donné de nouveaux cours utilisables : dernière", "Yahoo ne répond pas : dernière")],
+     "« Yahoo ne répond pas » quand il a répondu"),
+    ([('derniere = f" ; dernière clôture : {texte_date(dates[0], True)}."', 'derniere = "."')],
+     "la date de la dernière clôture absente des notes"),
+    ([("    if len(set(dates)) == 1:", "    if True:")], "deux clôtures différentes dites comme une seule"),
 ]
 
 

@@ -1034,9 +1034,12 @@ async function renderThermometre() {
    une date de fin, jamais un conseil, jamais de rouge.
    ------------------------------------------------------------ */
 function htmlCreux(c) {
+  /* En tête : « S&P 500 −11,6 % de son record » (le chiffre en chiffres, le
+     reste en mots), et la date d'une vieille lecture à côté de son chiffre. */
+  const suite = (t) => (t ? ` <span class="creux-suite">${esc(t)}</span>` : '');
   const tete = c.indices.map((x) => `
       <p class="creux-chiffre"><span class="creux-indice">${esc(x.nom)}</span>
-        <span class="${x.en_cours?.au_record ? '' : 'num '}creux-valeur">${esc(x.textes.tete)}</span></p>`).join('');
+        <span class="${x.tete_num ? 'num ' : ''}creux-valeur">${esc(x.textes.tete)}</span>${suite(x.textes.tete_suite)}${suite(x.textes.tete_date)}</p>`).join('');
   const blocs = c.indices.map((x) => `
       <li class="creux-bloc">
         <p class="creux-nom">${esc(x.nom)}</p>
@@ -1096,14 +1099,18 @@ async function renderCreux() {
   let html;
   let c = null;
   try {
-    const res = await fetch('/api/creux');
+    let res;
+    /* Un serveur muet : fetch lève une erreur du navigateur, en anglais
+       (« Load failed », « Failed to fetch ») ; la page le dit en français. */
+    try { res = await fetch('/api/creux'); } catch { throw new Error('le serveur de l\'appli ne répond pas'); }
     if (res.status === 404) {
       /* Le serveur de l'appli date d'avant cette section : son Python ne
          se relit qu'en relançant l'appli (les pages, elles, se relisent seules). */
       html = '<p class="creux-attente">Le creux du marché s\'affichera quand l\'appli sera relancée&nbsp;: son serveur '
         + 'ne connaît pas encore cette section.</p>';
     } else {
-      const json = await res.json();
+      let json;
+      try { json = await res.json(); } catch { throw new Error(`réponse illisible du serveur (${res.status})`); }
       if (!json.ok) throw new Error(json.error || 'erreur inconnue');
       c = json.data;
       html = htmlCreux(c);
