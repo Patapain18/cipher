@@ -297,7 +297,29 @@ _memo_passe = {}      # (symbole, moment) → cours : un cours passé ne change 
 _memo_repli = {}      # (symbole, moment) → (instant de lecture, clôture du jour) : un repli, redemandé
 _memo_recent = {}     # (symbole, moment) → (heure réelle de la lecture, cours) : un moment de moins de 10 minutes
 MEMO_ACTUEL_S = 30
+MEMO_PERIME_S = 300   # dans le serveur : un cours des barres de moins de 5 min sert le temps d'être relu à côté
 REPLI_S = 600         # toutes les 10 minutes, pour reprendre la vraie barre dès que Yahoo la rend
+_relectures = {}      # symbole → le fil qui relit ses barres en arrière-plan (un seul à la fois)
+_verrou_relectures = threading.Lock()
+
+
+def _relire_en_fond(symbole):
+    """Relit les barres d'une minute d'un symbole dans un fil à part ; un seul fil par symbole à la fois.
+    Un échec ne dit rien : l'appel suivant réessaie, et au-delà de MEMO_PERIME_S, la lecture redevient directe."""
+    with _verrou_relectures:
+        fil = _relectures.get(symbole)
+        if fil is not None and fil.is_alive():
+            return
+
+        def relire():
+            try:
+                c = _historique(symbole, period="5d", interval="1m", prepost=True)
+                _memo_actuel[symbole] = (time.time(), float(c.iloc[-1]), c.index[-1])
+            except Exception:
+                pass
+        fil = threading.Thread(target=relire, name=f"relire-{symbole}", daemon=True)
+        _relectures[symbole] = fil
+        fil.start()
 
 
 class Cours(tuple):
@@ -346,7 +368,14 @@ def cours_actuel(symbole):
     if direct is not None and (_maintenant_utc() - direct.heure).total_seconds() <= cours_direct.FRAIS_S:
         return _cours(direct.prix, direct.heure, "direct")
     deja = _memo_actuel.get(symbole)
-    if deja and 0 <= time.time() - deja[0] < MEMO_ACTUEL_S:
+    age = time.time() - deja[0] if deja else None
+    if deja and 0 <= age < MEMO_ACTUEL_S:
+        cours, heure = deja[1], deja[2]
+    elif deja and 0 <= age < MEMO_PERIME_S and cours_direct.actif():
+        # Dans le serveur (la page relit toutes les 2 s pendant le direct) : le cours gardé tout de
+        # suite, relu à côté. Un Yahoo lent ne retient plus la réponse (relecture du 24/11/2026 : une
+        # seule lecture de plus de 5 s faisait tomber le carnet à « toutes les minutes »).
+        _relire_en_fond(symbole)
         cours, heure = deja[1], deja[2]
     else:
         try:
@@ -1482,6 +1511,52 @@ def _verifier_direct(ok, proche):
             _memo_actuel["AMD"] = (time.time() - 31,) + _memo_actuel["AMD"][1:]
             cours_actuel("AMD")
             ok("direct : … et relues après 31 s à l'heure réelle", appels == ["AMD", "AMD"])
+            # Dans le serveur (flux activé) : un cours des barres de 31 s à 5 min sert tout de suite, relu à côté.
+            vrai_actif = cours_direct.actif
+            cours_direct.actif = lambda: True
+            try:
+                _memo_actuel.clear()
+                flux_faux.pop("AMD", None)
+                barres["AMD"] = (il_y_a(60), 407.0)
+                _memo_actuel["AMD"] = (time.time() - 40, 406.0, il_y_a(100))
+                appels.clear()
+                t0 = time.time()
+                r = cours_actuel("AMD")
+                ok("direct (serveur) : des barres gardées il y a 40 s servent tout de suite, sans attendre Yahoo",
+                   r[0] == 406.0 and time.time() - t0 < 0.5)
+                fin = time.time() + 3
+                while time.time() < fin and _memo_actuel["AMD"][1] != 407.0:
+                    time.sleep(0.01)
+                ok("direct (serveur) : … et elles sont relues à côté (une seule lecture)",
+                   _memo_actuel["AMD"][1] == 407.0 and appels == ["AMD"] and cours_actuel("AMD")[0] == 407.0)
+                _memo_actuel["AMD"] = (time.time() - MEMO_PERIME_S - 1, 406.0, il_y_a(400))
+                appels.clear()
+                r = cours_actuel("AMD")
+                ok("direct (serveur) : au-delà de 5 min, la lecture redevient directe",
+                   r[0] == 407.0 and appels == ["AMD"])
+                lent = {"n": 0}
+
+                def historique_lent(symbole, **_k):
+                    lent["n"] += 1
+                    time.sleep(0.3)
+                    return pd.Series([408.0], index=pd.DatetimeIndex([il_y_a(30)]))
+                _historique = historique_lent
+                _memo_actuel["AMD"] = (time.time() - 40, 406.0, il_y_a(100))
+                for _ in range(5):
+                    cours_actuel("AMD")
+                fin = time.time() + 3
+                while time.time() < fin and _memo_actuel["AMD"][1] != 408.0:
+                    time.sleep(0.01)
+                ok("direct (serveur) : cinq demandes pendant une relecture lente n'en lancent qu'une",
+                   lent["n"] == 1 and _memo_actuel["AMD"][1] == 408.0)
+                _historique = faux_historique
+            finally:
+                cours_direct.actif = vrai_actif
+            _memo_actuel["AMD"] = (time.time() - 40, 406.0, il_y_a(100))
+            appels.clear()
+            ok("direct : hors du serveur (flux pas activé), des barres de 40 s sont relues tout de suite, comme avant",
+               cours_actuel("AMD")[0] == 407.0 and appels == ["AMD"])
+
             # La veille du Mac : le dernier cours du flux a 2 h à l'heure réelle.
             _memo_actuel.clear()
             flux_faux["AMD"] = CD(415.0, maintenant, 1)
@@ -1530,8 +1605,11 @@ def _verifier_direct(ok, proche):
             flux_faux[CHANGE] = CD(1.10, il_y_a(1), 1)
             ok("direct : un dollar frais dans le flux ne fait pas « en direct »",
                position()["direct"]["en_direct"] is False)
-            etat_flux.update(etat="connexion", depuis_s=1.0)
-            ok("direct : pendant la connexion, la page relit vite", position()["direct"]["rapide"] is True)
+            etat_flux.update(etat="connexion", depuis_s=1.0, premier_essai=True)
+            ok("direct : pendant la première connexion, la page relit vite", position()["direct"]["rapide"] is True)
+            etat_flux.update(etat="connexion", depuis_s=1.0, premier_essai=False)
+            ok("direct : pendant un nouvel essai après une panne, elle relit lentement",
+               position()["direct"]["rapide"] is False)
             etat_flux.update(etat="ouvert", depuis_s=3.0)
             ok("direct : … et pendant les 10 s qui suivent l'ouverture", position()["direct"]["rapide"] is True)
             etat_flux.update(etat="ouvert", depuis_s=10.0)

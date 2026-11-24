@@ -66,6 +66,7 @@ REPRISE_S = 2           # le premier nouvel essai après une connexion qui a don
 FUTUR_S = 10            # une heure de cours plus de 10 s dans le futur est refusée
 TAILLE_MAX = 64 * 1024  # un message plus gros fait fermer la connexion (websockets), qui est refaite
 RECV_S = 1.0            # le fil regarde l'heure au moins une fois par seconde
+OUVERTURE_S = 10        # une connexion qui ne s'ouvre pas en 10 s est abandonnée
 SEANCE_NORMALE = 1      # market_hours de Yahoo : 0 avant-séance, 1 séance normale, 2 après-séance
 ETATS_BOURSE = ("avant", "ouverte", "apres", "fermee", None)
 
@@ -89,7 +90,8 @@ _maintenant = time.time         # l'heure réelle ; remplaçable par les tests (
 _actif = {"url": None}
 _demandes = {}                  # client → (instant de la demande, frozenset de symboles)
 _bourse = {"etat": None}
-_derniers = {}                  # symbole → CoursDirect
+_derniers = {}                  # symbole → CoursDirect (le dernier message gardé, toutes séances)
+_derniers_normale = {}          # symbole → CoursDirect (le dernier de la séance normale : le tableau des 49)
 _fil = {"vivant": False, "objet": None}
 _etat = {}
 
@@ -97,9 +99,11 @@ _etat = {}
 def _remettre_a_zero():
     _demandes.clear()
     _derniers.clear()
+    _derniers_normale.clear()
     _bourse["etat"] = None
     _etat.clear()
-    _etat.update(etat="arrete", depuis=None, raison=None, messages=0, connexions=0, ignores={})
+    _etat.update(etat="arrete", depuis=None, raison=None, messages=0, connexions=0, ignores={},
+                 premier_essai=False)
 
 
 _remettre_a_zero()
@@ -138,6 +142,7 @@ def suivre(client, symboles):
             return
         _fil["vivant"] = True
         _changer("connexion", None)
+        _etat["premier_essai"] = True
         fil = threading.Thread(target=_boucle, name="cours-direct", daemon=True)
         _fil["objet"] = fil
     fil.start()
@@ -163,6 +168,15 @@ def cours(symbole):
         return _derniers.get(symbole)
 
 
+def cours_normal(symbole):
+    """Le dernier cours gardé de la SÉANCE NORMALE (market_hours 1), quel que soit son âge, ou None :
+    un message d'avant- ou d'après-séance ne le remplace pas (le tableau des 49, relecture du 24/11)."""
+    if not _actif["url"]:
+        return None
+    with _verrou:
+        return _derniers_normale.get(symbole)
+
+
 def etat():
     """L'état du flux, pour la page et pour comprendre une panne : jamais d'exception."""
     with _verrou:
@@ -178,12 +192,16 @@ def etat():
 def rythme_rapide(en_direct):
     """
     La page relit-elle toutes les 2 s (sinon toutes les 60 s) ? Oui en
-    direct, pendant la connexion, et pendant les 10 s qui suivent
-    l'ouverture (le temps que les premiers cours arrivent).
+    direct, pendant la PREMIÈRE connexion après un démarrage, et pendant
+    les 10 s qui suivent une ouverture (le temps que les premiers cours
+    arrivent). Pas pendant les nouveaux essais après une panne : un flux
+    qui accepte la connexion sans répondre faisait relire la page toutes
+    les 2 s sous « toutes les minutes » (relecture du 24/11/2026).
     """
     e = etat()
     vient_d_ouvrir = e.get("etat") == "ouvert" and e.get("depuis_s") is not None and e["depuis_s"] < 10
-    return bool(en_direct or e.get("etat") == "connexion" or vient_d_ouvrir)
+    premiere_connexion = e.get("etat") == "connexion" and bool(e.get("premier_essai"))
+    return bool(en_direct or premiere_connexion or vient_d_ouvrir)
 
 
 def arreter():
@@ -256,6 +274,8 @@ def _garder(brut, abonnes, PricingData):
             return False
         # À la même seconde, le message suivant est le plus récent : il remplace le précédent.
         _derniers[symbole] = CoursDirect(prix, heure, seance)
+        if seance == SEANCE_NORMALE:
+            _derniers_normale[symbole] = _derniers[symbole]
         _etat["messages"] += 1
     return True
 
@@ -299,7 +319,7 @@ def _une_connexion():
         _etat["connexions"] += 1
         url = _actif["url"]
     try:
-        with connect(url, open_timeout=10, close_timeout=2, max_size=TAILLE_MAX,
+        with connect(url, open_timeout=OUVERTURE_S, close_timeout=2, max_size=TAILLE_MAX,
                      ping_interval=20, ping_timeout=20, logger=_MUET) as ws:
             with _verrou:
                 _changer("ouvert", None)
@@ -350,6 +370,8 @@ def _boucle():
                         _changer("arrete", None)
                     return
             issue, a_garde = _une_connexion()
+            with _verrou:
+                _etat["premier_essai"] = False
             if issue == "indisponible":
                 with _verrou:
                     _fil["vivant"] = False
@@ -401,8 +423,8 @@ def verifier():
     from websockets.sync.server import serve
     from yfinance.pricing_pb2 import PricingData
 
-    global DEMANDE_S, BATTEMENT_S, MUET_S, ATTENTE_S, REPRISE_S, RECV_S, _maintenant
-    reglages = (DEMANDE_S, BATTEMENT_S, MUET_S, ATTENTE_S, REPRISE_S, RECV_S, _maintenant)
+    global DEMANDE_S, BATTEMENT_S, MUET_S, ATTENTE_S, REPRISE_S, RECV_S, OUVERTURE_S, _maintenant
+    reglages = (DEMANDE_S, BATTEMENT_S, MUET_S, ATTENTE_S, REPRISE_S, RECV_S, _maintenant, OUVERTURE_S)
     resultats = []
 
     def ok(nom, cond):
@@ -568,6 +590,20 @@ def verifier():
            attendre_que(lambda: cours("SPY").prix == 712.75))
         ok("le fil est toujours vivant après tout ça", _fil["vivant"] and etat()["etat"] == "ouvert")
 
+        print("Le cours de la séance normale (le tableau des 49)")
+        t1 = cours("AMD").heure.timestamp() + 0.001  # juste après le dernier gardé, jamais dans le futur
+        faux.envoyer(message("AMD", 430.0, t1, 1))
+        ok("un message de séance normale : le dernier cours ET le cours de séance",
+           attendre_que(lambda: cours("AMD").prix == 430.0) and cours_normal("AMD").prix == 430.0)
+        faux.envoyer(message("AMD", 431.5, t1 + 0.001, 2))
+        ok("un message d'après-séance remplace le dernier cours, PAS celui de la séance normale",
+           attendre_que(lambda: cours("AMD").prix == 431.5) and cours_normal("AMD").prix == 430.0
+           and cours("AMD").seance == 2)
+        faux.envoyer(message("AMD", 432.0, t1 + 0.002, 1))
+        ok("un nouveau message de séance normale le remplace",
+           attendre_que(lambda: cours_normal("AMD").prix == 432.0))
+        ok("un symbole sans message de séance normale : None", cours_normal("MSFT") is None)
+
         print("Le battement et les symboles")
         n = len(faux.demandes("subscribe"))
         ok("les symboles sont redemandés au battement",
@@ -642,6 +678,42 @@ def verifier():
            attendre_que(lambda: etat()["etat"] == "ouvert", 4, AMD))
         faux.envoyer(message("AMD", 420.0, time.time()))
         ok("… et les cours avec elle", attendre_que(lambda: cours("AMD").prix == 420.0, 4, AMD))
+
+        print("Un flux qui accepte la connexion sans jamais répondre")
+        import socket
+        muet = socket.socket()
+        muet.bind(("127.0.0.1", 0))
+        muet.listen(8)
+        clients = []
+
+        def accepter():
+            try:
+                for _ in range(8):
+                    clients.append(muet.accept())
+            except OSError:          # la prise fermée à la fin du cas
+                pass
+        threading.Thread(target=accepter, daemon=True).start()
+        arreter()
+        OUVERTURE_S = 0.6
+        activer(f"ws://127.0.0.1:{muet.getsockname()[1]}")
+        suivre(*AMD)
+        ok("la première connexion après un démarrage : relu vite le temps qu'elle s'ouvre",
+           etat()["etat"] == "connexion" and rythme_rapide(False) is True)
+        ok("elle n'aboutit pas : l'état dit pourquoi, et la page ralentit",
+           attendre_que(lambda: etat()["etat"] == "attente", 4, AMD) and rythme_rapide(False) is False)
+        ok("le nouvel essai, encore « connexion », ne fait PAS relire vite",
+           attendre_que(lambda: etat()["connexions"] >= 2 and etat()["etat"] == "connexion", 6, AMD)
+           and rythme_rapide(False) is False)
+        arreter()
+        OUVERTURE_S = reglages[7]
+        for c, _ in clients:
+            c.close()
+        muet.close()
+        activer(url)
+        suivre(*AMD)
+        attendre_que(lambda: etat()["etat"] == "ouvert", 4, AMD)
+        faux.envoyer(message("AMD", 420.0, time.time()))
+        attendre_que(lambda: cours("AMD") is not None and cours("AMD").prix == 420.0, 4, AMD)
 
         print("Un message trop gros")
         n0 = faux.connexions
@@ -724,7 +796,7 @@ def verifier():
         ok("arreter() remet tout à zéro", etat()["etat"] == "arrete" and cours("AMD") is None
            and etat()["messages"] == 0)
     finally:
-        DEMANDE_S, BATTEMENT_S, MUET_S, ATTENTE_S, REPRISE_S, RECV_S, _maintenant = reglages
+        DEMANDE_S, BATTEMENT_S, MUET_S, ATTENTE_S, REPRISE_S, RECV_S, _maintenant, OUVERTURE_S = reglages
         arreter()
         _actif["url"] = None
         faux.fermer()

@@ -659,7 +659,11 @@ function majLigneDirect() {
   if (!ligne || !window.PP) return;
   const mot = PP.motDuDirect(maPosition?.direct, { erreur: Boolean(erreurDirect) });
   const dernier = (maPosition?.lignes || []).map((l) => l.cours_a).filter(Boolean).sort().pop();
-  const texte = mot && dernier ? `Cours de ${heureOuDate(dernier)}, ${mot}.` : '';
+  /* Une lecture ratée : les derniers chiffres restent, et la ligne le dit, comme le carnet
+     (relecture du 24/11/2026 : la section montrait de vieux montants sans rien dire). */
+  const texte = erreurDirect && maPosition
+    ? `Dernier rafraîchissement impossible (${erreurDirect}) : ces chiffres datent du tour précédent.`
+    : mot && dernier ? `Cours de ${heureOuDate(dernier)}, ${mot}.` : '';
   if (ligne.textContent !== texte) ligne.textContent = texte;
   ligne.hidden = !texte;
 }

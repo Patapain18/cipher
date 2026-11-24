@@ -310,7 +310,7 @@
 
   /* Un numéro par chargement : si deux tours se croisent (la minute qui
      tombe pendant un ajout), seule la réponse la plus récente s'affiche. */
-  const tickets = { position: 0, journal: 0, graphe: 0, annee: 0 };
+  const tickets = { position: 0, journal: 0 };
 
   /* ------------------------------------------------------------
      1. LA POSITION, EN UNE LIGNE
@@ -753,32 +753,50 @@
 
   /* Le graphique de la valeur et de la période choisies. Les données
      déjà reçues resservent tant que le serveur ne les a pas renouvelées. */
-  async function chargerGraphe({ forcer = false } = {}) {
+  /* Les courbes lisent Yahoo (plusieurs secondes quand il traîne). Pendant le direct, le tour
+     repasse toutes les 2 s : une seule lecture en vol par courbe, et après un échec, pas de
+     nouvel essai automatique avant 30 s (relecture du 24/11/2026 : un graphique en panne était
+     redemandé à chaque tour). Un clic (une autre valeur, une autre période) relit tout de suite.
+     Une courbe se dessine si elle est TOUJOURS celle choisie quand elle arrive. */
+  const enVol = new Set();
+  const echecs = new Map();          // « NVDA|1j » → heure du dernier échec
+  const ATTENTE_APRES_ECHEC = 30_000;
+  const enAttente = (cle, demande) => enVol.has(cle)
+    || (!demande && Date.now() - (echecs.get(cle) || 0) < ATTENTE_APRES_ECHEC);
+
+  async function chargerGraphe({ demande = false } = {}) {
     const { ticker, periode } = etat;
     if (!ticker) return;
     const cle = `${ticker}|${periode}`;
     const connu = etat.graphes.get(cle);
+    const choisie = () => etat.ticker === ticker && etat.periode === periode;
     /* Déjà dessinée avec ces données : on ne retouche à rien. */
     const dessiner = (data) => { if (deja.graphe !== data) { dessinerGraphe(data); deja.graphe = data; } };
-    if (!forcer && connu && Date.now() - connu.a < FRAIS_CACHE[periode]) {
-      dessiner(connu.data);
-      return;
-    }
-    const n = ++tickets.graphe;
+    if (connu) dessiner(connu.data);            // la courbe gardée, le temps de la relire
+    if (connu && Date.now() - connu.a < FRAIS_CACHE[periode]) return;
+    if (enAttente(cle, demande)) return;
+    enVol.add(cle);
     $('#pc-graphe').setAttribute('aria-busy', 'true');
     try {
-      const data = await PP.graphique(ticker, periode);
-      etat.graphes.set(cle, { data, a: Date.now() });
-      if (n === tickets.graphe && etat.ticker === ticker && etat.periode === periode) dessiner(data);
+      const data = await PP.graphique(ticker, periode, { delai: 30_000 });
+      const entree = { data, a: Date.now() };
+      etat.graphes.set(cle, entree);
+      echecs.delete(cle);
+      if (choisie()) dessiner(data);
+      /* La courbe d'un an porte aussi les indicateurs : ils suivent sans seconde lecture. */
+      if (periode === '1a' && etat.ticker === ticker && deja.indicateurs !== entree) {
+        dessinerIndicateurs(data);
+        deja.indicateurs = entree;
+      }
     } catch (e) {
-      if (n !== tickets.graphe) return;
-      if (connu) dessiner(connu.data);   // l'ancienne courbe vaut mieux qu'un trou
-      else {
+      echecs.set(cle, Date.now());
+      if (choisie() && !connu) {
         $('#pc-graphe').innerHTML = `<p class="pc-attente">Cours indisponible pour l'instant (${PP.esc(e.message)}).</p>`;
         deja.graphe = null;
       }
     } finally {
-      if (n === tickets.graphe) $('#pc-graphe').removeAttribute('aria-busy');
+      enVol.delete(cle);
+      if (!enVol.has(`${etat.ticker}|${etat.periode}`)) $('#pc-graphe').removeAttribute('aria-busy');
     }
   }
 
@@ -872,29 +890,32 @@
 
   /* La courbe d'un an de la valeur suivie : elle porte les indicateurs.
      Même réserve que le graphique (le serveur la garde une heure). */
-  async function chargerIndicateurs() {
+  async function chargerIndicateurs({ demande = false } = {}) {
     const ticker = etat.ticker;
     if (!ticker) return;
     const cle = `${ticker}|1a`;
     const connu = etat.graphes.get(cle);
-    if (connu && Date.now() - connu.a < FRAIS_CACHE['1a']) {
-      if (deja.indicateurs !== connu) { dessinerIndicateurs(connu.data); deja.indicateurs = connu; }
-      return;
-    }
-    const n = ++tickets.annee;
+    if (connu && deja.indicateurs !== connu) { dessinerIndicateurs(connu.data); deja.indicateurs = connu; }
+    if (connu && Date.now() - connu.a < FRAIS_CACHE['1a']) return;
+    if (enAttente(cle, demande)) return;       // déjà en vol (la courbe d'un an), ou en échec il y a moins de 30 s
+    enVol.add(cle);
     try {
-      const data = await PP.graphique(ticker, '1a');
-      const entreeCache = { data, a: Date.now() };
-      etat.graphes.set(cle, entreeCache);
-      if (n === tickets.annee && etat.ticker === ticker) {
+      const data = await PP.graphique(ticker, '1a', { delai: 30_000 });
+      const entree = { data, a: Date.now() };
+      etat.graphes.set(cle, entree);
+      echecs.delete(cle);
+      if (etat.ticker === ticker) {
         dessinerIndicateurs(data);
-        deja.indicateurs = entreeCache;
+        deja.indicateurs = entree;
       }
     } catch (e) {
-      if (n === tickets.annee && !connu) {
+      echecs.set(cle, Date.now());
+      if (etat.ticker === ticker && !connu) {
         $('#pc-indicateurs').innerHTML = `<p class="pc-attente">Indicateurs indisponibles pour l'instant
           (${PP.esc(e.message)}).</p>`;
       }
+    } finally {
+      enVol.delete(cle);
     }
   }
 
@@ -957,7 +978,10 @@
   async function tour() {
     if (!estOuverte()) return;
     await chargerJournal();
-    await Promise.all([chargerGraphe(), chargerIndicateurs()]);
+    /* Les courbes partent à côté, sans retenir le tour : un graphique lent figeait les chiffres
+       sous « en direct » (relecture du 24/11/2026). */
+    chargerGraphe();
+    chargerIndicateurs();
   }
   let surveillance = null;
   document.addEventListener('direct:pause', () => { if (estOuverte()) dessinerDirect(); });
@@ -1020,6 +1044,7 @@
     /* Le serveur a vidé ses caches : on relit tout, graphique compris
        (la ligne d'achat a pu bouger). */
     etat.graphes.clear();
+    echecs.clear();
     deja.graphe = null;
     deja.indicateurs = null;
     await tour();
@@ -1082,15 +1107,15 @@
       etat.periode = b.dataset.periode;
       vue.querySelectorAll('[data-periode]').forEach((x) =>
         x.setAttribute('aria-pressed', String(x.dataset.periode === etat.periode)));
-      chargerGraphe();
+      chargerGraphe({ demande: true });
       return;
     }
     if (b.dataset.ticker && b.dataset.ticker !== etat.ticker) {
       etat.ticker = b.dataset.ticker;
       deja.valeur = '';
       dessinerValeur();
-      chargerGraphe();
-      chargerIndicateurs();
+      chargerGraphe({ demande: true });
+      chargerIndicateurs({ demande: true });
     }
   });
 

@@ -135,6 +135,8 @@ window.PP = (() => {
       rep = await fetch(chemin, options);
     } catch (e) {
       if (e?.name === 'AbortError') throw new Error(`le serveur ne répond pas (${Math.round(delai / 1000)} s)`);
+      /* Le navigateur le dit en anglais, et chacun à sa façon (« Failed to fetch », « Load failed »…). */
+      if (e instanceof TypeError) throw new Error('serveur injoignable');
       throw e;
     } finally {
       if (minuterie) clearTimeout(minuterie);
@@ -152,8 +154,8 @@ window.PP = (() => {
       carnet prend les deux dans cette réponse : une seule photo des cours. */
   const journal = (options) => lire('/api/journal', options);
   /** periode : '1j' | '1m' | '1a'. Les indicateurs ne viennent qu'avec '1a'. */
-  const graphique = (ticker = 'NVDA', periode = '1j') =>
-    lire(`/api/graphique?ticker=${encodeURIComponent(ticker)}&periode=${encodeURIComponent(periode)}`);
+  const graphique = (ticker = 'NVDA', periode = '1j', options) =>
+    lire(`/api/graphique?ticker=${encodeURIComponent(ticker)}&periode=${encodeURIComponent(periode)}`, options);
 
   /** Note une décision déjà passée chez le courtier. Champs :
       sens ('achat' | 'vente'), ticker, quantite, prix_eur, montant_eur
@@ -301,8 +303,17 @@ window.PP = (() => {
     const rattraper = () => { if (devant() && Date.now() - dernier >= periode()) lancer(); };
     window.addEventListener('focus', rattraper);
     document.addEventListener('visibilitychange', rattraper);
-    /* La pause relâchée : on relit tout de suite ; appuyée : le prochain tour passe à 60 s. */
-    if (vite) document.addEventListener('direct:pause', () => { if (!pause) rattraper(); else if (!enCours) planifier(); });
+    /* La pause : appuyée, le prochain tour passe à 60 s ; relâchée, on relit tout de suite si le
+       dernier tour est assez vieux, sinon le prochain revient à 2 s. Un tour en cours replanifie
+       lui-même en finissant. (Deux clics rapprochés laissaient le minuteur de 60 s sous
+       « en direct » : relecture du 24/11/2026.) */
+    if (vite) {
+      document.addEventListener('direct:pause', () => {
+        if (enCours) return;
+        if (!pause && devant() && Date.now() - dernier >= periode()) lancer();
+        else planifier();
+      });
+    }
     return { maintenant: lancer };
   }
 

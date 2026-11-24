@@ -78,6 +78,8 @@ def tableau():
     maintenant = datetime.now(timezone.utc)
     aujourd_hui = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
     refs = {"change_1d": 400.0, "change_1w": 380.0, "change_1m": 500.0}
+    # Le scan a 2 minutes (son heure, comme scan_stocks : datetime.now() sans fuseau).
+    scan_a = (datetime.now() - timedelta(minutes=2)).isoformat()
     scan = {"rows": [
         {"ticker": "AMD", "date_seance": aujourd_hui, "references": refs, "price": 405.0},
         {"ticker": "MSFT", "date_seance": aujourd_hui, "references": {"change_1d": 300.0, "change_1w": None,
@@ -86,17 +88,23 @@ def tableau():
         {"ticker": "TSLA", "date_seance": aujourd_hui, "references": refs},
         {"ticker": "KO", "date_seance": aujourd_hui, "references": refs},
         {"ticker": "PEP", "date_seance": aujourd_hui, "references": refs},
+        {"ticker": "WMT", "date_seance": aujourd_hui, "references": refs},
         {"ticker": "XOM", "error": "données indisponibles"},
-    ], "scanned_at": "2026-11-25T16:00:00"}
+    ], "scanned_at": scan_a}
     CD = cours_direct.CoursDirect
-    flux = {"AMD": CD(420.0, maintenant - timedelta(seconds=3), 1),
-            "MSFT": CD(330.0, maintenant - timedelta(seconds=cours_direct.FRAIS_S - 1), 1),
-            "NVDA": CD(150.0, maintenant - timedelta(seconds=2), 1),
-            "TSLA": CD(380.0, maintenant - timedelta(seconds=2), 2),
-            "KO": CD(70.0, maintenant - timedelta(seconds=cours_direct.FRAIS_S + 1), 1)}
+    il_y_a = lambda s: maintenant - timedelta(seconds=s)          # noqa: E731
+    # Le dernier message (toutes séances) et le dernier de la séance normale.
+    dernier = {"TSLA": CD(380.0, il_y_a(2), 2)}
+    normale = {"AMD": CD(420.0, il_y_a(3), 1),
+               "MSFT": CD(330.0, il_y_a(cours_direct.FRAIS_S - 1), 1),
+               "NVDA": CD(150.0, il_y_a(2), 1),
+               "KO": CD(70.0, il_y_a(cours_direct.FRAIS_S + 1), 1),     # plus frais, mais plus récent que le scan
+               "WMT": CD(90.0, il_y_a(300), 1)}                         # plus ancien que le scan
     appels = []
-    reel = (cours_direct.cours, cours_direct.suivre, cours_direct.bourse, cours_direct.etat, serveur.etat_de_la_bourse)
-    cours_direct.cours = lambda s: flux.get(s)
+    reel = (cours_direct.cours, cours_direct.cours_normal, cours_direct.suivre, cours_direct.bourse,
+            cours_direct.etat, serveur.etat_de_la_bourse)
+    cours_direct.cours = lambda s: dernier.get(s) or normale.get(s)
+    cours_direct.cours_normal = lambda s: normale.get(s)
     cours_direct.suivre = lambda client, symboles: appels.append(("suivre", client, list(symboles)))
     cours_direct.bourse = lambda e: appels.append(("bourse", e))
     cours_direct.etat = lambda: {"etat": "ouvert", "raison": None, "depuis_s": 100.0, "actif": True}
@@ -113,18 +121,33 @@ def tableau():
         ok("AMD en séance, cours de 3 s : 420 $, +5 % sur un jour (420 / 400), écrits à la main",
            amd.get("price") == 420.0 and proche(amd.get("change_1d"), 5.0)
            and proche(amd.get("change_1w"), 40 / 380 * 100) and proche(amd.get("change_1m"), -16.0))
-        ok("… avec l'heure du cours", amd.get("heure") == flux["AMD"].heure.isoformat())
+        ok("… frais, avec l'heure du cours", amd.get("frais") is True and amd.get("heure") == normale["AMD"].heure.isoformat())
         msft = v["valeurs"].get("MSFT", {})
-        ok("MSFT à 29 s : gardé ; un repère absent donne une variation absente (None)",
-           msft.get("price") == 330.0 and msft.get("change_1w") is None and proche(msft.get("change_1d"), 10.0))
+        ok("MSFT à 29 s : frais ; un repère absent donne une variation absente (None)",
+           msft.get("frais") is True and msft.get("change_1w") is None and proche(msft.get("change_1d"), 10.0))
         ok("NVDA : le scan n'a pas encore la séance du jour, ses chiffres restent ceux du scan", "NVDA" not in v["valeurs"])
-        ok("TSLA : un cours d'après-séance n'entre pas dans le tableau", "TSLA" not in v["valeurs"])
-        ok("KO : un cours de 31 s n'entre pas", "KO" not in v["valeurs"])
-        ok("PEP (pas de cours du flux) et XOM (en erreur) n'y sont pas", "PEP" not in v["valeurs"] and "XOM" not in v["valeurs"])
-        ok("« en direct » et relu vite", v["en_direct"] is True and v["rapide"] is True)
+        ok("TSLA : seulement des cours d'après-séance, rien dans le tableau", "TSLA" not in v["valeurs"])
+        ko = v["valeurs"].get("KO", {})
+        ok("KO à 31 s, plus récent que le scan : gardé (la case ne recule pas), mais pas frais",
+           ko.get("price") == 70.0 and ko.get("frais") is False)
+        ok("WMT, plus ancien que le scan : les chiffres du scan", "WMT" not in v["valeurs"])
+        ok("PEP (pas de cours de séance) et XOM (en erreur) n'y sont pas", "PEP" not in v["valeurs"] and "XOM" not in v["valeurs"])
+        ok("« en direct » et relu vite (un cours frais au moins)", v["en_direct"] is True and v["rapide"] is True)
         ok("le flux suit les valeurs du scan (pas celle en erreur), et apprend l'état de la Bourse d'abord",
-           appels == [("bourse", "ouverte"), ("suivre", "tableau", ["AMD", "MSFT", "NVDA", "TSLA", "KO", "PEP"])])
-        ok("l'heure du scan est donnée", v["scan_de"] == "2026-11-25T16:00:00")
+           appels == [("bourse", "ouverte"), ("suivre", "tableau", ["AMD", "MSFT", "NVDA", "TSLA", "KO", "PEP", "WMT"])])
+        ok("l'heure du scan est donnée", v["scan_de"] == scan_a)
+        for s in ("AMD", "MSFT"):
+            del normale[s]
+        v = serveur.valeurs_en_direct()
+        ok("plus aucun cours frais : KO reste (plus récent que le scan), mais pas « en direct »",
+           set(v["valeurs"]) == {"KO"} and v["en_direct"] is False and v["rapide"] is False)
+        scan["scanned_at"] = datetime.now().isoformat()
+        ok("un scan plus récent que le cours de KO : ses chiffres reprennent la case", "KO" not in serveur.valeurs_en_direct()["valeurs"])
+        scan["scanned_at"] = "pas une heure"
+        normale["AMD"] = CD(420.0, il_y_a(3), 1)
+        v = serveur.valeurs_en_direct()
+        ok("une heure de scan illisible : seuls les cours frais (pas de comparaison possible)", set(v["valeurs"]) == {"AMD"})
+        scan["scanned_at"] = scan_a
         del serveur._cache["/api/stocks"]
         serveur._cache["/api/stocks:classement"] = {"value": scan, "at": time.time()}
         ok("le classement gardé après une décision notée sert aussi", "AMD" in serveur.valeurs_en_direct()["valeurs"])
@@ -136,14 +159,15 @@ def tableau():
             ok(f"Bourse « {etat_bourse} » : les 49 {'sont' if demande else 'ne sont pas'} demandés au flux",
                bool(demandes) == demande and ("bourse", etat_bourse) in appels)
         serveur.etat_de_la_bourse = lambda: "ouverte"
-        flux.clear()
+        normale.clear()
         cours_direct.etat = lambda: {"etat": "attente", "raison": "Yahoo refuse la connexion (code 503)",
                                      "depuis_s": 3.0, "actif": True}
         v = serveur.valeurs_en_direct()
         ok("une panne du flux : aucune valeur, lent, et la raison est donnée",
            v["valeurs"] == {} and v["en_direct"] is False and v["rapide"] is False and "503" in v["raison"])
     finally:
-        cours_direct.cours, cours_direct.suivre, cours_direct.bourse, cours_direct.etat, serveur.etat_de_la_bourse = reel
+        (cours_direct.cours, cours_direct.cours_normal, cours_direct.suivre, cours_direct.bourse,
+         cours_direct.etat, serveur.etat_de_la_bourse) = reel
         serveur._cache.clear()
 
 
@@ -164,18 +188,28 @@ def journal_et_cache():
         for e, attendu in (("connexion", 1), ("ouvert", 1), ("attente", 60), ("arrete", 60), ("indisponible", 60)):
             cours_direct.etat = lambda e=e: {"etat": e}
             ok(f"la position gardée {attendu} s quand le flux est « {e} »", serveur.duree_cache_position() == attendu)
-        cours_direct.etat = lambda: {"etat": "ouvert"}
+        cours_direct.etat = lambda: {"etat": "ouvert", "depuis_s": 100.0}
         j = serveur.mon_journal()
         ok("le journal rend la position qu'il a utilisée", j.get("position", {}).get("n") == 1)
         ok("… et compte avec ses cours (une seule photo)", j["prix_vus"] == {"AMD": 421.0} and j["fx_vu"] == 1.10)
-        p, _ = serveur.cached("/api/position", serveur.duree_cache_position(), serveur.ma_position_en_direct)
-        ok("/api/position, demandée dans la seconde, rend LA MÊME position (même objet)", p is j["position"])
-        serveur._cache["/api/position"]["at"] -= 1.5
+        p = serveur.position_servie()
+        ok("/api/position, demandée dans la seconde, rend le MÊME calcul", p["n"] == 1 and p["lignes"] == j["position"]["lignes"])
+        serveur._cache["/api/position:calcul"]["at"] -= 1.5
         j2 = serveur.mon_journal()
         ok("pendant le direct, une position de plus d'une seconde est recalculée", j2["position"]["n"] == 2)
         cours_direct.etat = lambda: {"etat": "arrete"}
-        serveur._cache["/api/position"]["at"] -= 30
+        serveur._cache["/api/position:calcul"]["at"] -= 30
         ok("sans le direct, elle reste gardée 60 s (comme avant)", serveur.mon_journal()["position"]["n"] == 2)
+        # L'état du direct est recalculé à chaque lecture, jamais servi depuis le cache.
+        cours_direct.etat = lambda: {"etat": "connexion", "premier_essai": True, "depuis_s": 1.0}
+        serveur._cache.clear()
+        ok("pendant la première connexion : rapide", serveur.position_servie()["direct"]["rapide"] is True)
+        cours_direct.etat = lambda: {"etat": "attente", "premier_essai": False, "depuis_s": 1.0,
+                                     "raison": "Yahoo ne répond pas (délai dépassé)"}
+        p = serveur.position_servie()
+        ok("la connexion ratée : le calcul en cache sert encore, mais l'état du direct est relu (lent, la raison)",
+           p["n"] == 3 and p["direct"]["rapide"] is False and "délai" in p["direct"]["raison"])
+        ok("… et le journal dit la même chose", serveur.mon_journal()["position"]["direct"] == p["direct"])
     finally:
         serveur.ma_position_en_direct, ma_position.journal_compare, cours_direct.etat = reel
         serveur._cache.clear()

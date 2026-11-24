@@ -703,6 +703,19 @@ def ma_position_en_direct():
     return p
 
 
+def position_servie():
+    """
+    La position telle que la page la lit : le calcul gardé en cache (1 s
+    pendant le direct, 60 s sinon), avec l'état du direct RECALCULÉ à
+    chaque lecture (il dépend de l'heure et de l'état du flux, pas
+    seulement des cours). Gardé dans le cache, il disait encore « rapide »
+    jusqu'à 60 s après une connexion ratée (relecture du 24/11/2026).
+    """
+    import ma_position
+    pos, _ = cached("/api/position:calcul", duree_cache_position(), ma_position_en_direct)
+    return {**pos, "direct": ma_position.etat_du_direct(pos["lignes"])}
+
+
 def mon_journal():
     """
     Mes décisions, et pour chaque achat la même somme dans le S&P 500,
@@ -712,7 +725,7 @@ def mon_journal():
     liraient deux messages différents (le défaut du 17/11 reviendrait).
     """
     import ma_position
-    pos, _ = cached("/api/position", duree_cache_position(), ma_position_en_direct)
+    pos = position_servie()
     prix = {l["ticker"]: l["prix_usd"] for l in pos["lignes"]}
     return {**ma_position.journal_compare(prix, pos["eurusd"]), "position": pos}
 
@@ -730,6 +743,10 @@ def valeurs_en_direct():
     Les variations se comptent comme stock_bot.analyze, avec les mêmes
     clôtures de référence (references_du_scan). Le reste du tableau garde le
     rythme du scan.
+    Un cours qui n'est plus frais (30 s sans échange, ou l'après-séance à
+    22 h) reste tant qu'il est plus récent que le scan (`frais` : false) :
+    une case ne revient jamais en arrière (relecture du 24/11/2026).
+    « en direct » : au moins un cours frais.
     """
     import cours_direct
     from zoneinfo import ZoneInfo
@@ -745,18 +762,25 @@ def valeurs_en_direct():
         cours_direct.suivre("tableau", [r["ticker"] for r in rangs])
     aujourd_hui = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
     maintenant = datetime.now(timezone.utc)
+    try:      # l'heure du scan (datetime.now() du serveur, sans fuseau : l'heure du Mac)
+        scan_utc = datetime.fromisoformat(scan["scanned_at"]).astimezone(timezone.utc)
+    except (TypeError, ValueError, KeyError, OverflowError, OSError):
+        scan_utc = None
     valeurs = {}
     for r in rangs:
-        c = cours_direct.cours(r["ticker"])
-        if (c is None or c.seance != cours_direct.SEANCE_NORMALE or r.get("date_seance") != aujourd_hui
-                or (maintenant - c.heure).total_seconds() > cours_direct.FRAIS_S):
+        c = cours_direct.cours_normal(r["ticker"])
+        if c is None or r.get("date_seance") != aujourd_hui:
             continue
-        v = {"price": c.prix, "heure": c.heure.isoformat()}
+        frais = (maintenant - c.heure).total_seconds() <= cours_direct.FRAIS_S
+        if not frais and (scan_utc is None or c.heure <= scan_utc):
+            continue
+        v = {"price": c.prix, "heure": c.heure.isoformat(), "frais": frais}
         for cle, ref in (r.get("references") or {}).items():
             v[cle] = (c.prix - ref) / ref * 100 if ref else None
         valeurs[r["ticker"]] = v
+    en_direct = any(v["frais"] for v in valeurs.values())
     e = cours_direct.etat()
-    return {"en_direct": bool(valeurs), "rapide": cours_direct.rythme_rapide(bool(valeurs)),
+    return {"en_direct": en_direct, "rapide": cours_direct.rythme_rapide(en_direct),
             "etat": e.get("etat"), "raison": e.get("raison"),
             "scan_de": scan.get("scanned_at") if scan else None, "valeurs": valeurs}
 
@@ -849,7 +873,7 @@ ROUTES = {
     "/api/creux":          (creux_des_indices, 3600),       # des cours de clôture aussi
     "/api/banc":           (verdict_du_banc, 300),          # deux fichiers écrits une fois, jamais réécrits
     "/api/seance":         (mur_de_la_seance, 300),         # data/seance.json, réécrit à la main par seance.py --mesurer
-    "/api/position":       (ma_position_en_direct, duree_cache_position),   # 1 s pendant le direct, 60 s sinon
+    "/api/position":       (position_servie, 0),           # son calcul gardé 1 s pendant le direct, 60 s sinon
     "/api/valeurs/direct": (valeurs_en_direct, 1),        # le scan en mémoire et le flux : jamais Yahoo
     "/api/journal":        (mon_journal, 0),      # recalculé à chaque fois, sur la position en cache (60 s)
     "/api/papier":         (mon_defi_papier, 0),  # recalculé à chaque fois : papier.py garde déjà les cours 30 s.

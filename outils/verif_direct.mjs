@@ -13,6 +13,8 @@
 //  4. (Chrome) un serveur qui ne répond plus (le journal retardé de 10 s) → « en direct » disparaît en moins
 //     de 8 s, et la page ralentit ;
 //  5. (Chrome) un ancien serveur (réponses sans `direct` ni `position`) : aucun mot, aucun bouton, 60 s ;
+//  5 bis. (Chrome) les trois cas de la relecture du 24/11 : un graphique lent ne retient pas le direct ; deux
+//     clics rapprochés sur Pause ne laissent pas la page sans relecture ; la vue plan dit une lecture ratée ;
 //  6. la vue plan : le badge et Pause de l'en-tête, « Cours de …, en direct. », les quatre cases du tableau
 //     avec des valeurs fabriquées (/api/valeurs/direct), changées EN PLACE (mêmes nœuds), puis rendues au scan ;
 //  7. axe à 1280 et 390 px sur ce qui change, aucune erreur de console.
@@ -268,6 +270,70 @@ async function verifier(nom, type, options, complet) {
         `${nom} · ancien serveur : ni mot du direct ni bouton Pause`);
       ok(vieillesLectures.filter((x) => x >= tVieux).length <= 1, `${nom} · ancien serveur : relu toutes les 60 s`);
       await vieux.close();
+
+      // ── 5 bis. Les trois cas de la relecture du 24/11
+      const nouvellePage = async () => {
+        const p = await contexte.newPage();
+        p.on('pageerror', (e) => erreurs.push(String(e)));
+        p.lectures = [];
+        p.on('request', (r) => { if (r.url().includes('/api/journal') || r.url().includes('/api/position')) p.lectures.push(Date.now()); });
+        return p;
+      };
+      const motDe = (p) => p.evaluate(() => document.querySelector('#pc-direct .pc-direct-mode')?.textContent || '');
+      // Un graphique lent (40 s) : les lectures du journal continuent, et l'écran suit le serveur.
+      const lente = await nouvellePage();
+      await lente.route('**/api/graphique*', async (route) => { await dormir(40_000); route.continue().catch(() => {}); });
+      await lente.goto(`${BASE}/?plan&vue=carnet`);
+      await attendreQue(async () => (await motDe(lente)) === 'en direct', 20_000);
+      const tGraphe = Date.now();
+      prixAMD = 444.25;      // exact en 32 bits, comme le flux de Yahoo (444,44 deviendrait 444,4400024…)
+      await pilote(`/prix?AMD=${prixAMD}`);
+      let attenduLent = '';
+      const suitGraphe = await attendreQue(async () => {
+        const p = (await serveur('/api/journal')).position;
+        if (p.lignes.find((l) => l.ticker === 'AMD')?.prix_usd !== prixAMD) return false;
+        attenduLent = await lente.evaluate((v) => PP.euros(v), p.total.valeur_eur);
+        return espaces(await lente.evaluate(() => document.querySelector('#pc-direct .pc-direct-valeur')?.textContent)) === espaces(attenduLent);
+      }, 8000, 100);
+      await dormir(Math.max(0, 12_000 - (Date.now() - tGraphe)));
+      const nGraphe = lente.lectures.filter((x) => x >= tGraphe).length;
+      ok(suitGraphe && nGraphe >= 4 && (await motDe(lente)) === 'en direct',
+        `${nom} · graphique retardé de 40 s : l'écran suit quand même le serveur (${espaces(attenduLent)}), ${nGraphe} lectures en 12 s`);
+      await lente.close();
+      // Deux clics rapprochés sur Pause : la page reprend le direct (au plus 2 s sans relecture).
+      const deuxClics = await nouvellePage();
+      await deuxClics.goto(`${BASE}/?plan&vue=carnet`);
+      await attendreQue(async () => (await motDe(deuxClics)) === 'en direct', 20_000);
+      await dormir(2500);
+      const n0Clics = deuxClics.lectures.length;
+      await attendreQue(() => deuxClics.lectures.length > n0Clics, 5000);
+      await dormir(300);
+      await deuxClics.click('#pc-direct [data-direct-pause]');
+      await dormir(150);
+      await deuxClics.click('#pc-direct [data-direct-pause]');
+      const tClics = Date.now();
+      await dormir(6000);
+      const nClics = deuxClics.lectures.filter((x) => x >= tClics).length;
+      ok(nClics >= 2 && (await motDe(deuxClics)) === 'en direct'
+        && await deuxClics.getAttribute('#pc-direct [data-direct-pause]', 'aria-pressed') === 'false',
+      `${nom} · deux clics sur Pause à 150 ms : « en direct » et ${nClics} lectures en 6 s (toutes les 2 s)`);
+      await deuxClics.close();
+      // La vue plan quand le serveur ne répond plus : elle le dit, puis revient.
+      const panne = await nouvellePage();
+      await panne.goto(`${BASE}/?plan`);
+      const lignePanne = () => panne.evaluate(() => document.querySelector('#positions .position-direct')?.textContent || '');
+      await attendreQue(async () => /en direct\.$/.test(await lignePanne()), 30_000);
+      await panne.route('**/api/position', (r) => r.abort());
+      await panne.route('**/api/valeurs/direct', (r) => r.abort());
+      ok(await attendreQue(async () => /^Dernier rafraîchissement impossible \(serveur injoignable\) : ces chiffres datent du tour précédent\.$/.test(await lignePanne()), 9000),
+        `${nom} · vue plan, serveur muet : « Dernier rafraîchissement impossible (serveur injoignable) : … »`);
+      ok(await panne.evaluate(() => document.querySelector('#direct-etat')?.textContent === 'Toutes les minutes'),
+        `${nom} · … et l'en-tête dit « Toutes les minutes »`);
+      await panne.unroute('**/api/position');
+      await panne.unroute('**/api/valeurs/direct');
+      ok(await attendreQue(async () => /en direct\.$/.test(await lignePanne()), 75_000, 500),
+        `${nom} · le serveur revient : « Cours de …, en direct. » au tour suivant`);
+      await panne.close();
     }
 
     // ── 6. La vue plan
