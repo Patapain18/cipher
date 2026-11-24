@@ -106,6 +106,12 @@
       <span class="masthead-side" id="guards">
         <span class="badge muted"><span class="dot"></span>connexion…</span>
       </span>
+      <!-- Le direct (24/11/2026) : quel système donne les cours (« En direct »,
+           « En pause », « Toutes les minutes »), et la pause, choisie par Mathis.
+           Cachés tant que le serveur ne parle pas du direct (ancien serveur). -->
+      <span class="badge muted" id="direct-etat" hidden></span>
+      <button type="button" class="badge direct-pause" id="direct-pause" data-direct-pause aria-pressed="false" hidden
+              title="Arrêter ou reprendre le direct : en pause, les cours sont relus toutes les minutes">Pause</button>
       <!-- APRÈS les badges d'état : l'état d'abord, la porte ensuite.
            Caché par défaut : vue3d.js ne le révèle que si la machine
            sait afficher la scène. Proposer une porte qui ne s'ouvre
@@ -215,6 +221,8 @@
         </tbody>
       </table>
     </div>
+    <!-- Pendant le direct : quelles colonnes suivent le flux (24/11/2026). -->
+    <p class="table-direct-note" id="valeurs-direct-note" hidden></p>
 
     <p class="hint">
       Ce bot ne passe aucun ordre — le trading automatisé d'actions n'est pas

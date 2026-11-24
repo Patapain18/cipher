@@ -288,6 +288,55 @@ function earningsCell(r) {
    ne doit pas relancer un scan de 49 valeurs. */
 let lastStocks = null;
 
+/* Les cases en direct du tableau (choix de Mathis du 24/11/2026) : le cours et
+   les trois variations, pendant la séance normale, d'après /api/valeurs/direct
+   (le scan en mémoire et le flux, jamais Yahoo). Les autres colonnes gardent
+   le rythme du scan ; l'ordre des lignes (le rang de momentum) aussi. */
+const CASES_DIRECT = ['price', 'change_1d', 'change_1w', 'change_1m'];
+let valeursDirect = null;          // la dernière réponse de /api/valeurs/direct
+function valeurDirect(r) {
+  const v = valeursDirect?.valeurs?.[r.ticker];
+  const sortie = {};
+  for (const cle of CASES_DIRECT) sortie[cle] = v && Number.isFinite(v[cle]) ? v[cle] : r[cle];
+  return sortie;
+}
+const texteCase = (cle, v) => (cle === 'price' ? `${nf(v)} $` : pct(v));
+const classeCase = (cle, v) => (cle === 'price' ? 'num-cell num' : `num-cell num ${trend(v)}`);
+
+/* Les cases changent EN PLACE (le tableau et sa copie du panneau 2 de la vue
+   baie) : ni redessin des 637 cellules, ni focus perdu, toutes les 2 s. */
+function appliquerValeursDirect() {
+  if (!lastStocks) return;
+  const parTicker = new Map(lastStocks.rows.filter((r) => !r.error).map((r) => [r.ticker, r]));
+  document.querySelectorAll('tr[data-direct-ticker]').forEach((tr) => {
+    const r = parTicker.get(tr.dataset.directTicker);
+    if (!r) return;
+    const d = valeurDirect(r);
+    tr.querySelectorAll('td[data-direct]').forEach((td) => {
+      const cle = td.dataset.direct;
+      const texte = texteCase(cle, d[cle]);
+      const classe = classeCase(cle, d[cle]);
+      if (td.textContent !== texte) td.textContent = texte;
+      if (td.className !== classe) td.className = classe;
+    });
+  });
+  majNoteDirect();
+}
+
+/* La petite ligne sous le tableau, seulement pendant le direct. */
+function majNoteDirect() {
+  const note = $('#valeurs-direct-note');
+  if (!note || !window.PP) return;
+  const actif = Boolean(valeursDirect?.en_direct) && !erreurValeurs;
+  const scan = dt(valeursDirect?.scan_de || lastStocks?.scanned_at, false);
+  const texte = !actif ? ''
+    : PP.enPause()
+      ? `Direct en pause : cours et variations relus toutes les minutes ; les autres colonnes au scan de ${scan}.`
+      : `Cours et variations en direct ; les autres colonnes au scan de ${scan}.`;
+  if (note.textContent !== texte) note.textContent = texte;
+  note.hidden = !actif;
+}
+
 /* Vue par défaut : le moins mauvais critère mesuré, pas les signaux
    techniques. C'est ce qu'on veut voir en ouvrant la page. */
 let activeFilter = 'momentum';
@@ -428,8 +477,11 @@ function drawStocks() {
     const pos = r.position;
     const reg = REGIME_LABEL[r.regime] || { txt: esc(r.regime || '—'), hint: '' };
     const proj = r.projection;
+    /* Les quatre cases en direct : les derniers chiffres du direct s'il y en a, sinon ceux
+       du scan. Le redessin de la minute ne revient donc jamais une minute en arrière. */
+    const d = valeurDirect(r);
 
-    return `<tr class="${pos ? 'held' : ''}">
+    return `<tr class="${pos ? 'held' : ''}" data-direct-ticker="${esc(r.ticker)}">
       <td class="ticker">${esc(r.ticker)}
         ${pos ? `<span class="held-note">${nf(pos.quantity, 2)} × ${nf(pos.entry_price)} $</span>` : ''}
       </td>
@@ -442,10 +494,7 @@ function drawStocks() {
              <span class="rank-total">${r.rang
                ? `${r.rang}${r.rang === 1 ? 'ᵉʳ' : 'ᵉ'} / ${data.classes}` : ''}</span>`}</td>
       <td class="num-cell num earnings">${earningsCell(r)}</td>
-      <td class="num-cell num">${nf(r.price)} $</td>
-      <td class="num-cell num ${trend(r.change_1d)}">${pct(r.change_1d)}</td>
-      <td class="num-cell num ${trend(r.change_1w)}">${pct(r.change_1w)}</td>
-      <td class="num-cell num ${trend(r.change_1m)}">${pct(r.change_1m)}</td>
+      ${CASES_DIRECT.map((cle) => `<td class="${classeCase(cle, d[cle])}" data-direct="${cle}">${texteCase(cle, d[cle])}</td>`).join('')}
       <td>
         <span class="regime">${reg.txt}</span>
         <span class="regime-hint">ADX ${nf(r.adx, 0)}</span>
@@ -496,25 +545,32 @@ function dessinerCartePosition() {
       || (!maPosition.lignes.length && !(maPosition.total?.nombre_ventes > 0))) return;
   const { total } = maPosition;
   const dont = PP.TEXTES.dontTotal(total);
-  carte.innerHTML = `
+  PP.remplacer(carte, `
     <div class="label">Ma position</div>
     <div class="value">${PP.euros(total.valeur_eur)}</div>
     <div class="foot"><span class="${PP.sens(total.gain_eur)}">${PP.euros(total.gain_eur, { signe: true })}</span>
       ${maPosition.lignes.length ? 'depuis l\'achat, frais compris' : 'depuis le début, ventes comprises'}</div>
     ${dont ? `<div class="foot">${esc(dont)}</div>` : ''}
-    <div class="foot">${PP.euros(PP.sansFraisTotal(maPosition).eur, { signe: true })} sans les frais</div>`;
+    <div class="foot">${PP.euros(PP.sansFraisTotal(maPosition).eur, { signe: true })} sans les frais</div>`);
 }
 
 async function renderPositions() {
   const zone = $('#positions');
   if (!zone || !window.PP) return;
+  const hauteurAvant = zone.offsetHeight;
   try {
-    maPosition = await PP.position();
+    maPosition = await PP.position({ delai: planRapide() ? 5_000 : 30_000 });
+    erreurDirect = null;
   } catch (e) {
+    erreurDirect = e.message;
+    majBadgeDirect();
+    /* Une panne pendant le direct : les derniers chiffres restent, la ligne dit qu'ils ne sont plus en direct. */
+    if (maPosition && zone.querySelector('.position-table')) { majLigneDirect(); return; }
     zone.innerHTML = `<p class="error">${esc(e.message)}</p>`;
     return;
   }
   dessinerCartePosition();
+  majBadgeDirect();
 
   const { lignes, total } = maPosition;
   /* Le total compte l'action offerte et le résultat des ventes (choix de Mathis du 17/11/2026) :
@@ -579,21 +635,91 @@ async function renderPositions() {
   if (!cadre) {
     zone.innerHTML = `
       <div class="position-table" tabindex="0" role="region" aria-label="Ta position, action par action"></div>
-      <p class="position-dont"></p>`;
+      <p class="position-dont"></p>
+      <p class="position-direct" hidden></p>`;
     cadre = zone.querySelector('.position-table');
-    cadre.dataset.contenu = '';
   }
-  if (cadre.dataset.contenu !== tableau) {
-    const gauche = cadre.scrollLeft;
-    cadre.innerHTML = tableau;
-    cadre.dataset.contenu = tableau;
-    cadre.scrollLeft = gauche;
-  }
+  /* En place (le direct, 24/11/2026) : toutes les 2 s, seuls les chiffres changent ; le
+     cadre, son défilement et le focus restent. */
+  const gauche = cadre.scrollLeft;
+  if (PP.remplacer(cadre, tableau)) cadre.scrollLeft = gauche;
   const p = zone.querySelector('.position-dont');
   if (p.innerHTML !== note) p.innerHTML = note;
   p.hidden = !note;
-  /* Le panneau 1 de la vue baie EST cette section : il se remesure. */
-  document.dispatchEvent(new CustomEvent('stocks:dessine'));
+  majLigneDirect();
+  /* Le panneau 1 de la vue baie EST cette section : il se remesure, seulement si sa
+     hauteur a changé (sinon il le ferait toutes les 2 s pendant le direct). */
+  if (zone.offsetHeight !== hauteurAvant) document.dispatchEvent(new CustomEvent('stocks:dessine'));
+}
+
+/* « Cours de 19:24, en direct. » sous le tableau de « Ma position » ; rien avec
+   un ancien serveur (sans le champ `direct`). */
+function majLigneDirect() {
+  const ligne = $('#positions .position-direct');
+  if (!ligne || !window.PP) return;
+  const mot = PP.motDuDirect(maPosition?.direct, { erreur: Boolean(erreurDirect) });
+  const dernier = (maPosition?.lignes || []).map((l) => l.cours_a).filter(Boolean).sort().pop();
+  const texte = mot && dernier ? `Cours de ${heureOuDate(dernier)}, ${mot}.` : '';
+  if (ligne.textContent !== texte) ligne.textContent = texte;
+  ligne.hidden = !texte;
+}
+
+/* L'heure seule pour aujourd'hui, la date et l'heure sinon (à l'heure de Paris). */
+function heureOuDate(iso) {
+  const jourParis = (d) => d.toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' });
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return jourParis(d) === jourParis(new Date()) ? PP.heure(iso) : PP.dateHeure(iso);
+}
+
+/* Le badge de l'en-tête (« En direct », « En pause », « Toutes les minutes ») et
+   son bouton Pause : cachés tant que le serveur ne parle pas du direct. */
+let erreurDirect = null;
+let erreurValeurs = null;
+function majBadgeDirect() {
+  const badge = $('#direct-etat');
+  const bouton = $('#direct-pause');
+  if (!badge || !bouton || !window.PP) return;
+  const connu = Boolean(maPosition?.direct || valeursDirect);
+  const enDirect = Boolean((maPosition?.direct?.en_direct && !erreurDirect)
+    || (valeursDirect?.en_direct && !erreurValeurs));
+  const mot = connu ? PP.motDuDirect({ en_direct: enDirect }) : '';
+  const texte = mot ? mot[0].toUpperCase() + mot.slice(1) : '';
+  if (badge.textContent !== texte) badge.textContent = texte;
+  badge.hidden = !connu;
+  bouton.hidden = !connu;
+  bouton.setAttribute('aria-pressed', String(PP.enPause()));
+}
+
+/* ------------------------------------------------------------
+   LE DIRECT DANS LA VUE PLAN (choix de Mathis du 24/11/2026)
+   ------------------------------------------------------------
+   La section « Ma position », la 4e carte et les cases en direct du
+   tableau : toutes les 2 s quand le serveur le dit (le flux en direct, ou
+   en train de se connecter), 60 s sinon, en pause, ou après une lecture
+   ratée. Rien quand le carnet est ouvert (la vue plan est cachée) : on
+   rattrape à sa fermeture. Le reste de la page garde ses 60 s.
+   ------------------------------------------------------------ */
+const planRapide = () => (!erreurDirect && maPosition?.direct?.rapide === true)
+  || (!erreurValeurs && valeursDirect?.rapide === true);
+
+async function renderValeursDirect() {
+  if (!window.PP) return;
+  try {
+    valeursDirect = await PP.lire('/api/valeurs/direct', { delai: planRapide() ? 5_000 : 30_000 });
+    erreurValeurs = null;
+  } catch (e) {
+    /* Un ancien serveur (404) ou une panne : les chiffres du scan, sans rien dire de plus. */
+    valeursDirect = null;
+    erreurValeurs = e.message;
+  }
+  appliquerValeursDirect();
+  majBadgeDirect();
+}
+
+async function tourDirect() {
+  if ($('.shell')?.hidden) return;
+  await Promise.all([renderPositions(), renderValeursDirect()]);
 }
 
 /* --- Historique : une courbe par valeur, sélectionnable --- */
@@ -1615,13 +1741,20 @@ function refresh() {
      partent déjà ensemble chez Yahoo. */
   renderThermometre().finally(renderCreux);
   renderStocks();
-  renderPositions();   // à part : la position n'attend pas le scan des 49 valeurs
+  /* La position (et les cases en direct du tableau) ont leur propre tour, plus bas :
+     toutes les 2 s pendant le direct, 60 s sinon. */
   renderHistory();
   renderBanc();
   renderSeance();      // un fichier relu par le serveur : rien chez Yahoo
 }
 
 refresh();
+
+if (window.PP) {
+  const surveillanceDirect = PP.surveiller(tourDirect, { vite: planRapide });
+  document.addEventListener('carnet:ferme', () => surveillanceDirect.maintenant());
+  document.addEventListener('direct:pause', () => { majBadgeDirect(); majLigneDirect(); majNoteDirect(); });
+}
 
 /* Rafraîchissement automatique. Le serveur garde ses réponses en cache
    quelques minutes, donc ce cycle ne provoque pas un appel réseau à

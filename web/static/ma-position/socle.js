@@ -119,18 +119,38 @@ window.PP = (() => {
   };
 
   /* ── Les routes ────────────────────────────────────────── */
-  async function lire(chemin) {
-    const rep = await fetch(chemin, { cache: 'no-store' });
+  /** `delai` (ms) : au-delà, la lecture est abandonnée (« le serveur ne répond
+      pas »). Le direct en a besoin : sans lui, une lecture bloquée figeait les
+      chiffres sous « en direct » (relecture du plan du 24/11/2026). */
+  async function lire(chemin, { delai = 0 } = {}) {
+    const options = { cache: 'no-store' };
+    let minuterie = null;
+    if (delai > 0) {
+      const ctrl = new AbortController();
+      minuterie = setTimeout(() => ctrl.abort(), delai);
+      options.signal = ctrl.signal;
+    }
+    let rep;
+    try {
+      rep = await fetch(chemin, options);
+    } catch (e) {
+      if (e?.name === 'AbortError') throw new Error(`le serveur ne répond pas (${Math.round(delai / 1000)} s)`);
+      throw e;
+    } finally {
+      if (minuterie) clearTimeout(minuterie);
+    }
     let json;
     try { json = await rep.json(); } catch { throw new Error(`réponse illisible (${rep.status})`); }
     if (!json.ok) throw new Error(json.error || `erreur ${rep.status}`);
     return json.data;
   }
-  /** { maj, eurusd, lignes[], total, frais_vente_eur, avertissement } — cache serveur 60 s. */
-  const position = () => lire('/api/position');
-  /** { decisions[], indice, valeurs[], avertissement } — cache serveur 60 s, comme la
-      position : le serveur lit alors le même cours pour les deux. */
-  const journal = () => lire('/api/journal');
+  /** { maj, eurusd, lignes[], total, frais_vente_eur, avertissement, bourse, direct } —
+      cache serveur 60 s, 1 s pendant le direct. */
+  const position = (options) => lire('/api/position', options);
+  /** { decisions[], indice, valeurs[], avertissement, bilan, position } : depuis le
+      direct (24/11/2026), le journal rend aussi la position qu'il a utilisée. Le
+      carnet prend les deux dans cette réponse : une seule photo des cours. */
+  const journal = (options) => lire('/api/journal', options);
   /** periode : '1j' | '1m' | '1a'. Les indicateurs ne viennent qu'avec '1a'. */
   const graphique = (ticker = 'NVDA', periode = '1j') =>
     lire(`/api/graphique?ticker=${encodeURIComponent(ticker)}&periode=${encodeURIComponent(periode)}`);
@@ -171,28 +191,118 @@ window.PP = (() => {
     return decision;
   }
 
+  /* ── Le direct en pause (choix de Mathis du 24/11/2026) ────
+     Une seule pause pour toute l'appli, gardée d'une ouverture à
+     l'autre quand le navigateur le permet. En pause, la page relit
+     toutes les 60 s et dit « en pause » (jamais « toutes les minutes » :
+     ça ressemblerait à une panne). Les boutons portent
+     [data-direct-pause] : un bouton à bascule, son nom ne change pas,
+     aria-pressed dit s'il est appuyé. */
+  const CLE_PAUSE = 'signaux:direct-pause';
+  let pause = false;
+  try { pause = localStorage.getItem(CLE_PAUSE) === '1'; } catch { /* stockage refusé : pas gardé */ }
+  const enPause = () => pause;
+  function basculerPause() {
+    pause = !pause;
+    try { localStorage.setItem(CLE_PAUSE, pause ? '1' : '0'); } catch { /* pas gardé */ }
+    document.querySelectorAll('[data-direct-pause]').forEach((b) => b.setAttribute('aria-pressed', String(pause)));
+    document.dispatchEvent(new CustomEvent('direct:pause', { detail: { pause } }));
+  }
+  document.addEventListener('click', (e) => {
+    if (e.target.closest?.('[data-direct-pause]')) basculerPause();
+  });
+  /** Le bouton, à poser à côté du mot du direct. */
+  const boutonPause = (classe = '') => `<button type="button" class="badge direct-pause ${classe}" data-direct-pause
+    aria-pressed="${pause}" title="Arrêter ou reprendre le direct : en pause, les cours sont relus toutes les minutes">Pause</button>`;
+  /** Le mot qui dit quel système tourne : « en direct », « en pause » ou
+      « toutes les minutes » ; '' pour un ancien serveur (sans le champ
+      `direct`). `erreur` : la dernière lecture a échoué, le direct ne se
+      montre pas. */
+  function motDuDirect(direct, { erreur = false } = {}) {
+    if (!direct) return '';
+    if (pause) return 'en pause';
+    return direct.en_direct && !erreur ? 'en direct' : 'toutes les minutes';
+  }
+
+  /* ── Remplacer sans tout réécrire ──────────────────────────
+     Toutes les 2 s, les chiffres changent. Réécrire le bloc entier
+     (innerHTML) ferait perdre une sélection de texte, le focus et la
+     place d'un lecteur d'écran (VoiceOver). Quand la forme est la même
+     (mêmes balises, dans le même ordre), seuls les textes et les
+     attributs changent, EN PLACE ; sinon tout est réécrit. Un <details>
+     garde son état ouvert ou fermé. Rend true si quelque chose a changé. */
+  function memeForme(a, b) {
+    if (a.childNodes.length !== b.childNodes.length) return false;
+    for (let i = 0; i < a.childNodes.length; i += 1) {
+      const x = a.childNodes[i];
+      const y = b.childNodes[i];
+      if (x.nodeType !== y.nodeType) return false;
+      if (x.nodeType === 1 && (x.tagName !== y.tagName || !memeForme(x, y))) return false;
+    }
+    return true;
+  }
+  function copierEnPlace(a, b) {
+    for (let i = 0; i < a.childNodes.length; i += 1) {
+      const x = a.childNodes[i];
+      const y = b.childNodes[i];
+      if (x.nodeType !== 1) {
+        if (x.nodeValue !== y.nodeValue) x.nodeValue = y.nodeValue;
+        continue;
+      }
+      for (const { name } of [...x.attributes]) {
+        if (!y.hasAttribute(name) && !(name === 'open' && x.tagName === 'DETAILS')) x.removeAttribute(name);
+      }
+      for (const { name, value } of [...y.attributes]) {
+        if (name === 'open' && x.tagName === 'DETAILS') continue;
+        if (x.getAttribute(name) !== value) x.setAttribute(name, value);
+      }
+      copierEnPlace(x, y);
+    }
+  }
+  function remplacer(zone, html) {
+    if (!zone) return false;
+    if (zone.__pp_html === html && zone.childNodes.length) return false;
+    const modele = document.createElement('template');
+    modele.innerHTML = html;
+    if (zone.__pp_html !== undefined && memeForme(zone, modele.content)) copierEnPlace(zone, modele.content);
+    else zone.replaceChildren(modele.content);
+    zone.__pp_html = html;
+    return true;
+  }
+
   /* ── Le rafraîchissement ───────────────────────────────────
      Toutes les 60 s, seulement quand la fenêtre est devant : même
      règle que app.js (document.hidden ne suffit pas dans l'appli Mac,
      une fenêtre dans le Dock reste « visible »). Au retour du focus,
-     on rattrape si le dernier tour date de plus d'une minute.
+     on rattrape si le dernier tour date de plus d'un tour.
+     Avec `vite` (le direct, 24/11/2026) : toutes les 2 s tant que
+     vite() est vrai et que le direct n'est pas en pause.
      Renvoie { maintenant() } pour forcer un tour (après un ajout). */
-  function surveiller(tour, { toutes = 60_000 } = {}) {
+  function surveiller(tour, { toutes = 60_000, vite = null, viteToutes = 2_000 } = {}) {
     let dernier = 0;
     let enCours = null;
+    let minuterie = null;
+    const devant = () => !document.hidden && document.hasFocus();
+    const periode = () => {
+      try { return vite && !pause && vite() ? viteToutes : toutes; } catch { return toutes; }
+    };
+    const planifier = () => {
+      clearTimeout(minuterie);
+      minuterie = setTimeout(() => { if (devant()) lancer(); else planifier(); }, periode());
+    };
     const lancer = () => {
       if (enCours) return enCours;
       dernier = Date.now();
       enCours = Promise.resolve().then(tour).catch((e) => console.warn('[pistes]', e))
-        .finally(() => { enCours = null; });
+        .finally(() => { enCours = null; planifier(); });
       return enCours;
     };
-    const devant = () => !document.hidden && document.hasFocus();
     lancer();
-    setInterval(() => { if (devant()) lancer(); }, toutes);
-    const rattraper = () => { if (devant() && Date.now() - dernier >= toutes) lancer(); };
+    const rattraper = () => { if (devant() && Date.now() - dernier >= periode()) lancer(); };
     window.addEventListener('focus', rattraper);
     document.addEventListener('visibilitychange', rattraper);
+    /* La pause relâchée : on relit tout de suite ; appuyée : le prochain tour passe à 60 s. */
+    if (vite) document.addEventListener('direct:pause', () => { if (!pause) rattraper(); else if (!enCours) planifier(); });
     return { maintenant: lancer };
   }
 
@@ -316,5 +426,6 @@ window.PP = (() => {
 
   return { esc, nombre, ordinal, de, euros, dollars, pct, sens, nombreSaisi, dateHeure, jour, heure,
            joursAvant, bourse, BOURSE, lire, position, journal, graphique, ajouterDecision,
-           decisionDepuis, surveiller, indicateursEnEuros, sansFrais, sansFraisTotal, TEXTES };
+           decisionDepuis, surveiller, indicateursEnEuros, sansFrais, sansFraisTotal, TEXTES,
+           enPause, basculerPause, boutonPause, motDuDirect, remplacer };
 })();

@@ -42,6 +42,7 @@ sys.path.insert(0, ROOT)
 warnings.filterwarnings("ignore")
 
 import stock_engine as engine   # noqa: E402
+import cours_direct             # noqa: E402  (le flux en direct : seul le serveur l'active)
 
 # Un serveur d'essai peut pointer vers des copies (data/essai-*/) :
 # les pistes s'y testent sans jamais toucher le vrai journal.
@@ -291,22 +292,76 @@ def _historique(symbole, **kwargs):
 # Les cours déjà lus, pour que la position et le journal, demandés au
 # même moment par la page, comptent avec LE MÊME cours (sinon l'écran
 # montre 12,62 € en haut et 12,60 € dans le journal).
-_memo_actuel = {}     # symbole → (instant de lecture, cours, heure du cours)
+_memo_actuel = {}     # symbole → (heure réelle de la lecture, cours, heure du cours)
 _memo_passe = {}      # (symbole, moment) → cours : un cours passé ne change plus
 _memo_repli = {}      # (symbole, moment) → (instant de lecture, clôture du jour) : un repli, redemandé
+_memo_recent = {}     # (symbole, moment) → (heure réelle de la lecture, cours) : un moment de moins de 10 minutes
 MEMO_ACTUEL_S = 30
 REPLI_S = 600         # toutes les 10 minutes, pour reprendre la vraie barre dès que Yahoo la rend
 
 
+class Cours(tuple):
+    """
+    Un cours actuel : (cours en dollars, son heure en UTC), deux valeurs
+    comme avant. `source` dit d'où il vient : « direct » (le flux de
+    Yahoo, cours_direct.py) ou « minutes » (les barres d'une minute).
+    Un tuple simple (les cours inventés des vérifications) compte « minutes ».
+    """
+    source = "minutes"
+
+
+def _cours(valeur, heure, source):
+    c = Cours((valeur, heure))
+    c.source = source
+    return c
+
+
+def source_du_cours(c):
+    """« direct » ou « minutes » (voir Cours)."""
+    return getattr(c, "source", "minutes")
+
+
+def _maintenant_utc():
+    """L'heure réelle, en UTC (remplaçable par les vérifications). Jamais l'horloge
+    monotone pour juger un cours : sur ce Mac, elle s'arrête pendant la veille."""
+    return datetime.now(timezone.utc)
+
+
 def cours_actuel(symbole):
-    """Le dernier cours connu et son heure : le marché peut être fermé."""
+    """
+    Le dernier cours connu et son heure : le marché peut être fermé.
+
+    Le flux en direct d'abord (seulement dans le serveur, qui l'active) :
+    un cours du flux de moins de cours_direct.FRAIS_S, à l'heure du cours,
+    est pris tel quel, sans aucune lecture chez Yahoo. Sinon, les barres
+    d'une minute (gardées 30 s), et le plus récent des deux gagne (le flux,
+    si l'heure de son cours est au moins celle du début de la dernière
+    barre) : un cours ne recule jamais quand le flux se raréfie.
+
+    Le dollar (EURUSD=X) reste TOUJOURS sur les barres : dans le flux, il
+    vaut 2,8 à 3,5 points de base de moins, à chaque minute (essais du
+    24/11/2026). Les mélanger ferait sauter tous les montants en euros.
+    """
+    direct = cours_direct.cours(symbole) if symbole != CHANGE else None
+    if direct is not None and (_maintenant_utc() - direct.heure).total_seconds() <= cours_direct.FRAIS_S:
+        return _cours(direct.prix, direct.heure, "direct")
     deja = _memo_actuel.get(symbole)
-    if deja and time.monotonic() - deja[0] < MEMO_ACTUEL_S:
-        return deja[1], deja[2]
-    c = _historique(symbole, period="5d", interval="1m", prepost=True)
-    cours, heure = float(c.iloc[-1]), c.index[-1]
-    _memo_actuel[symbole] = (time.monotonic(), cours, heure)
-    return cours, heure
+    if deja and 0 <= time.time() - deja[0] < MEMO_ACTUEL_S:
+        cours, heure = deja[1], deja[2]
+    else:
+        try:
+            c = _historique(symbole, period="5d", interval="1m", prepost=True)
+        except Exception:
+            # Yahoo ne rend pas ses barres : le dernier cours du flux, même ancien, vaut mieux
+            # qu'une position indisponible (son heure s'affiche).
+            if direct is not None:
+                return _cours(direct.prix, direct.heure, "direct")
+            raise
+        cours, heure = float(c.iloc[-1]), c.index[-1]
+        _memo_actuel[symbole] = (time.time(), cours, heure)
+    if direct is not None and direct.heure >= heure:
+        return _cours(direct.prix, direct.heure, "direct")
+    return _cours(cours, heure, "minutes")
 
 
 # Les cours passés lus en barres de 5 minutes sont aussi gardés sur disque,
@@ -391,6 +446,12 @@ def cours_a(symbole, quand_utc):
     repli = _memo_repli.get(cle)
     if repli and time.monotonic() - repli[0] < REPLI_S:
         return repli[1]
+    # Un moment de moins de 10 minutes n'est pas gardé (sa barre peut encore bouger), mais le journal
+    # est relu toutes les 2 s pendant le direct : sans cette mémoire de 30 s, chaque relecture
+    # redemanderait ses barres à Yahoo pendant 10 minutes après chaque décision notée.
+    recent = _memo_recent.get(cle)
+    if recent and 0 <= time.time() - recent[0] < MEMO_ACTUEL_S:
+        return recent[1]
     jour = quand_utc.date()
     v, en_5_minutes = float("nan"), False
     try:
@@ -415,6 +476,8 @@ def cours_a(symbole, quand_utc):
             # La clôture du jour (ajustée des dividendes) n'est qu'un repli : gardée en mémoire jusqu'au
             # redémarrage, elle figeait un mauvais cours après une réponse vide de Yahoo (vérification du 17/11).
             _memo_repli[cle] = (time.monotonic(), v)
+    else:
+        _memo_recent[cle] = (time.time(), v)
     return v
 
 
@@ -552,14 +615,19 @@ def position(rang_de=None):
     ta poche (`flux`). Il garde donc le résultat des ventes, et l'action
     offerte y compte comme un gain.
     """
-    eurusd, _ = cours_actuel(CHANGE)
     journal = lire_journal()
+    detenues = agreger(journal)
+    # Le flux en direct suit les valeurs détenues et SPY (le journal s'en sert) ; jamais le dollar.
+    cours_direct.suivre("position", [l["ticker"] for l in detenues] + [INDICE])
+    eurusd, _ = cours_actuel(CHANGE)
     lignes, valeur, cout = [], 0.0, 0.0
-    for l in agreger(journal):
-        prix_usd, heure = cours_actuel(l["ticker"])
+    for l in detenues:
+        lu = cours_actuel(l["ticker"])
+        prix_usd, heure = lu
         c = calcul_ligne(l["quantite"], l["cout_eur"], l["montant_eur"], prix_usd, eurusd)
         rang, classees = rang_de(l["ticker"]) if rang_de else (None, None)
         lignes.append({**l, **c, "cours_a": heure.isoformat(), "seance_du_cours": seance_du_cours(heure),
+                       "source_du_cours": source_du_cours(lu),
                        "rang": rang, "classees": classees,
                        "suivie_par_le_bot": l["ticker"] in engine.UNIVERSE,
                        "resultats": engine.prochaine_publication(l["ticker"])})
@@ -591,7 +659,33 @@ def position(rang_de=None):
                                           if f["verse_sans_frais_eur"] else None)},
         "frais_vente_eur": FRAIS_VENTE,
         "avertissement": AVERTISSEMENT,
+        "direct": etat_du_direct(lignes),
     }
+
+
+def etat_du_direct(lignes):
+    """
+    Ce que la page affiche et à quel rythme elle relit (plan du 24/11/2026) :
+    - en_direct : au moins une ligne détenue a un cours du flux de moins de
+      cours_direct.FRAIS_S, à l'heure du cours (jamais à l'heure de réception) ;
+    - rapide : la page relit toutes les 2 s (en direct, ou le flux en train de
+      se connecter, ou ouvert depuis moins de 10 s) ; sinon toutes les 60 s ;
+    - etat et raison : ceux du flux (cours_direct.etat), pour comprendre une panne.
+    """
+    maintenant = _maintenant_utc()
+    en_direct = False
+    for l in lignes:
+        if l.get("source_du_cours") != "direct":
+            continue
+        try:
+            age = (maintenant - datetime.fromisoformat(l["cours_a"])).total_seconds()
+        except (KeyError, TypeError, ValueError):
+            continue
+        if age <= cours_direct.FRAIS_S:
+            en_direct = True
+    e = cours_direct.etat()
+    return {"en_direct": en_direct, "rapide": cours_direct.rythme_rapide(en_direct),
+            "etat": e.get("etat"), "raison": e.get("raison")}
 
 
 def journal_compare(prix_actuels=None, fx_actuel=None):
@@ -868,6 +962,7 @@ def verifier():
 
     _verifier_lot3(ok, proche)
     _verifier_lot4(ok, proche)
+    _verifier_direct(ok, proche)
     print(f"\n{sum(cas)}/{len(cas)} vérifications réussies")
     return all(cas)
 
@@ -1298,6 +1393,196 @@ def _verifier_lot4(ok, proche):
             JOURNAL, CARNET, cours_a, cours_actuel, _historique = reel
             _memo_passe.clear()
             _memo_repli.clear()
+            _disque_passe["chemin"] = None
+
+
+def _verifier_direct(ok, proche):
+    """Le cours en direct (plan du 24/11/2026) : le flux d'abord, le choix par l'heure du cours, la source,
+    « en direct » et le rythme de la page. Le flux et Yahoo sont remplacés : aucun réseau, aucun fil."""
+    global JOURNAL, CARNET, cours_a, cours_actuel, _historique, _maintenant_utc
+    import tempfile
+    reel = (JOURNAL, CARNET, cours_a, cours_actuel, _historique, _maintenant_utc)
+    reel_flux = (cours_direct.cours, cours_direct.suivre, cours_direct.etat)
+    CD = cours_direct.CoursDirect
+    maintenant = datetime(2026, 11, 25, 16, 0, 0, tzinfo=timezone.utc)     # 17 h à Paris, séance ouverte
+    il_y_a = lambda secondes: maintenant - timedelta(seconds=secondes)    # noqa: E731
+    flux_faux, suivis, appels, barres = {}, [], [], {}
+    etat_flux = {"etat": "ouvert", "raison": None, "depuis_s": 120.0}
+
+    def faux_historique(symbole, **_k):
+        appels.append(symbole)
+        if symbole not in barres:
+            raise ValueError("Yahoo n'a rien rendu")
+        heure, valeur = barres[symbole]
+        return pd.Series([valeur], index=pd.DatetimeIndex([heure]))
+
+    with tempfile.TemporaryDirectory() as dossier:
+        JOURNAL = os.path.join(dossier, "journal.json")
+        CARNET = os.path.join(dossier, "stock_positions.json")
+        _ecrire(CARNET, {})
+        cours_actuel = reel[3]
+        _historique = faux_historique
+        _maintenant_utc = lambda: maintenant                              # noqa: E731
+        cours_direct.cours = lambda s: flux_faux.get(s)
+        cours_direct.suivre = lambda client, symboles: suivis.append((client, list(symboles)))
+        cours_direct.etat = lambda: dict(etat_flux, actif=True)
+        _memo_actuel.clear()
+        _memo_recent.clear()
+        try:
+            # ── Le choix du cours d'un symbole
+            flux_faux["AMD"] = CD(410.0, il_y_a(5), 1)
+            barres["AMD"] = (il_y_a(60), 405.0)
+            r = cours_actuel("AMD")
+            ok("direct : un cours du flux de 5 s est pris tel quel, sans lire les barres",
+               r == (410.0, il_y_a(5)) and source_du_cours(r) == "direct" and appels == [])
+            flux_faux["AMD"] = CD(411.0, il_y_a(cours_direct.FRAIS_S), 1)
+            ok("direct : à 30 s pile aussi", cours_actuel("AMD")[0] == 411.0 and appels == [])
+            flux_faux["AMD"] = CD(412.0, il_y_a(cours_direct.FRAIS_S + 1), 1)
+            r = cours_actuel("AMD")
+            ok("direct : à 31 s, les barres sont lues, et le flux reste s'il est plus récent que la dernière barre",
+               r[0] == 412.0 and source_du_cours(r) == "direct" and appels == ["AMD"])
+            _memo_actuel.clear()
+            flux_faux["AMD"] = CD(413.0, il_y_a(200), 1)
+            r = cours_actuel("AMD")
+            ok("direct : une barre plus récente que le dernier cours du flux gagne (le cours ne recule pas)",
+               r == (405.0, il_y_a(60)) and source_du_cours(r) == "minutes")
+            _memo_actuel.clear()
+            flux_faux["AMD"] = CD(414.0, il_y_a(60), 1)
+            ok("direct : à la même heure que le début de la barre, le flux gagne",
+               cours_actuel("AMD")[0] == 414.0)
+            _memo_actuel.clear()
+            del flux_faux["AMD"]
+            r = cours_actuel("AMD")
+            ok("direct : sans cours du flux, les barres (« minutes »)", r[0] == 405.0 and source_du_cours(r) == "minutes")
+            flux_faux[CHANGE] = CD(1.0966, il_y_a(1), 1)
+            barres[CHANGE] = (il_y_a(60), 1.0970)
+            r = cours_actuel(CHANGE)
+            ok("direct : le dollar ne vient JAMAIS du flux, même frais (2,8 à 3,5 points de base d'écart)",
+               r[0] == 1.0970 and source_du_cours(r) == "minutes")
+            _memo_actuel.clear()
+            flux_faux["TSLA"] = CD(380.0, il_y_a(600), 2)
+            r = cours_actuel("TSLA")
+            ok("direct : Yahoo sans barres, le dernier cours du flux (même de 10 min) plutôt qu'une panne",
+               r == (380.0, il_y_a(600)) and source_du_cours(r) == "direct")
+            del flux_faux["TSLA"]
+            try:
+                cours_actuel("TSLA")
+                leve = False
+            except ValueError:
+                leve = True
+            ok("direct : … et sans cours du flux, l'erreur, comme avant", leve)
+            ok("direct : un tuple simple (cours inventé) compte « minutes »",
+               source_du_cours((1.0, maintenant)) == "minutes")
+            ok("direct : le cours rend toujours DEUX valeurs", len(cours_actuel("AMD")) == 2)
+            _memo_actuel.clear()
+            appels.clear()
+            cours_actuel("AMD")
+            cours_actuel("AMD")
+            ok("direct : les barres sont gardées 30 s (une seule lecture)", appels == ["AMD"])
+            _memo_actuel["AMD"] = (time.time() - 31,) + _memo_actuel["AMD"][1:]
+            cours_actuel("AMD")
+            ok("direct : … et relues après 31 s à l'heure réelle", appels == ["AMD", "AMD"])
+            # La veille du Mac : le dernier cours du flux a 2 h à l'heure réelle.
+            _memo_actuel.clear()
+            flux_faux["AMD"] = CD(415.0, maintenant, 1)
+            barres["AMD"] = (maintenant + timedelta(hours=2, seconds=-40), 420.0)
+            _maintenant_utc = lambda: maintenant + timedelta(hours=2)      # noqa: E731
+            r = cours_actuel("AMD")
+            ok("direct : au réveil du Mac (2 h plus tard), le cours du flux n'est plus frais, la barre du moment gagne",
+               r[0] == 420.0 and source_du_cours(r) == "minutes")
+            _maintenant_utc = lambda: maintenant                          # noqa: E731
+
+            # ── La position : ce qu'elle demande au flux, la source de chaque ligne, « en direct »
+            cours_a = lambda _s, _q: 1.10                                  # noqa: E731
+            ajouter_decision({"date": "2026-11-20T16:00:00", "sens": "achat", "ticker": "AMD",
+                              "quantite": 0.5, "prix_eur": 400.0, "montant_eur": 200.0, "frais_eur": 1.0})
+            ajouter_decision({"date": "2026-11-20T16:05:00", "sens": "achat", "ticker": "TSLA",
+                              "quantite": 0.1, "prix_eur": 300.0, "montant_eur": 30.0, "frais_eur": 1.0})
+            _memo_actuel.clear()
+            flux_faux.clear()
+            flux_faux.update(AMD=CD(440.0, il_y_a(3), 1), TSLA=CD(330.0, il_y_a(4), 1))
+            barres.update(AMD=(il_y_a(60), 430.0), TSLA=(il_y_a(60), 320.0))
+            barres[CHANGE] = (il_y_a(60), 1.10)
+            suivis.clear()
+            p = position()
+            demande = suivis[-1] if suivis else (None, [])
+            ok("direct : la position demande au flux ses valeurs détenues et SPY, jamais le dollar",
+               demande[0] == "position" and sorted(demande[1]) == ["AMD", "SPY", "TSLA"])
+            lignes = {l["ticker"]: l for l in p["lignes"]}
+            ok("direct : chaque ligne dit d'où vient son cours",
+               lignes["AMD"]["source_du_cours"] == "direct" and lignes["TSLA"]["source_du_cours"] == "direct")
+            ok(f"direct : AMD à 440 $ du flux, dollar des barres à 1,10 : {lignes['AMD']['valeur_eur']:.2f} € "
+               f"(0,5 × 440 / 1,10 = 200,00 €)", proche(lignes["AMD"]["valeur_eur"], 200.0, 0.005))
+            ok("direct : « en direct » et relu vite quand les cours viennent du flux",
+               p["direct"]["en_direct"] is True and p["direct"]["rapide"] is True)
+            _memo_actuel.clear()
+            flux_faux["TSLA"] = CD(330.0, il_y_a(300), 2)
+            p = position()
+            lignes = {l["ticker"]: l for l in p["lignes"]}
+            ok("direct : une seule ligne fraîche suffit (TSLA retombe sur sa barre)",
+               p["direct"]["en_direct"] is True and lignes["TSLA"]["source_du_cours"] == "minutes"
+               and proche(lignes["TSLA"]["prix_usd"], 320.0))
+            _memo_actuel.clear()
+            flux_faux["AMD"] = CD(440.0, il_y_a(300), 1)
+            p = position()
+            ok("direct : aucune ligne fraîche, « toutes les minutes », relu toutes les 60 s (flux ouvert depuis 2 min)",
+               p["direct"]["en_direct"] is False and p["direct"]["rapide"] is False)
+            flux_faux[CHANGE] = CD(1.10, il_y_a(1), 1)
+            ok("direct : un dollar frais dans le flux ne fait pas « en direct »",
+               position()["direct"]["en_direct"] is False)
+            etat_flux.update(etat="connexion", depuis_s=1.0)
+            ok("direct : pendant la connexion, la page relit vite", position()["direct"]["rapide"] is True)
+            etat_flux.update(etat="ouvert", depuis_s=3.0)
+            ok("direct : … et pendant les 10 s qui suivent l'ouverture", position()["direct"]["rapide"] is True)
+            etat_flux.update(etat="ouvert", depuis_s=10.0)
+            ok("direct : … mais plus à 10 s, sans ligne fraîche", position()["direct"]["rapide"] is False)
+            etat_flux.update(etat="attente", depuis_s=3.0, raison="Yahoo refuse la connexion (code 503)")
+            d = position()["direct"]
+            ok("direct : une panne, relu lentement, et la raison est donnée",
+               d["rapide"] is False and d["en_direct"] is False and d["etat"] == "attente" and "503" in d["raison"])
+            etat_flux.update(etat="ouvert", depuis_s=120.0, raison=None)
+            _memo_actuel.clear()
+            flux_faux["AMD"] = CD(441.0, maintenant + timedelta(seconds=4), 1)
+            ok("direct : un cours 4 s dans le futur (l'horloge de Yahoo) compte comme frais",
+               position()["direct"]["en_direct"] is True)
+            ok("direct : sans ligne détenue, jamais « en direct »", etat_du_direct([])["en_direct"] is False)
+            ok("direct : une ligne à l'heure illisible est ignorée, sans erreur",
+               etat_du_direct([{"source_du_cours": "direct", "cours_a": "pas une heure"}])["en_direct"] is False)
+
+            # ── Le flux pas activé (la ligne de commande, le bot) : rien ne change
+            cours_direct.cours, cours_direct.suivre, cours_direct.etat = reel_flux
+            _memo_actuel.clear()
+            p = position()
+            ok("direct : flux pas activé, les barres partout et « toutes les minutes »",
+               all(l["source_du_cours"] == "minutes" for l in p["lignes"])
+               and p["direct"]["en_direct"] is False and p["direct"]["rapide"] is False)
+
+            # ── Les cours passés tout récents : gardés 30 s
+            cours_a_reel = reel[2]
+            _memo_passe.clear()
+            _memo_recent.clear()
+            moment = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(minutes=3)
+            appels5 = []
+
+            def h5(_symbole, **k):
+                appels5.append(k.get("interval"))
+                return pd.Series([600.0], index=pd.DatetimeIndex([moment - timedelta(minutes=1)]))
+            _historique = h5
+            v1, v2 = cours_a_reel("SPY", moment), cours_a_reel("SPY", moment)
+            ok("direct : un moment de 3 minutes est lu une fois, puis gardé 30 s",
+               v1 == v2 == 600.0 and appels5 == ["5m"])
+            cle = ("SPY", moment.isoformat())
+            _memo_recent[cle] = (time.time() - 31, 600.0)
+            cours_a_reel("SPY", moment)
+            ok("direct : … et relu après 31 s (sa barre peut encore bouger)", appels5 == ["5m", "5m"])
+            ok("direct : … jamais gardé pour toujours, ni sur disque",
+               cle not in _memo_passe and not os.path.exists(_chemin_cours_passes()))
+        finally:
+            JOURNAL, CARNET, cours_a, cours_actuel, _historique, _maintenant_utc = reel
+            cours_direct.cours, cours_direct.suivre, cours_direct.etat = reel_flux
+            _memo_actuel.clear()
+            _memo_recent.clear()
+            _memo_passe.clear()
             _disque_passe["chemin"] = None
 
 

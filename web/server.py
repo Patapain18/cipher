@@ -169,6 +169,7 @@ def scan_stocks():
         try:
             analysis = bot.analyze(ticker, df)
             analysis["secteur"] = stock_engine_sector(ticker)
+            analysis.update(references_du_scan(df))
             # Simple lecture du cache alimenté par le bot : aucun appel
             # réseau ici (voir stock_engine.rafraichir_earnings).
             import stock_engine
@@ -220,6 +221,23 @@ def scan_stocks():
         "classes": len(ranked),
         "scanned_at": datetime.now().isoformat(),
     }
+
+
+def references_du_scan(df):
+    """
+    Pour le tableau en direct (choix de Mathis du 24/11/2026) : la date de la
+    dernière séance du scan (date de New York) et les clôtures auxquelles il
+    compare le cours (la veille, il y a 5 et 22 séances). Ce sont celles de
+    stock_bot.analyze (`change(1)`, `change(5)`, `change(22)`, sur
+    stock_engine.normalize(df)["close"]) : le direct garde les mêmes repères.
+    """
+    import stock_engine
+    close = stock_engine.normalize(df)["close"]
+    refs = {}
+    for cle, n in (("change_1d", 1), ("change_1w", 5), ("change_1m", 22)):
+        v = float(close.iloc[-1 - n]) if len(close) > n else None
+        refs[cle] = v if v is not None and math.isfinite(v) and v > 0 else None
+    return {"date_seance": close.index[-1].date().isoformat(), "references": refs}
 
 
 def stocks_history():
@@ -620,35 +638,118 @@ def rang_de(ticker):
     return None, donnees.get("classes")
 
 
+# Les séances de Yahoo (papier._seances_de_yahoo), gardées 1 h : elles ne changent pas dans
+# la journée, et l'état se recalcule à chaque fois avec l'heure du moment. Le chemin rapide du
+# direct n'attend donc plus Yahoo toutes les 30 s (0,3 à 1,4 s, jusqu'à 10 s s'il traîne).
+_seances_bourse = {"lu": 0.0, "periode": None, "essai": 0.0}
+_seances_verrou = threading.Lock()
+
+
+def etat_de_la_bourse():
+    """
+    L'état de la Bourse de New York d'après Yahoo, sur le S&P 500 (jours
+    fériés et séances courtes compris) : « avant », « ouverte », « apres »,
+    « fermee », ou None si Yahoo n'a jamais répondu (la page reprend alors
+    son propre calcul). Relu toutes les heures, toutes les 5 minutes quand
+    elle est fermée (pour voir l'avant-séance s'ouvrir), au plus une fois
+    par minute quand Yahoo ne répond pas.
+    """
+    import papier
+    s = _seances_bourse
+    etat = papier.etat_bourse(datetime.now(timezone.utc), s["periode"]) if s["periode"] else None
+    age = time.time() - s["lu"]
+    a_relire = s["periode"] is None or not 0 <= age < 3600 or (etat == "fermee" and age >= 300)
+    if a_relire and time.time() - s["essai"] >= 60 and _seances_verrou.acquire(blocking=False):
+        try:
+            s["essai"] = time.time()
+            _, _, periode = papier.minute_de_seance(papier.INDICE)
+            s.update(lu=time.time(), periode=periode)
+            etat = papier.etat_bourse(datetime.now(timezone.utc), periode)
+        except Exception as e:
+            print(f"[position] état de la Bourse : {e}", file=sys.stderr)
+        finally:
+            _seances_verrou.release()
+    return etat
+
+
+def duree_cache_position():
+    """
+    Combien de temps /api/position reste en cache : 1 s quand le flux en
+    direct tourne (connexion ou ouvert : la page relit toutes les 2 s), 60 s
+    sinon, comme avant le direct.
+    """
+    import cours_direct
+    return 1 if cours_direct.etat().get("etat") in ("connexion", "ouvert") else 60
+
+
 def ma_position_en_direct():
     """
     Ma position (ma_position.py) : valeur, gain frais compris, seuils, rang,
-    et l'état de la Bourse de New York lu chez Yahoo sur le S&P 500 (jours
-    fériés et séances courtes compris ; None si Yahoo ne répond pas : la
-    page reprend alors son propre calcul).
+    l'état de la Bourse de New York (etat_de_la_bourse), et celui du direct
+    (champ `direct`). L'état de la Bourse est donné au flux AVANT le calcul :
+    il ne s'ouvre pas quand elle est fermée.
     """
+    import cours_direct
     import ma_position
-    import papier
+    bourse = etat_de_la_bourse()
+    cours_direct.bourse(bourse)
     p = ma_position.position(rang_de)
-    try:
-        _, _, periode = papier.minute_de_seance(papier.INDICE)
-        p["bourse"] = papier.etat_bourse(datetime.now(timezone.utc), periode)
-    except Exception as e:
-        print(f"[position] état de la Bourse : {e}", file=sys.stderr)
-        p["bourse"] = None
+    p["bourse"] = bourse
     return p
 
 
 def mon_journal():
     """
     Mes décisions, et pour chaque achat la même somme dans le S&P 500,
-    comptées avec les cours de la position en cache : la page affiche
-    alors la même valeur en haut et dans le journal.
+    comptées avec les cours de la position en cache, PLUS cette position
+    elle-même (`position`) : le carnet prend les deux dans cette réponse,
+    une seule photo des cours. Avec le flux, deux calculs faits en parallèle
+    liraient deux messages différents (le défaut du 17/11 reviendrait).
     """
     import ma_position
-    pos, _ = cached("/api/position", 60, ma_position_en_direct)
+    pos, _ = cached("/api/position", duree_cache_position(), ma_position_en_direct)
     prix = {l["ticker"]: l["prix_usd"] for l in pos["lignes"]}
-    return ma_position.journal_compare(prix, pos["eurusd"])
+    return {**ma_position.journal_compare(prix, pos["eurusd"]), "position": pos}
+
+
+def valeurs_en_direct():
+    """
+    Le tableau des 49 en direct (choix de Mathis du 24/11/2026) : les
+    colonnes Cours, 1 j, 1 sem et 1 mois, à partir du dernier scan EN
+    MÉMOIRE (jamais relancé ici) et du flux, sans aucun appel à Yahoo pour
+    les cours. Une valeur n'y est que si :
+      - son dernier cours du flux est de la séance normale (market_hours 1),
+        et a moins de cours_direct.FRAIS_S à l'heure du cours ;
+      - le scan contient déjà la séance du jour (sinon ses repères seraient
+        ceux d'hier).
+    Les variations se comptent comme stock_bot.analyze, avec les mêmes
+    clôtures de référence (references_du_scan). Le reste du tableau garde le
+    rythme du scan.
+    """
+    import cours_direct
+    from zoneinfo import ZoneInfo
+    with _cache_lock:
+        entree = _cache.get("/api/stocks") or _cache.get("/api/stocks:classement")
+    scan = entree["value"] if entree else None
+    rangs = [r for r in (scan or {}).get("rows", []) if not r.get("error") and r.get("ticker")]
+    cours_direct.bourse(etat_de_la_bourse())
+    cours_direct.suivre("tableau", [r["ticker"] for r in rangs])
+    aujourd_hui = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    maintenant = datetime.now(timezone.utc)
+    valeurs = {}
+    for r in rangs:
+        c = cours_direct.cours(r["ticker"])
+        if (c is None or c.seance != cours_direct.SEANCE_NORMALE or r.get("date_seance") != aujourd_hui
+                or (maintenant - c.heure).total_seconds() > cours_direct.FRAIS_S):
+            continue
+        v = {"price": c.prix, "heure": c.heure.isoformat()}
+        for cle, ref in (r.get("references") or {}).items():
+            v[cle] = (c.prix - ref) / ref * 100 if ref else None
+        valeurs[r["ticker"]] = v
+    e = cours_direct.etat()
+    return {"en_direct": bool(valeurs), "rapide": cours_direct.rythme_rapide(bool(valeurs)),
+            "etat": e.get("etat"), "raison": e.get("raison"),
+            "scan_de": scan.get("scanned_at") if scan else None, "valeurs": valeurs}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -739,7 +840,8 @@ ROUTES = {
     "/api/creux":          (creux_des_indices, 3600),       # des cours de clôture aussi
     "/api/banc":           (verdict_du_banc, 300),          # deux fichiers écrits une fois, jamais réécrits
     "/api/seance":         (mur_de_la_seance, 300),         # data/seance.json, réécrit à la main par seance.py --mesurer
-    "/api/position":       (ma_position_en_direct, 60),
+    "/api/position":       (ma_position_en_direct, duree_cache_position),   # 1 s pendant le direct, 60 s sinon
+    "/api/valeurs/direct": (valeurs_en_direct, 1),        # le scan en mémoire et le flux : jamais Yahoo
     "/api/journal":        (mon_journal, 0),      # recalculé à chaque fois, sur la position en cache (60 s)
     "/api/papier":         (mon_defi_papier, 0),  # recalculé à chaque fois : papier.py garde déjà les cours 30 s.
                                                   # Un cache ici pouvait ranger, après un ordre, un état lu avant lui.
@@ -799,7 +901,7 @@ class Handler(SimpleHTTPRequestHandler):
         if path in ROUTES:
             producer, ttl = ROUTES[path]
             try:
-                payload, computed_at = cached(path, ttl, producer)
+                payload, computed_at = cached(path, ttl() if callable(ttl) else ttl, producer)
                 body = encoder_json({"ok": True, "data": payload, "cached_at": computed_at})
                 status = 200
             except Exception as e:
@@ -938,8 +1040,38 @@ def surveiller_parent(server):
     threading.Thread(target=boucle, daemon=True).start()
 
 
+def sortie_d_erreur_dans_un_fichier():
+    """
+    Lancé par l'appli (DASHBOARD_PARENT_PID), le serveur écrit ses erreurs dans
+    logs/serveur.log, vidé à chaque lancement. L'appli (figée par PyInstaller le
+    08/09/2026, web/build.sh) reçoit sa sortie d'erreur dans un tuyau qu'elle ne
+    lit plus après le démarrage : plein (65 520 octets, mesuré le 24/11/2026), il
+    bloquerait le serveur à sa prochaine écriture, et une page relue toutes les
+    2 s pendant une panne le remplirait en une vingtaine de minutes. Appelé une
+    fois le port ouvert : une erreur AU démarrage arrive toujours à l'appli.
+    """
+    if not os.environ.get("DASHBOARD_PARENT_PID"):
+        return
+    try:
+        os.makedirs(os.path.join(ROOT, "logs"), exist_ok=True)
+        fd = os.open(os.path.join(ROOT, "logs", "serveur.log"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    except OSError:
+        return
+    sys.stderr.flush()
+    os.dup2(fd, 2)
+    os.close(fd)
+
+
 def main():
+    import cours_direct
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    sortie_d_erreur_dans_un_fichier()
+    # Le flux en direct de Yahoo (cours_direct.py) : activé ici seulement, il ne
+    # s'ouvre qu'à la première demande de la page (fenêtre devant).
+    try:
+        cours_direct.activer()
+    except ValueError as e:
+        print(f"[direct] {e} : le flux reste coupé", file=sys.stderr)
     surveiller_parent(server)
     print()
     print("  \033[1mDashboard trading\033[0m")

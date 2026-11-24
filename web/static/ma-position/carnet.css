@@ -673,3 +673,8 @@ html.pc-carnet-ouvert .shell { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .pc-vue { animation: none; }
 }
+
+/* Le direct (24/11/2026) : le mot et le bouton Pause dans la ligne « Ta position ».
+   Le bouton garde l'allure des badges (.direct-pause, style.css), posé sur la
+   ligne de base du texte comme les autres morceaux de la ligne. */
+.pc-direct-ligne .pc-pause { padding-top: 3px; padding-bottom: 3px; }

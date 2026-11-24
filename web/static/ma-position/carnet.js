@@ -349,13 +349,23 @@
           <span class="pc-sans-frais">${habiller(T.sansFrais(PP.sansFraisTotal(p), { court: true }))}</span>
           <span class="pc-sep" aria-hidden="true">·</span>
           <span>${PP.esc(quelCours)} ${num(heureDuCours(dernierCours))}</span>
+          ${motDirect(p)}
           <span class="pc-sep" aria-hidden="true">·</span>
           <span>${PP.esc(PP.BOURSE[p.bourse] || PP.BOURSE[PP.bourse()])}</span>
         </p>
         ${etat.erreurPosition ? `<p class="pc-direct-erreur">Dernier rafraîchissement impossible
           (${PP.esc(etat.erreurPosition)}) : ces chiffres datent du tour précédent.</p>` : ''}`;
     }
-    if (html !== deja.direct) { zone.innerHTML = html; deja.direct = html; }
+    /* En place : toutes les 2 s pendant le direct, seuls les chiffres changent (le bouton Pause garde le focus). */
+    if (html !== deja.direct) { PP.remplacer(zone, html); deja.direct = html; }
+  }
+
+  /* Le mot du direct (« en direct », « en pause », « toutes les minutes ») et son
+     bouton Pause ; rien avec un ancien serveur (sans le champ `direct`). */
+  function motDirect(p) {
+    const mot = PP.motDuDirect(p?.direct, { erreur: !!etat.erreurPosition });
+    return mot ? `<span class="pc-sep" aria-hidden="true">·</span>
+          <span class="pc-direct-mode">${PP.esc(mot)}</span>${PP.boutonPause('pc-pause')}` : '';
   }
 
   /* ------------------------------------------------------------
@@ -486,7 +496,7 @@
       /* Le bouton du repli peut avoir le focus : on le lui rend après la
          réécriture. */
       const focus = zone.contains(document.activeElement) ? document.activeElement.id : '';
-      zone.innerHTML = html;
+      PP.remplacer(zone, html);
       $('#pc-nb-decisions').innerHTML = nb;
       deja.journal = html;
       if (focus) document.getElementById(focus)?.focus({ preventScroll: true });
@@ -583,8 +593,8 @@
     }
     const tout = html + faits;
     if (tout !== deja.valeur) {
-      $('#pc-valeur').innerHTML = html;
-      $('#pc-faits').innerHTML = faits;
+      PP.remplacer($('#pc-valeur'), html);
+      PP.remplacer($('#pc-faits'), faits);
       deja.valeur = tout;
     }
   }
@@ -905,31 +915,52 @@
     dessinerPosition();
   }
 
+  /* Le journal ET la position qu'il a utilisée, dans UNE réponse (le direct,
+     24/11/2026) : le haut du carnet et le bilan comptent avec les mêmes cours,
+     même quand ils changent toutes les secondes. Un ancien serveur (pas de
+     `position` dans la réponse) : la position est lue à part, comme avant. */
   async function chargerJournal() {
     const n = ++tickets.journal;
+    let j = null;
     try {
-      const j = await PP.journal();
+      j = await PP.journal({ delai: rapide() ? 5_000 : 30_000 });
       if (n !== tickets.journal) return;
       etat.journal = j;
       etat.erreurJournal = null;
+      if (j.position) {
+        ++tickets.position;
+        etat.position = j.position;
+        etat.erreurPosition = null;
+      }
     } catch (e) {
       if (n !== tickets.journal) return;
       etat.erreurJournal = e.message;
+      etat.erreurPosition = e.message;
     }
+    if (j && !j.position) await chargerPosition();
+    else dessinerPosition();
     dessinerJournal();
   }
 
-  /* Un tour : la position et le journal ensemble, puis ce qui en dépend
-     (la valeur suivie vient de la position). Le graphique d'un jour se
-     renouvelle à chaque tour ; ceux d'un mois et d'un an, quand le
-     serveur les a renouvelés. Rien ne tourne quand la vue est fermée. */
+  /* Le rythme : toutes les 2 s quand le serveur le dit (le direct, ou le flux
+     en train de se connecter), jamais après une lecture ratée (une panne
+     relue toutes les 2 s remplirait les journaux du serveur), jamais en mode
+     « Papier » (le défi a ses 60 s). La pause est gérée par PP.surveiller. */
+  const rapide = () => !etat.erreurJournal && !vue.classList.contains('pa-papier')
+    && etat.position?.direct?.rapide === true;
+
+  /* Un tour : le journal et sa position, puis ce qui en dépend (la valeur
+     suivie vient de la position). Le graphique d'un jour se renouvelle
+     quand le serveur l'a renouvelé (55 s) ; ceux d'un mois et d'un an aussi.
+     Rien ne tourne quand la vue est fermée. */
   const estOuverte = () => !vue.hidden;
   async function tour() {
     if (!estOuverte()) return;
-    await Promise.all([chargerPosition(), chargerJournal()]);
+    await chargerJournal();
     await Promise.all([chargerGraphe(), chargerIndicateurs()]);
   }
   let surveillance = null;
+  document.addEventListener('direct:pause', () => { if (estOuverte()) dessinerDirect(); });
 
   /* ------------------------------------------------------------
      3. NOTER UNE DÉCISION
@@ -1018,7 +1049,7 @@
        puis toutes les 60 s quand la fenêtre est devant) ; les suivants
        rattrapent : le serveur garde ses réponses en cache, c'est bon
        marché. */
-    if (!surveillance) surveillance = PP.surveiller(tour);
+    if (!surveillance) surveillance = PP.surveiller(tour, { vite: rapide });
     else surveillance.maintenant();
     /* Le défi papier (papier.js) se range dans cette vue : il apprend
        ainsi qu'elle vient de s'ouvrir. */
