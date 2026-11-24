@@ -49,6 +49,7 @@ const DUREE = { '1j': 300, '1m': 3600 };
 
 const lignes = [];
 const ok = (cond, quoi) => { lignes.push(`${cond ? 'ok ' : 'NON'} ${quoi}`); return cond; };
+const note = (quoi) => lignes.push(`note ${quoi}`);          // un cas sauté, dit : pas un échec
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /* ── Le recalcul à part : la règle du plan, réécrite sans le code de graphe.js ── */
@@ -68,6 +69,7 @@ function attendus(g, decisions) {
   const barres = [...parTemps.keys()].sort((a, b) => a - b);
   const cle = (s) => (g.periode === '1a' ? dateNY(s * 1000) : s);
   const premier = dateNY(barres[0] * 1000);
+  const joursAvecBarre = new Set(barres.map((b) => dateNY(b * 1000)));
   const sortieOrdres = [];
   let hors = 0;
   for (const d of decisions) {
@@ -76,7 +78,9 @@ function attendus(g, decisions) {
     if (!Number.isFinite(ms) || dateNY(ms) < premier) continue;
     const { semaine, minutes } = heureNY(ms);
     const seance = !['Sat', 'Sun'].includes(semaine) && minutes >= 570 && minutes < 960;
-    if (!seance) hors += 1;
+    // Hors séance : hors des heures de New York, ou un jour sans aucune barre (un jour férié).
+    const horsSeance = !seance || !joursAvecBarre.has(dateNY(ms));
+    if (horsSeance) hors += 1;
     let barre;
     if (g.periode === '1a') {
       const jour = dateNY(ms);
@@ -84,7 +88,7 @@ function attendus(g, decisions) {
       barre = barres.find((b) => (apres ? dateNY(b * 1000) > jour : dateNY(b * 1000) >= jour));
     } else {
       const q = Math.floor(ms / 1000);
-      barre = barres.find((b) => b <= q && q < b + DUREE[g.periode]) ?? barres.find((b) => b > q);
+      barre = (!horsSeance ? barres.find((b) => b <= q && q < b + DUREE[g.periode]) : undefined) ?? barres.find((b) => b > q);
     }
     barre ??= barres[barres.length - 1];
     sortieOrdres.push(`${cle(barre)}|${Number(d.prix_eur)}|${d.sens === 'achat' ? 'A' : 'V'}`);
@@ -190,6 +194,93 @@ async function controlerPeriode(page, etat, nom, p) {
   ok(!vu.deborde && vu.figureDedans, `${nom} ${p} : rien ne déborde`);
 }
 
+/* Ce qui se DESSINE (à 1440) : les pixels des flèches, des lignes et de la courbe sur l'image du
+   graphique (takeScreenshot), la place et le côté des étiquettes, les formats de l'heure et des prix,
+   les réglages de sobriété. La relecture du 25/11/2026 : 25 erreurs volontaires sur 37 passaient,
+   le test ne lisait que l'état de graphe.js. */
+async function controlerDessin(page, etat, nom, p) {
+  const ticker = await page.evaluate(() => (document.getElementById('pc-figure-titre').textContent.match(/de (\S+), en euros/) || [])[1]);
+  const g = etat.graphiques.get(`${ticker}|${p}`);
+  if (!ok(!!g, `${nom} ${p} : la courbe reçue, pour le dessin`)) return;
+  const heureParis = new Intl.DateTimeFormat('fr-FR', { timeZone: 'Europe/Paris', hour: '2-digit', minute: '2-digit' })
+    .format(new Date(Date.parse(g.points[0].t)));
+  const r = await page.evaluate(({ p, heureParis }) => {
+    const e = PCGraphe.essai();
+    const zone = document.querySelector('#pc-graphe .pc-lc');
+    const toile = e.chart.takeScreenshot();
+    const k = toile.width / zone.clientWidth;
+    const px = toile.getContext('2d').getImageData(0, 0, toile.width, toile.height).data;
+    const css = getComputedStyle(document.documentElement);
+    const rgb = (n) => { const h = css.getPropertyValue(n).trim(); return [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)); };
+    const [accent, neutre, encre] = [rgb('--accent'), rgb('--neutral'), rgb('--text')];
+    const gauche = e.chart.priceScale('left').width();
+    const largeur = zone.clientWidth - gauche;
+    const hauteur = zone.clientHeight - e.chart.timeScale().height();
+    const lignesY = e.reperes.map((rp) => e.serie.priceToCoordinate(rp.prix));
+    /* Un pixel de cette couleur dans le rectangle (pixels CSS du graphique), en sautant les lignes. */
+    const trouve = (x0, x1, y0, y1, c, horsLignes = false) => {
+      for (let y = Math.max(0, Math.floor(y0)); y <= Math.min(hauteur, Math.ceil(y1)); y++) {
+        if (horsLignes && lignesY.some((ly) => Math.abs(ly - y) <= 2)) continue;
+        for (let x = Math.max(0, Math.floor(x0)); x <= Math.ceil(x1); x++) {
+          const i = (Math.round(y * k) * toile.width + Math.round(x * k)) * 4;
+          if (px[i + 3] > 100 && Math.hypot(px[i] - c[0], px[i + 1] - c[1], px[i + 2] - c[2]) < 60) return true;
+        }
+      }
+      return false;
+    };
+    const ts = e.chart.timeScale();
+    const fleches = e.ordres.map((o) => {
+      const x = gauche + ts.timeToCoordinate(o.time);
+      const y = e.serie.priceToCoordinate(o.prix);
+      return o.achat ? trouve(x - 3, x + 3, y + 2, y + 16, accent, true) : trouve(x - 3, x + 3, y - 16, y - 2, neutre, true);
+    });
+    const lignes = e.reperes.map((rp) => {
+      const y = e.serie.priceToCoordinate(rp.prix);
+      return [0.15, 0.35, 0.55, 0.75, 0.95].filter((f) => trouve(gauche + f * largeur - 6, gauche + f * largeur + 6, y - 1, y + 1, accent)).length >= 3;
+    });
+    const pas = Math.max(1, Math.floor(e.barres.length / 10));
+    const echantillon = e.barres.filter((_, i) => i % pas === 0);
+    const courbe = echantillon.filter((b) => {
+      const x = gauche + ts.timeToCoordinate(b.time);
+      const y = e.serie.priceToCoordinate(b.value);
+      return trouve(x - 3, x + 3, y - 3, y + 3, encre);
+    }).length / echantillon.length;
+    /* Les étiquettes : à 2 px de leur ligne (au-dessus ou en dessous), du côté où le cours n'est pas. */
+    const rz = zone.getBoundingClientRect();
+    const etiquettes = [...document.querySelectorAll('#pc-graphe .pc-repere-texte')].map((s, i) => {
+      const rs = s.getBoundingClientRect();
+      const y = rz.top + lignesY[i];
+      const place = s.classList.contains('pc-dessus') ? Math.abs(rs.bottom - (y - 2)) <= 3 : Math.abs(rs.top - (y + 2)) <= 3;
+      const cote = p === '1j' ? Math.abs(rs.right - (rz.right - 8)) <= 2 : Math.abs(rs.left - (rz.left + gauche + 6)) <= 2;
+      return place && cote;
+    });
+    const o = e.chart.options();
+    const so = e.serie.options();
+    const m = e.marques;
+    return {
+      fleches, lignes, courbe, etiquettes,
+      heure: p === '1a' ? null : o.timeScale.tickMarkFormatter(e.barres[0].time, 3) === heureParis,
+      prix: o.localization.priceFormatter(123.45) === PP.euros(123.45) && so.priceFormat.formatter(1.5) === PP.euros(1.5),
+      graduations: JSON.stringify(o.localization.tickmarksPriceFormatter([600, 500]))
+          === JSON.stringify([PP.euros(600, { decimales: 0 }), PP.euros(500, { decimales: 0 })])
+        && JSON.stringify(o.localization.tickmarksPriceFormatter([372.5, 375])) === JSON.stringify([PP.euros(372.5), PP.euros(375)]),
+      sobre: so.priceLineVisible === false && so.lastValueVisible === false && o.layout.attributionLogo === false
+        && o.kineticScroll.mouse === false && o.kineticScroll.touch === false && o.handleScroll.vertTouchDrag === false
+        && o.leftPriceScale.entireTextOnly === true,
+      marques: m.length === e.ordres.length && m.every((x, i) => x.time === e.ordres[i].time && x.price === e.ordres[i].prix
+        && x.position === (e.ordres[i].achat ? 'atPriceBottom' : 'atPriceTop') && x.shape === (e.ordres[i].achat ? 'arrowUp' : 'arrowDown')),
+    };
+  }, { p, heureParis });
+  ok(r.fleches.every(Boolean), `${nom} ${p} : chaque flèche dessinée à son prix, du bon côté, de sa couleur (${r.fleches.filter(Boolean).length}/${r.fleches.length})`);
+  ok(r.marques, `${nom} ${p} : les flèches données à la bibliothèque (heure, prix, position, forme)`);
+  ok(r.lignes.every(Boolean), `${nom} ${p} : chaque ligne dessinée à son prix`);
+  ok(r.courbe >= 0.8, `${nom} ${p} : la courbe dessinée sur ses barres (${Math.round(r.courbe * 100)} %)`);
+  ok(r.etiquettes.every(Boolean), `${nom} ${p} : chaque étiquette à 2 px de sa ligne, du bon côté`);
+  if (r.heure !== null) ok(r.heure, `${nom} ${p} : la première barre graduée à l'heure de Paris (${heureParis})`);
+  ok(r.prix && r.graduations, `${nom} ${p} : les prix et les graduations en euros, ronds ou au centime`);
+  ok(r.sobre, `${nom} ${p} : ni ligne ni étiquette du dernier prix, ni inertie, ni glisser vertical au doigt, ni logo`);
+}
+
 const MOTEURS = { chrome: () => chromium.launch({ channel: 'chrome' }), webkit: () => webkit.launch(), firefox: () => firefox.launch() };
 
 /* ── 1 et 2 : les tailles, les périodes, le clavier, la molette ── */
@@ -202,6 +293,7 @@ for (const [moteur, lancer] of Object.entries(MOTEURS)) {
     for (const p of Object.keys(PERIODES)) {
       if (!ok(await choisirPeriode(page, p), `${nom} ${p} : la période se dessine`)) continue;
       await controlerPeriode(page, etat, nom, p);
+      if (taille === 'ordi') await controlerDessin(page, etat, nom, p);
       if (taille === 'ordi' || p === '1j') {
         await page.evaluate(() => document.getElementById('pc-figure').scrollIntoView({ block: 'center' }));
         await page.locator('#pc-figure').screenshot({ path: join(sortie, `${moteur}-${taille}-${p}.png`) });
@@ -235,6 +327,24 @@ for (const [moteur, lancer] of Object.entries(MOTEURS)) {
         return `${PCGraphe.outils.texteTemps(b.time, '1a', true)} · ${PP.euros(b.value)}`;
       }, { i: avant.idx });
       ok(zoom.curseur.startsWith(ligne), `${nom} : la ligne du curseur écrit la barre lue (${zoom.curseur})`);
+      const plageDe = () => page.evaluate(() => { const e = PCGraphe.essai(); const r = e.chart.timeScale().getVisibleLogicalRange();
+        return { idx: e.idx, from: r.from, to: r.to, nTotal: e.nTotal, n: e.barres.length }; });
+      await page.keyboard.press('End');
+      await page.waitForTimeout(250);
+      const fin = await plageDe();
+      ok(fin.idx === fin.n - 1 && fin.to <= fin.nTotal - 0.49 && fin.to >= fin.n - 1, `${nom} : Fin après un zoom va à la dernière barre, sans vide après elle`);
+      await page.keyboard.press('Home');
+      await page.waitForTimeout(250);
+      const debut = await plageDe();
+      ok(debut.idx === 0 && debut.from >= -0.51, `${nom} : Début va à la première barre, sans vide avant elle`);
+      await page.keyboard.press('ArrowRight');
+      await page.waitForTimeout(150);
+      ok((await plageDe()).idx === 1, `${nom} : → avance d'une barre`);
+      const l0 = await plageDe();
+      await page.keyboard.press('-');
+      await page.waitForTimeout(300);
+      const l1 = await plageDe();
+      ok(l1.to - l1.from > l0.to - l0.from + 1, `${nom} : − dézoome`);
       await page.keyboard.press('0');
       await page.waitForTimeout(300);
       const entiere = await page.evaluate(() => PCGraphe.essai().chart.timeScale().getVisibleLogicalRange());
@@ -402,6 +512,17 @@ for (const [moteur, lancer] of Object.entries(MOTEURS)) {
       res.anWeekEnd = place(bj, [d('2026-11-22T15:00:00Z')], '1a').ordres.length;                        // dimanche 22, avant la période → 0
       const bjSam = [{ time: s('2026-11-20T12:00:00Z'), value: 1 }, { time: s('2026-11-23T12:00:00Z'), value: 2 }];
       res.anSamedi = place(bjSam, [d('2026-11-21T15:00:00Z')], '1a');                                    // samedi → lundi [1], hors 1
+      /* Barres d'une heure (1 mois) : lundi 23/11 à 9 h 30 et 15 h 30 à New York (celle-ci court
+         jusqu'à 16 h 30), puis mardi 24 à 9 h 30. */
+      const bh = ['2026-11-23T14:30:00Z', '2026-11-23T20:30:00Z', '2026-11-24T14:30:00Z'].map((iso, i) => ({ time: s(iso), value: 100 + i }));
+      res.heure1610 = place(bh, [d('2026-11-23T21:10:00Z')], '1m');      // 16 h 10 : hors séance → le lendemain [2], hors 1
+      res.heure1555 = place(bh, [d('2026-11-23T20:55:00Z')], '1m');      // 15 h 55 : dans la barre de 15 h 30 [1], hors 0
+      /* Un trou de Yahoo en pleine séance (le jour a des barres) : la barre qui suit, pas hors séance. */
+      res.trou = place([{ time: s('2026-11-24T14:30:00Z'), value: 1 }, { time: s('2026-11-24T17:00:00Z'), value: 2 }],
+        [d('2026-11-24T15:00:00Z')], '1j');                                                             // [1], hors 0
+      /* Un jour férié (jeudi 26/11, Thanksgiving) aux heures de séance : la séance suivante, hors séance. */
+      const bf = ['2026-11-25', '2026-11-27'].map((j, i) => ({ time: s(`${j}T12:00:00Z`), value: 1 + i }));
+      res.ferie = place(bf, [d('2026-11-26T16:00:00Z')], '1a');                                         // [1], hors 1
       /* L'heure de Paris autour des changements d'heure (9 h 30 à New York). */
       res.mars27 = texteTemps(s('2026-03-27T13:30:00Z'), '1j');     // New York en heure d'été, Paris pas encore : 14:30
       res.mars30 = texteTemps(s('2026-03-30T13:30:00Z'), '1j');     // les deux en heure d'été : 15:30
@@ -429,6 +550,11 @@ for (const [moteur, lancer] of Object.entries(MOTEURS)) {
     ok(JSON.stringify(r.deuxSurUne) === '["2V103","2A99"]', 'calcul : deux ordres sur une barre, une flèche chacun, dans l\'ordre des heures');
     ok(JSON.stringify(r.anApresCloture) === '[1]' && JSON.stringify(r.anAvantOuverture) === '[1]', 'calcul 1 an : après la clôture → le jour suivant ; avant l\'ouverture → le jour même');
     ok(r.anWeekEnd === 0 && JSON.stringify(r.anSamedi.ordres.map((o) => o.i)) === '[1]' && r.anSamedi.hors === 1, 'calcul 1 an : un ordre du samedi va au lundi ; d\'avant la période, rien');
+    ok(JSON.stringify(r.heure1610.ordres.map((o) => o.i)) === '[2]' && r.heure1610.hors === 1,
+      'calcul 1 mois : 16 h 10 à New York, hors séance → la barre du lendemain, pas celle de 15 h 30');
+    ok(JSON.stringify(r.heure1555.ordres.map((o) => o.i)) === '[1]' && r.heure1555.hors === 0, 'calcul 1 mois : 15 h 55, dans la barre de 15 h 30');
+    ok(JSON.stringify(r.trou.ordres.map((o) => o.i)) === '[1]' && r.trou.hors === 0, 'calcul : un trou de Yahoo en séance → la barre qui suit, pas hors séance');
+    ok(JSON.stringify(r.ferie.ordres.map((o) => o.i)) === '[1]' && r.ferie.hors === 1, 'calcul : un jour férié aux heures de séance → la séance suivante, hors séance');
     ok(r.mars27 === '14:30' && r.mars30 === '15:30' && r.oct30 === '14:30' && r.nov03 === '15:30',
       `calcul : l'heure de Paris autour des changements d'heure (${r.mars27}, ${r.mars30}, ${r.oct30}, ${r.nov03})`);
     ok(JSON.stringify(r.seances) === '[true,false,true,false,false]', 'calcul : la séance de New York, à ses deux bouts et le samedi');
@@ -442,8 +568,193 @@ for (const [moteur, lancer] of Object.entries(MOTEURS)) {
   await navigateur.close();
 }
 
+/* ── 5 : les retours de la relecture du 25/11/2026 ── */
+
+/* 5a. La fenêtre agrandie (390 → 844 → 1440 px) garde toute la courbe dans le cadre (trois moteurs). */
+for (const [moteur, lancer] of Object.entries(MOTEURS)) {
+  const navigateur = await lancer();
+  const { contexte, page } = await ouvrir(navigateur, { viewport: { width: 390, height: 844 } }, URL_LC);
+  if (await pret(page, '1j', 60000)) {
+    for (const p of ['1j', '1a']) {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await choisirPeriode(page, p);
+      await page.waitForTimeout(600);
+      for (const w of [844, 1440]) {
+        await page.setViewportSize({ width: w, height: 900 });
+        await page.waitForTimeout(800);
+        const v = await page.evaluate(() => {
+          const e = PCGraphe.essai(); const ts = e.chart.timeScale(); const r = ts.getVisibleLogicalRange();
+          const largeur = document.querySelector('#pc-graphe .pc-lc').clientWidth - e.chart.priceScale('left').width();
+          return { from: r.from, to: r.to, nTotal: e.nTotal, largeur,
+                   x0: ts.timeToCoordinate(e.barres[0].time), xn: ts.timeToCoordinate(e.barres[e.barres.length - 1].time) };
+        });
+        ok(v.from <= 0.5 && v.to >= v.nTotal - 1.5 && v.x0 >= 0 && v.xn <= v.largeur,
+          `${moteur} ${p} : la fenêtre agrandie de 390 à ${w} px garde toute la courbe dans le cadre`);
+      }
+    }
+  } else ok(false, `${moteur} agrandir : le graphique se dessine`);
+  await contexte.close();
+  await navigateur.close();
+}
+
+/* 5b. Chrome : le carnet ouvert après coup, une seule barre puis la vraie courbe, la fin de séance, le zoom
+   gardé au rafraîchissement, le journal changé, le survol, la molette rendue, le retour après une panne,
+   une autre valeur en panne. */
+{
+  const navigateur = await chromium.launch({ channel: 'chrome' });
+  const ordi = TAILLES.ordi;
+
+  /* Le carnet ouvert après le chargement (touche P) : le graphique à sa vraie largeur, vue entière. */
+  {
+    const { contexte, page } = await ouvrir(navigateur, ordi, `${BASE}/?plan${AVANT ? '&graphe=lc' : ''}`);
+    await page.waitForFunction(() => window.PP && document.readyState === 'complete', null, { timeout: 40000 }).catch(() => {});
+    await page.waitForTimeout(3000);
+    await page.keyboard.press('p');
+    const dessine = await pret(page, '1j', 60000);
+    const v = dessine ? await page.evaluate(() => {
+      const e = PCGraphe.essai(); const r = e.chart.timeScale().getVisibleLogicalRange();
+      const zone = document.querySelector('#pc-graphe .pc-lc'); const toile = zone.querySelector('canvas');
+      return { largeur: zone.clientWidth, toile: toile ? toile.getBoundingClientRect().width : 0, from: r.from, to: r.to, nTotal: e.nTotal };
+    }) : null;
+    ok(dessine && v.largeur > 300 && v.toile > 0 && v.from <= 0.5 && v.to >= v.nTotal - 1.5,
+      'chrome carnet ouvert après coup (P) : le graphique à sa largeur, vue entière');
+    await contexte.close();
+  }
+
+  /* graphe.js appelé directement, sur la courbe et le journal reçus par la page. */
+  {
+    const { contexte, page, etat } = await ouvrir(navigateur, ordi, URL_LC);
+    if (await pret(page, '1j', 60000)) {
+      await page.waitForTimeout(500);
+      const ticker = await page.evaluate(() => (document.getElementById('pc-figure-titre').textContent.match(/de (\S+), en euros/) || [])[1]);
+      const g = etat.graphiques.get(`${ticker}|1j`);
+      const decisions = etat.journal?.decisions || [];
+      const r = await page.evaluate(async ({ g, decisions }) => {
+        const att = (ms) => new Promise((fin) => setTimeout(fin, ms));
+        const e = () => PCGraphe.essai();
+        const vu = () => ({ chart: !!e().chart, cadreCache: document.getElementById('pc-graphe').hidden,
+                            msg: !document.getElementById('pc-graphe-msg').hidden, barres: e().barres.length });
+        const res = {};
+        PCGraphe.dessiner({ g: { ...g, points: g.points.slice(0, 1) }, decisions });   // l'ouverture : une seule barre
+        await att(200);
+        res.uneBarre = vu();
+        PCGraphe.dessiner({ g, decisions });
+        await att(300);
+        res.retour = vu();
+        res.debutNY = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit',
+          hourCycle: 'h23' }).format(new Date(Date.parse(g.points[0].t)));
+        PCGraphe.dessiner({ g: { ...g, points: g.points.slice(0, 20) }, decisions });   // une séance en cours
+        await att(200);
+        res.cases = e().nTotal;
+        PCGraphe.dessiner({ g, decisions });
+        await att(200);
+        e().chart.timeScale().setVisibleLogicalRange({ from: 10, to: 40 });
+        await att(200);
+        PCGraphe.dessiner({ g: { ...g }, decisions });                                    // la même courbe, rafraîchie
+        await att(300);
+        const r1 = e().chart.timeScale().getVisibleLogicalRange();
+        res.zoomGarde = Math.abs(r1.from - 10) < 0.6 && Math.abs(r1.to - 40) < 0.6;
+        PCGraphe.vueEntiere();
+        await att(200);
+        const derniere = g.points[g.points.length - 1];
+        const loin = Math.max(...g.points.map((p) => p.eur)) * 1.3;
+        const avant = e().marques.length;
+        PCGraphe.ordres([...decisions, { ticker: g.ticker, sens: 'vente', prix_eur: loin, date_utc: derniere.t }]);
+        await att(300);
+        const h = document.querySelector('#pc-graphe .pc-lc').clientHeight - e().chart.timeScale().height();
+        const y = e().serie.priceToCoordinate(loin);
+        res.journal = { plus: e().marques.length === avant + 1, dedans: y !== null && y >= 0 && y <= h };
+        PCGraphe.ordres(decisions);
+        return res;
+      }, { g, decisions });
+      ok(!r.uneBarre.chart && r.uneBarre.cadreCache && r.uneBarre.msg, 'chrome une seule barre (l\'ouverture) : « Pas assez de points », sans graphique');
+      ok(r.retour.chart && !r.retour.cadreCache && !r.retour.msg && r.retour.barres > 1, 'chrome une seule barre puis la vraie courbe : le graphique revient');
+      if (r.debutNY === '09:30') ok(r.cases === 78, `chrome une séance en cours : 20 barres → 78 cases jusqu'à 15 h 55 (${r.cases})`);
+      else note(`chrome séance en cours : la courbe du jour ne commence pas à 9 h 30 (${r.debutNY}), cas sauté`);
+      ok(r.zoomGarde, 'chrome la même courbe rafraîchie garde le zoom');
+      ok(r.journal.plus && r.journal.dedans, 'chrome un ordre de plus au journal : sa flèche arrive, et l\'échelle l\'englobe même loin de la courbe');
+    } else ok(false, 'chrome graphe.js direct : le graphique se dessine');
+    await contexte.close();
+  }
+
+  /* La souris sur la barre d'un ordre (1 mois), puis la molette prise par un clic et rendue en sortant. */
+  {
+    const { contexte, page } = await ouvrir(navigateur, ordi, URL_LC);
+    if (await pret(page, '1j', 60000) && await choisirPeriode(page, '1m')) {
+      await page.evaluate(() => document.getElementById('pc-figure').scrollIntoView({ block: 'center' }));
+      await page.waitForTimeout(300);
+      const cible = await page.evaluate(() => {
+        const e = PCGraphe.essai(); const o = e.ordres[e.ordres.length - 1];
+        if (!o) return null;
+        const zone = document.querySelector('#pc-graphe .pc-lc').getBoundingClientRect();
+        return { x: zone.left + e.chart.priceScale('left').width() + e.chart.timeScale().timeToCoordinate(o.time),
+                 y: zone.top + e.serie.priceToCoordinate(e.barres[o.i].value), attendu: `${o.achat ? 'achat' : 'vente'} à ${PP.euros(o.prix)}` };
+      });
+      if (cible) {
+        await page.mouse.move(cible.x, cible.y);
+        await page.waitForTimeout(300);
+        const ligne = await page.evaluate(() => document.getElementById('pc-curseur').textContent);
+        ok(ligne.includes(cible.attendu) && !ligne.startsWith('Fin de la courbe'), `chrome la souris sur la barre d'un ordre : la ligne écrit le point et l'ordre (${ligne})`);
+      } else note('chrome survol : aucun ordre sur la courbe d\'un mois, cas sauté');
+      const b = await page.locator('#pc-graphe').boundingBox();
+      await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
+      await page.waitForTimeout(200);
+      const pris = await page.evaluate(() => PCGraphe.essai().actif);
+      await page.mouse.move(5, 5);
+      await page.waitForTimeout(200);
+      const rendu = await page.evaluate(() => !PCGraphe.essai().actif);
+      ok(pris && rendu, 'chrome un clic prend la molette, sortir du graphique la rend à la page');
+    } else ok(false, 'chrome survol : le graphique se dessine');
+    await contexte.close();
+  }
+
+  /* /api/graphique en panne, puis de retour : un clic sur une période redessine le graphique. */
+  {
+    const { contexte, page } = await ouvrir(navigateur, ordi, URL_LC, { routes: (pg) => pg.route('**/api/graphique**',
+      (r) => r.fulfill({ status: 500, contentType: 'application/json', body: '{"erreur": "panne inventée"}' })) });
+    await page.waitForFunction(() => { const m = document.getElementById('pc-graphe-msg'); return m && !m.hidden; }, null, { timeout: 40000 }).catch(() => {});
+    await page.unroute('**/api/graphique**');
+    await page.evaluate(() => document.querySelector('[data-periode="1m"]').click());
+    const revenu = await pret(page, '1m', 40000);
+    const v = await page.evaluate(() => ({ cache: document.getElementById('pc-graphe').hidden, msg: !document.getElementById('pc-graphe-msg').hidden }));
+    ok(revenu && !v.cache && !v.msg, 'chrome panne puis retour : un clic sur 1 mois redessine le graphique, sans le message');
+    await contexte.close();
+  }
+
+  /* Une autre valeur dont la lecture échoue : plus de courbe d'avant sous le nouveau choix. La valeur est
+     prise dans la liste de la page, jamais écrite ici (dépôt public). */
+  {
+    let autre = null;
+    const { contexte, page } = await ouvrir(navigateur, ordi, URL_LC, { routes: (pg) => pg.route('**/api/graphique**', (r) => {
+      if (autre && new URL(r.request().url()).searchParams.get('ticker') === autre) {
+        return r.fulfill({ status: 500, contentType: 'application/json', body: '{"erreur": "panne inventée"}' });
+      }
+      return r.continue();
+    }) });
+    if (await pret(page, '1j', 60000)) {
+      autre = await page.evaluate(() => {
+        const titre = document.getElementById('pc-figure-titre').textContent;
+        const b = [...document.querySelectorAll('#pc-choix-valeur [data-ticker]')].find((x) => !titre.includes(` ${x.dataset.ticker},`));
+        return b ? b.dataset.ticker : null;
+      });
+      if (autre) {
+        await page.evaluate((t) => document.querySelector(`#pc-choix-valeur [data-ticker="${t}"]`).click(), autre);
+        const vu = await page.waitForFunction(() => { const m = document.getElementById('pc-graphe-msg'); return m && !m.hidden; }, null, { timeout: 40000 })
+          .then(() => true, () => false);
+        const v = await page.evaluate(() => ({ chart: !!PCGraphe.essai().chart, cache: document.getElementById('pc-graphe').hidden,
+          titre: document.getElementById('pc-figure-titre').textContent, legende: document.getElementById('pc-legende').textContent }));
+        ok(vu && !v.chart && v.cache && v.titre.includes(autre) && v.legende === '',
+          'chrome une autre valeur en panne : plus de courbe d\'avant, le titre de la nouvelle, pas de phrase');
+      } else note('chrome autre valeur : une seule valeur dans la liste, cas sauté');
+    } else ok(false, 'chrome autre valeur : le graphique se dessine');
+    await contexte.close();
+  }
+  await navigateur.close();
+}
+
 const non = lignes.filter((l) => l.startsWith('NON')).length;
-const texte = `${lignes.join('\n')}\n\n${lignes.length - non} sur ${lignes.length} contrôles passent${non ? ` — ${non} NON` : ''}.`;
+const controles = lignes.filter((l) => !l.startsWith('note')).length;   // une note n'est pas un contrôle
+const texte = `${lignes.join('\n')}\n\n${controles - non} sur ${controles} contrôles passent${non ? ` — ${non} NON` : ''}.`;
 writeFileSync(join(sortie, 'rapport.txt'), texte);
 console.log(texte);
 process.exit(non ? 1 : 0);

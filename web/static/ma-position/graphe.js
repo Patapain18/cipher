@@ -123,9 +123,12 @@ window.PCGraphe = (() => {
   }
 
   /* Tes ordres de cette valeur, chacun sur sa barre :
-     - un ordre passé pendant une barre va sur elle ;
-     - un ordre hors séance (avant 15 h 30 ou après 22 h, heure de Paris) va sur la
-       première barre qui suit son heure ; s'il n'y en a pas, sur la dernière ;
+     - un ordre passé pendant la séance va sur la barre qui le contient ;
+     - un ordre hors séance (avant 15 h 30 ou après 22 h, heure de Paris, le week-end, ou
+       un jour sans barre : un jour férié) va sur la première barre qui suit son heure ;
+       s'il n'y en a pas, sur la dernière. C'est ce que dit la phrase sous le graphique.
+       (La barre d'une heure de 15 h 30 à New York court jusqu'à 16 h 30 : un ordre de
+       16 h 10 est hors séance, il va donc au lendemain, pas sur elle — relecture du 25/11.)
      - un ordre d'avant le jour de la première barre n'est pas montré (la bibliothèque,
        seule, le collerait sur la première barre).
      Le choix de la barre se fait en UTC, avant tout format d'heure. */
@@ -134,6 +137,7 @@ window.PCGraphe = (() => {
     let hors = 0;
     if (!barres.length) return { ordres, hors };
     const jours = barres.map((b) => jourNY(b.time));
+    const joursAvecBarre = new Set(jours);
     const premierJour = jours[0];
     for (const d of decisions || []) {
       if (d.ticker !== ticker) continue;
@@ -144,6 +148,7 @@ window.PCGraphe = (() => {
       const jour = jourNY(q);
       if (jour < premierJour) continue;
       const seance = enSeance(q);
+      const horsSeance = !seance || !joursAvecBarre.has(jour);
       let i = -1;
       if (periode === '1a') {
         const apresLaCloture = !seance && ny(q).minutes >= 960;
@@ -151,11 +156,11 @@ window.PCGraphe = (() => {
       } else {
         let k = -1;
         while (k + 1 < barres.length && barres[k + 1].time <= q) k += 1;
-        if (k >= 0 && q < barres[k].time + DUREE_BARRE[periode]) i = k;
+        if (!horsSeance && k >= 0 && q < barres[k].time + DUREE_BARRE[periode]) i = k;
         else if (k + 1 < barres.length) i = k + 1;
       }
       if (i < 0) i = barres.length - 1;
-      if (!seance) hors += 1;
+      if (horsSeance) hors += 1;
       ordres.push({ i, time: barres[i].time, prix, achat: d.sens === 'achat', quand: ms });
     }
     ordres.sort((a, b) => a.time - b.time || a.quand - b.quand);
@@ -272,10 +277,13 @@ window.PCGraphe = (() => {
       leftPriceScale: { visible: true, borderVisible: false, entireTextOnly: true,
                         scaleMargins: { top: 0.12, bottom: 0.12 } },
       rightPriceScale: { visible: false },
-      /* 12 px après la dernière barre : ses flèches n'y sont pas coupées. Le bord droit
-         n'est pas « fixé » : fixé, la bibliothèque refuse toute marge (_maxRightOffset). */
+      /* 12 px après la dernière barre : ses flèches n'y sont pas coupées. Aucun bord n'est
+         « fixé » : le droit fixé refuse toute marge (_maxRightOffset) ; le gauche fixé,
+         avec lockVisibleTimeRangeOnResize, faisait glisser la courbe hors du cadre quand la
+         fenêtre s'agrandit (relecture du 25/11/2026). Le zoom au clavier reste dans la
+         courbe (plageBornee). */
       timeScale: { borderVisible: false, timeVisible: g.periode !== '1a', secondsVisible: false,
-                   fixLeftEdge: true, fixRightEdge: false, rightOffsetPixels: 12,
+                   fixLeftEdge: false, fixRightEdge: false, rightOffsetPixels: 12,
                    lockVisibleTimeRangeOnResize: true, tickMarkFormatter: graduation(g.periode) },
       crosshair: { mode: LWC.CrosshairMode.Magnet,
                    vertLine: { color: c.neutre, width: 1, style: LWC.LineStyle.Dotted, labelVisible: false },
@@ -407,30 +415,43 @@ window.PCGraphe = (() => {
      0 : la vue entière ; Échap : rend la molette à la page (un
      second Échap ferme le carnet, comme ailleurs).
      ------------------------------------------------------------ */
+  /* Une plage de barres sans vide avant le début ni après la fin de la courbe (aucun
+     bord n'est fixé, voir creer) ; null si elle est plus large que la courbe. */
+  function plageBornee(from, to) {
+    const max = st.nTotal - 0.5;
+    if (to - from >= max + 0.5) return null;
+    let f = from;
+    let t = to;
+    if (t > max) { f -= t - max; t = max; }
+    if (f < -0.5) { t += -0.5 - f; f = -0.5; }
+    return { from: f, to: t };
+  }
+  function montrerPlage(from, to) {
+    const p = plageBornee(from, to);
+    if (p) st.chart.timeScale().setVisibleLogicalRange(p);
+    else st.chart.timeScale().fitContent();
+  }
+
   function poserCurseur(i) {
     const b = st.barres[i];
     if (!b) return;
     st.idx = i;
     st.clavier = true;
-    const ts = st.chart.timeScale();
-    const plage = ts.getVisibleLogicalRange();
+    const plage = st.chart.timeScale().getVisibleLogicalRange();
     if (plage && (i < plage.from || i > plage.to)) {
       const demi = (plage.to - plage.from) / 2;
-      ts.setVisibleLogicalRange({ from: i - demi, to: i + demi });
+      montrerPlage(i - demi, i + demi);
     }
     st.chart.setCrosshairPosition(b.value, b.time, st.serie);
     ecrireCurseur(i);
   }
 
   function zoomer(facteur) {
-    const ts = st.chart.timeScale();
-    const plage = ts.getVisibleLogicalRange();
+    const plage = st.chart.timeScale().getVisibleLogicalRange();
     if (!plage) return;
     const centre = st.idx ?? (plage.from + plage.to) / 2;
     const demi = Math.max(5, ((plage.to - plage.from) / 2) * facteur);
-    /* Pas de vide après la fin de la courbe (le bord droit n'est pas fixé, pour sa marge). */
-    const decalage = Math.max(0, centre + demi - (st.nTotal - 0.5));
-    ts.setVisibleLogicalRange({ from: centre - demi - decalage, to: centre + demi - decalage });
+    montrerPlage(centre - demi, centre + demi);
     requestAnimationFrame(reposerCurseur);
   }
 
@@ -476,18 +497,32 @@ window.PCGraphe = (() => {
       message('Pas assez de points pour tracer une courbe.');
       return { ordres: 0, hors: 0 };
     }
-    if (el.zone.clientWidth === 0) {            // carnet caché, fenêtre hors de l'écran : plus tard
+    /* Le cadre se montre AVANT d'être mesuré : un message l'avait peut-être caché, et un
+       cadre caché ne grandit jamais (relecture du 25/11/2026 : à l'ouverture de New York,
+       une seule barre, puis plus jamais de graphique). */
+    el.msg.hidden = true;
+    el.cadre.hidden = false;
+    if (el.zone.clientWidth === 0) {            // carnet fermé, fenêtre hors de l'écran : plus tard
       st.attente = { g, decisions };
       const { ordres, hors } = placerOrdres(barres, decisions, g.ticker, g.periode);
       return { ordres: ordres.length, hors };
     }
-    el.msg.hidden = true;
-    el.cadre.hidden = false;
     const cle = `${g.ticker}|${g.periode}`;
     const memeCourbe = st.chart && st.cle === cle;
     const plage = memeCourbe ? st.chart.timeScale().getVisibleLogicalRange() : null;
     const toutVu = !plage || (plage.from <= 0.5 && plage.to >= st.nTotal - 1.5);   // pas de zoom à garder
+    const donnees = avecLeReste(barres, g.periode);
     if (!memeCourbe) creer(g, style(el.cadre));
+    /* La courbe d'abord : si la bibliothèque la refuse, rien de l'état n'a encore changé et
+       la courbe d'avant reste entière (ses flèches et ses lignes comprises). */
+    try {
+      st.serie.setData(donnees);
+    } catch (e) {
+      if (!memeCourbe) detruire();
+      message(`Courbe illisible (${e.message}).`);
+      return { ordres: st.ordres.length, hors: st.hors };
+    }
+    st.nTotal = donnees.length;
     st.cle = cle;
     st.periode = g.periode;
     st.ticker = g.ticker;
@@ -497,14 +532,6 @@ window.PCGraphe = (() => {
     ({ ordres: st.ordres, hors: st.hors } = placerOrdres(barres, decisions, g.ticker, g.periode));
     for (const r of st.reperes) if (r.ligne) st.serie.removePriceLine(r.ligne);
     st.reperes = reperesDe(g.achat);
-    try {
-      const donnees = avecLeReste(barres, g.periode);
-      st.serie.setData(donnees);
-      st.nTotal = donnees.length;
-    } catch (e) {
-      message(`Courbe illisible (${e.message}).`);
-      return { ordres: st.ordres.length, hors: st.hors };
-    }
     st.marques.setMarkers(marquesDe(st.ordres));
     poserLignes();
     if (!memeCourbe || toutVu) st.chart.timeScale().fitContent();
@@ -526,9 +553,15 @@ window.PCGraphe = (() => {
   }
 
   /* Un message (chargement raté, pas assez de points) : dans un élément voisin, jamais
-     dans le cadre du graphique, que la bibliothèque occupe. */
-  function message(texte) {
+     dans le cadre du graphique, que la bibliothèque occupe. Pour une AUTRE valeur ou une
+     autre période (cle), la courbe d'avant s'en va : elle se lirait comme la nouvelle
+     (relecture du 25/11/2026). */
+  function message(texte, cle = null) {
     preparer();
+    if (cle !== null && cle !== st.cle) {
+      detruire();
+      st.attente = null;
+    }
     el.msg.textContent = texte;
     el.msg.hidden = false;
     el.cadre.hidden = !st.chart;
@@ -563,6 +596,7 @@ window.PCGraphe = (() => {
   /* Pour les vérifications (outils/verif_graphique.mjs) : l'état, en lecture, et les
      fonctions de calcul, essayées sur des cours et des ordres inventés. */
   const essai = () => ({ chart: st.chart, serie: st.serie, barres: st.barres, ordres: st.ordres,
+                         marques: st.marques ? st.marques.markers() : [],
                          reperes: st.reperes.map(({ prix, texte }) => ({ prix, texte })), periode: st.periode,
                          idx: st.idx, clavier: st.clavier, actif: st.actif, nTotal: st.nTotal });
   const outils = { barresDe, avecLeReste, placerOrdres, texteTemps, graduation, enSeance };
