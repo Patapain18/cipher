@@ -151,6 +151,30 @@
      ------------------------------------------------------------ */
   const PERIODES = { '1j': '1 jour', '1m': '1 mois', '1a': '1 an' };
 
+  /* Le graphique avec Lightweight Charts (plan du 24/11/2026, fin de BRIEF.md). Pendant
+     le chantier, seulement avec ?graphe=lc : sans lui, rien n'est chargé et le graphique
+     SVG ci-dessous reste celui de la vraie appli. graphe.js dessine ; ce fichier lui
+     donne la courbe et le journal, et écrit la phrase sous le graphique. */
+  const GRAPHE_LC = new URLSearchParams(location.search).get('graphe') === 'lc';
+  const grapheLC = GRAPHE_LC ? chargerGrapheLC() : null;
+  let signatureOrdres = '';                 // les décisions déjà passées au graphique
+  function chargerGrapheLC() {
+    const feuille = document.createElement('link');
+    feuille.rel = 'stylesheet';
+    feuille.href = 'ma-position/graphe.css';
+    document.head.append(feuille);
+    const script = (src) => new Promise((ok, ko) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.onload = ok;
+      s.onerror = () => ko(new Error(`${src} introuvable`));
+      document.head.append(s);
+    });
+    return script('vendor/lightweight-charts-5.3.0/lightweight-charts.standalone.production.js')
+      .then(() => script('ma-position/graphe.js'))
+      .then(() => window.PCGraphe);
+  }
+
   /* La vue est le <main> de la page tant qu'elle est ouverte (la vue
      plan, masquée, n'en a pas). Le nom de l'appli y reste le titre de
      niveau 1, comme dans la vue plan dont le h1 est masqué avec elle ;
@@ -718,7 +742,45 @@
     return { x, ticks };
   }
 
+  /* Le nouveau graphique (?graphe=lc) : graphe.js dessine, ici le titre et la phrase.
+     La phrase garde « sur 1 jour / 1 mois / 1 an » (verif_direct.mjs la lit). */
+  function resumeGraphe(g, r) {
+    const pts = g.points || [];
+    if (pts.length < 2) return '';
+    let resume = `Cours de ${g.ticker} sur ${PERIODES[g.periode]}, de ${PP.euros(pts[0].eur)} `
+      + `à ${PP.euros(pts[pts.length - 1].eur)}`;
+    if (g.achat) resume += ` ; ton prix d'achat : ${PP.euros(g.achat.eur)}`;
+    if (r && r.ordres) {
+      resume += ` ; ${r.ordres} ordre${r.ordres > 1 ? 's' : ''} sur la courbe`;
+      if (r.hors) resume += `, dont ${r.hors} passé${r.hors > 1 ? 's' : ''} hors séance, `
+        + `posé${r.hors > 1 ? 's' : ''} à la barre qui suit`;
+    }
+    return `${resume}.`;
+  }
+  /* Si la bibliothèque ne se charge pas, ou si elle échoue en dessinant, l'ancien
+     graphique SVG reprend la place pour toute la session (graphe.js rend d'abord son
+     cadre tel qu'il l'a trouvé). */
+  let lcEnPanne = false;
+  function dessinerGrapheLC(g) {
+    $('#pc-figure-titre').textContent = `Le cours de ${g.ticker}, en euros`;
+    grapheLC.then((lc) => {
+      if (deja.graphe !== g || lcEnPanne) return;   // une courbe plus récente est déjà passée
+      try {
+        const r = lc.dessiner({ g, decisions: etat.journal?.decisions || [] });
+        $('#pc-legende').innerHTML = habiller(resumeGraphe(g, r));
+      } catch (e) {
+        lc.abandonner();
+        throw e;
+      }
+    }).catch(() => {
+      if (lcEnPanne) return;
+      lcEnPanne = true;
+      if (deja.graphe) dessinerGraphe(deja.graphe);
+    });
+  }
+
   function dessinerGraphe(g) {
+    if (GRAPHE_LC && !lcEnPanne) { dessinerGrapheLC(g); return; }
     const pts = g.points || [];
     const cadre = $('#pc-graphe');
     $('#pc-figure-titre').textContent = `Le cours de ${g.ticker}, en euros`;
@@ -791,7 +853,13 @@
     } catch (e) {
       echecs.set(cle, Date.now());
       if (choisie() && !connu) {
-        $('#pc-graphe').innerHTML = `<p class="pc-attente">Cours indisponible pour l'instant (${PP.esc(e.message)}).</p>`;
+        if (GRAPHE_LC && !lcEnPanne) {
+          grapheLC.then((lc) => lc.message(`Cours indisponible pour l'instant (${e.message}).`)).catch(() => {
+            $('#pc-graphe').innerHTML = `<p class="pc-attente">Cours indisponible pour l'instant (${PP.esc(e.message)}).</p>`;
+          });
+        } else {
+          $('#pc-graphe').innerHTML = `<p class="pc-attente">Cours indisponible pour l'instant (${PP.esc(e.message)}).</p>`;
+        }
         deja.graphe = null;
       }
     } finally {
@@ -955,6 +1023,17 @@
       if (n !== tickets.journal) return;
       etat.journal = j;
       etat.erreurJournal = null;
+      /* Un ordre noté : les flèches suivent. Le journal est relu à chaque tour (2 s pendant
+         le direct) : seulement quand ses décisions ont changé. */
+      const signature = (j.decisions || []).map((d) => `${d.date_utc || d.date}|${d.ticker}|${d.prix_eur}`).join(';');
+      if (GRAPHE_LC && !lcEnPanne && deja.graphe && signature !== signatureOrdres) {
+        signatureOrdres = signature;
+        const courbe = deja.graphe;
+        grapheLC.then((lc) => {
+          const r = lc.ordres(j.decisions);
+          if (r && deja.graphe === courbe) $('#pc-legende').innerHTML = habiller(resumeGraphe(courbe, r));
+        }).catch(() => {});
+      }
       if (j.position) {
         ++tickets.position;
         etat.position = j.position;
@@ -1115,6 +1194,11 @@
       vue.querySelectorAll('[data-periode]').forEach((x) =>
         x.setAttribute('aria-pressed', String(x.dataset.periode === etat.periode)));
       chargerGraphe({ demande: true });
+      return;
+    }
+    /* La période déjà choisie, recliquée : la vue entière (après un zoom). */
+    if (b.dataset.periode && GRAPHE_LC && !lcEnPanne) {
+      grapheLC.then((lc) => lc.vueEntiere()).catch(() => {});
       return;
     }
     if (b.dataset.ticker && b.dataset.ticker !== etat.ticker) {
