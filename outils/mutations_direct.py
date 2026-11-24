@@ -110,6 +110,7 @@ ERREURS = [
      "hors du serveur aussi, des barres de 5 min servies sans être relues"),
     (M, [("        if fil is not None and fil.is_alive():\n            return", "        if False:\n            return")],
      "plusieurs relectures des mêmes barres à la fois"),
+    (M, [("MEMO_PERIME_S = 45", "MEMO_PERIME_S = 300")], "au rythme de 60 s, le cours de la minute d'avant"),
     (M, [('                       "source_du_cours": source_du_cours(lu),', '                       "source_du_cours": "direct",')],
      "chaque ligne se dit « direct »"),
     (M, [('        if l.get("source_du_cours") != "direct":\n            continue', '        if False:\n            continue')],

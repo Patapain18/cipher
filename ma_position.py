@@ -297,7 +297,11 @@ _memo_passe = {}      # (symbole, moment) → cours : un cours passé ne change 
 _memo_repli = {}      # (symbole, moment) → (instant de lecture, clôture du jour) : un repli, redemandé
 _memo_recent = {}     # (symbole, moment) → (heure réelle de la lecture, cours) : un moment de moins de 10 minutes
 MEMO_ACTUEL_S = 30
-MEMO_PERIME_S = 300   # dans le serveur : un cours des barres de moins de 5 min sert le temps d'être relu à côté
+# Dans le serveur : un cours des barres de moins de 45 s sert le temps d'être relu à côté. Au rythme
+# de 2 s (le direct), la mémoire n'a jamais plus d'environ 33 s ; au rythme de 60 s, elle en a 60 :
+# la lecture redevient alors directe, comme avant le direct (sinon le repli gagnait une minute de
+# retard : seconde relecture du 24/11/2026).
+MEMO_PERIME_S = 45
 REPLI_S = 600         # toutes les 10 minutes, pour reprendre la vraie barre dès que Yahoo la rend
 _relectures = {}      # symbole → le fil qui relit ses barres en arrière-plan (un seul à la fois)
 _verrou_relectures = threading.Lock()
@@ -305,7 +309,7 @@ _verrou_relectures = threading.Lock()
 
 def _relire_en_fond(symbole):
     """Relit les barres d'une minute d'un symbole dans un fil à part ; un seul fil par symbole à la fois.
-    Un échec ne dit rien : l'appel suivant réessaie, et au-delà de MEMO_PERIME_S, la lecture redevient directe."""
+    Un échec ne dit rien : l'appel suivant réessaie, et au-delà de MEMO_PERIME_S (45 s), la lecture redevient directe."""
     with _verrou_relectures:
         fil = _relectures.get(symbole)
         if fil is not None and fil.is_alive():
@@ -1532,8 +1536,18 @@ def _verifier_direct(ok, proche):
                 _memo_actuel["AMD"] = (time.time() - MEMO_PERIME_S - 1, 406.0, il_y_a(400))
                 appels.clear()
                 r = cours_actuel("AMD")
-                ok("direct (serveur) : au-delà de 5 min, la lecture redevient directe",
+                ok("direct (serveur) : au-delà de 45 s, la lecture redevient directe",
                    r[0] == 407.0 and appels == ["AMD"])
+                # Le rythme de 60 s (« toutes les minutes ») : chaque lecture rend le cours du moment, pas
+                # celui de la minute d'avant (seconde relecture : le repli gagnait une minute de retard).
+                vus = []
+                for valeur in (410.0, 420.0, 430.0):
+                    barres["AMD"] = (il_y_a(60), valeur)
+                    _memo_actuel["AMD"] = (time.time() - 60,) + _memo_actuel["AMD"][1:]   # une minute a passé
+                    vus.append(cours_actuel("AMD")[0])
+                ok(f"direct (serveur) : au rythme de 60 s, Yahoo 410, 420 puis 430 donne {vus} (le cours du moment)",
+                   vus == [410.0, 420.0, 430.0])
+                barres["AMD"] = (il_y_a(60), 407.0)
                 lent = {"n": 0}
 
                 def historique_lent(symbole, **_k):

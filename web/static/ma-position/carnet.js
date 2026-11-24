@@ -908,6 +908,13 @@
         dessinerIndicateurs(data);
         deja.indicateurs = entree;
       }
+      /* « 1 an » cliqué pendant cette lecture : le clic n'a rien lancé (même courbe en vol), c'est
+         donc ici qu'elle se dessine (seconde relecture du 24/11/2026). */
+      if (etat.ticker === ticker && etat.periode === '1a' && deja.graphe !== data) {
+        dessinerGraphe(data);
+        deja.graphe = data;
+        $('#pc-graphe').removeAttribute('aria-busy');
+      }
     } catch (e) {
       echecs.set(cle, Date.now());
       if (etat.ticker === ticker && !connu) {

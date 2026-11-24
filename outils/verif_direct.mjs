@@ -13,8 +13,9 @@
 //  4. (Chrome) un serveur qui ne répond plus (le journal retardé de 10 s) → « en direct » disparaît en moins
 //     de 8 s, et la page ralentit ;
 //  5. (Chrome) un ancien serveur (réponses sans `direct` ni `position`) : aucun mot, aucun bouton, 60 s ;
-//  5 bis. (Chrome) les trois cas de la relecture du 24/11 : un graphique lent ne retient pas le direct ; deux
+//  5 bis. (Chrome) les cas des deux relectures du 24/11 : un graphique lent ne retient pas le direct ; deux
 //     clics rapprochés sur Pause ne laissent pas la page sans relecture ; la vue plan dit une lecture ratée ;
+//     « 1 an » cliqué pendant que les indicateurs lisent l'année s'affiche à son arrivée ;
 //  6. la vue plan : le badge et Pause de l'en-tête, « Cours de …, en direct. », les quatre cases du tableau
 //     avec des valeurs fabriquées (/api/valeurs/direct), changées EN PLACE (mêmes nœuds), puis rendues au scan ;
 //  7. axe à 1280 et 390 px sur ce qui change, aucune erreur de console.
@@ -334,6 +335,21 @@ async function verifier(nom, type, options, complet) {
       ok(await attendreQue(async () => /en direct\.$/.test(await lignePanne()), 75_000, 500),
         `${nom} · le serveur revient : « Cours de …, en direct. » au tour suivant`);
       await panne.close();
+      // « 1 an » cliqué pendant que les indicateurs lisent la courbe d'un an (seconde relecture) : en pause,
+      // aucun tour ne passe avant 60 s, donc seule l'arrivée de cette lecture peut dessiner la courbe.
+      const unAn = await nouvellePage();
+      await unAn.addInitScript(() => { try { localStorage.setItem('signaux:direct-pause', '1'); } catch { /* rien */ } });
+      await unAn.route(/\/api\/graphique\?.*periode=1a/, async (route) => { await dormir(8000); route.continue().catch(() => {}); });
+      const tAn = Date.now();
+      await unAn.goto(`${BASE}/?plan&vue=carnet`);
+      await attendreQue(() => unAn.evaluate(() => Boolean(document.querySelector('[data-periode="1a"]'))
+        && /sur 1 jour/.test(document.querySelector('#pc-legende')?.textContent || '')), 15_000);
+      await dormir(Math.max(0, 3000 - (Date.now() - tAn)));
+      await unAn.click('[data-periode="1a"]');
+      ok(await attendreQue(() => unAn.evaluate(() => /sur 1 an/.test(document.querySelector('#pc-legende')?.textContent || '')), 12_000),
+        `${nom} · « 1 an » cliqué pendant que les indicateurs lisent l'année : la courbe d'un an s'affiche à son arrivée (en pause)`);
+      await unAn.evaluate(() => { try { localStorage.setItem('signaux:direct-pause', '0'); } catch { /* rien */ } });
+      await unAn.close();
     }
 
     // ── 6. La vue plan
