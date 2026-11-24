@@ -481,9 +481,10 @@ def verifier():
     faux = FauxYahoo()
     try:
         # Des délais courts, pour que les cas tiennent en quelques secondes.
-        DEMANDE_S, BATTEMENT_S, MUET_S, ATTENTE_S, REPRISE_S, RECV_S = 30.0, 0.3, 30.0, 0.4, 0.1, 0.05
+        DEMANDE_S, BATTEMENT_S, MUET_S, ATTENTE_S, REPRISE_S, RECV_S = 30.0, 0.3, 30.0, 2.0, 0.1, 0.05
         url = f"ws://127.0.0.1:{faux.port}"
 
+        _MUET.error("essai : ce message du journal de websockets ne doit aller nulle part")
         print("Avant activer()")
         arreter()
         _actif["url"] = None
@@ -503,8 +504,24 @@ def verifier():
         print("Un flux normal")
         activer(url)
         ok("activer() n'ouvre rien tout seul", faux.connexions == 0)
+        vraie_boucle, retenu = globals()["_boucle"], threading.Event()
+        globals()["_boucle"] = lambda: (retenu.wait(5), vraie_boucle())
+        suivre("position", ["AMD"])
+        ok("dès la demande, avant que le fil ne tourne, l'état dit « connexion » (la page relit vite)",
+           etat()["etat"] == "connexion" and rythme_rapide(False) is True)
+        retenu.set()
+        globals()["_boucle"] = vraie_boucle
         suivre("position", ["AMD", "SPY", "pas un symbole !", None, "EURUSD=X"])
         ok("la connexion s'ouvre à la première demande", attendre_que(lambda: etat()["etat"] == "ouvert"))
+        e = etat()
+        ok("l'état dit depuis quand il est ouvert (en secondes, et en heure UTC)",
+           e["depuis_s"] is not None and 0 <= e["depuis_s"] < 5 and e["depuis"].endswith("+00:00"))
+        ok("juste ouvert, sans cours frais : la page relit vite (les 10 premières secondes)",
+           rythme_rapide(False) is True)
+        decalage_ouvert = [11.0]
+        _maintenant = lambda: time.time() + decalage_ouvert[0]     # noqa: E731
+        ok("… plus à 11 s, sans cours frais", rythme_rapide(False) is False and rythme_rapide(True) is True)
+        _maintenant = reglages[6]
         ok("les symboles demandés (les noms illisibles écartés)",
            attendre_que(lambda: ["AMD", "EURUSD=X", "SPY"] in faux.demandes("subscribe")))
         t0 = time.time() - 1
@@ -589,11 +606,22 @@ def verifier():
 
         print("Les pannes")
         n0 = faux.connexions
+        t_coupe = time.time()
         faux.envoyer("fermer")
-        ok("une connexion fermée par Yahoo est refaite (vite : elle avait donné des cours)",
-           attendre_que(lambda: faux.connexions == n0 + 1 and etat()["etat"] == "ouvert", 3, AMD))
-        n0 = faux.connexions
+        refaite = attendre_que(lambda: faux.connexions == n0 + 1 and etat()["etat"] == "ouvert", 3, AMD)
+        duree = time.time() - t_coupe
+        ok(f"une connexion fermée par Yahoo est refaite vite ({duree:.2f} s, avant ATTENTE_S : elle avait donné des cours)",
+           refaite and duree < ATTENTE_S * 0.8)
         MUET_S = 0.6
+        n0 = faux.connexions
+        fin_parle = time.time() + 2.0
+        while time.time() < fin_parle:
+            faux.envoyer(message("AMD", 418.0, time.time()))
+            suivre(*AMD)
+            time.sleep(0.15)
+        ok("un flux qui parle n'est jamais refait (2 s de messages, silence permis 0,6 s)",
+           faux.connexions == n0 and etat()["etat"] == "ouvert")
+        n0 = faux.connexions
         ok("une connexion muette : l'état dit pourquoi pendant l'attente",
            attendre_que(lambda: "resté muet" in (etat()["raison"] or ""), 4, AMD))
         ok("… puis elle est refaite", attendre_que(lambda: faux.connexions >= n0 + 1, 4, AMD))
@@ -646,12 +674,13 @@ def verifier():
         ok("une nouvelle demande la rouvre", attendre_que(lambda: faux.connexions == n0 + 1
                                                           and etat()["etat"] == "ouvert"))
         bourse("fermee")
-        ok("la Bourse fermée : la connexion se ferme", attendre_que(lambda: etat()["etat"] == "arrete"
-                                                                    and not _fil["vivant"]))
-        n0 = faux.connexions
-        suivre("position", ["AMD"])
-        time.sleep(0.3)
-        ok("… et une demande ne la rouvre pas", faux.connexions == n0 and not _fil["vivant"])
+        ok("la Bourse fermée : la connexion se ferme, même si la page demande toujours",
+           attendre_que(lambda: etat()["etat"] == "arrete" and not _fil["vivant"], 4, AMD))
+        n0, depuis0 = faux.connexions, _etat["depuis"]
+        attendre_que(lambda: False, 0.4, AMD)
+        ok("… et les demandes ne la rouvrent pas (aucun fil lancé, l'état ne bouge pas)",
+           faux.connexions == n0 and not _fil["vivant"] and _etat["depuis"] == depuis0
+           and etat()["etat"] == "arrete")
         bourse("pas un état")
         ok("un état de la Bourse inconnu compte comme « on ne sait pas »", _bourse["etat"] is None)
         bourse("apres")
@@ -684,9 +713,11 @@ def verifier():
             ok("le flux dit qu'il est indisponible, et pourquoi",
                attendre_que(lambda: etat()["etat"] == "indisponible" and "bibliothèque" in (etat()["raison"] or "")))
             ok("… sans ouvrir de connexion", faux.connexions == n0 and not _fil["vivant"])
-            suivre("position", ["AMD"])
-            time.sleep(0.2)
-            ok("… et il ne réessaie pas à chaque demande", faux.connexions == n0 and not _fil["vivant"])
+            depuis0 = _etat["depuis"]
+            attendre_que(lambda: False, 0.3, AMD)
+            ok("… et il ne réessaie pas à chaque demande (aucun fil lancé, l'état ne bouge pas)",
+               faux.connexions == n0 and not _fil["vivant"] and _etat["depuis"] == depuis0
+               and etat()["etat"] == "indisponible")
         finally:
             sys.modules["yfinance.pricing_pb2"] = sauve
         arreter()

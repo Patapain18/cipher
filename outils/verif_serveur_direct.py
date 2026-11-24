@@ -1,0 +1,314 @@
+"""
+Les morceaux du serveur pour le direct (web/server.py, plan du 24/11/2026),
+vérifiés sans réseau : references_du_scan, valeurs_en_direct (le tableau des
+49 en direct), mon_journal (il rend sa position), duree_cache_position,
+ma_position_en_direct (l'état de la Bourse donné au flux AVANT le calcul),
+etat_de_la_bourse (le forçage d'essai, la mémoire des séances) et
+sortie_d_erreur_dans_un_fichier. Yahoo, le flux et le calcul de la position
+sont remplacés par des faux ; rien n'est écrit dans data/.
+
+    /usr/bin/python3 outils/verif_serveur_direct.py
+"""
+
+import importlib.util
+import math
+import os
+import subprocess
+import sys
+import tempfile
+import time
+import warnings
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+warnings.filterwarnings("ignore")
+PROJET = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJET)
+FICHIER_SERVEUR = os.environ.get("SERVEUR_A_VERIFIER") or os.path.join(PROJET, "web", "server.py")
+_spec = importlib.util.spec_from_file_location("serveur_verifie", FICHIER_SERVEUR)
+serveur = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(serveur)
+
+import pandas as pd          # noqa: E402
+import cours_direct          # noqa: E402
+import papier                # noqa: E402
+
+cas = []
+
+
+def ok(nom, condition):
+    cas.append(bool(condition))
+    print(("✓ " if condition else "✗ ") + nom, flush=True)
+
+
+def proche(a, b, tol=1e-12):
+    return a is not None and b is not None and abs(a - b) <= tol
+
+
+def references():
+    print("Les repères du scan")
+    jours = pd.date_range("2025-08-01", periods=320, freq="B")
+    cl = [100.0 + i * 0.37 + (i % 7) * 1.1 for i in range(320)]
+    df = pd.DataFrame({"Open": cl, "High": [c + 1 for c in cl], "Low": [c - 1 for c in cl], "Close": cl,
+                       "Volume": [1_000_000 + 1000 * (i % 5) for i in range(320)]}, index=jours)
+    r = serveur.references_du_scan(df)
+    ok("la date de la dernière séance du scan", r["date_seance"] == jours[-1].date().isoformat())
+    ok("les clôtures de la veille, d'il y a 5 et 22 séances (écrites à la main)",
+       r["references"] == {"change_1d": cl[-2], "change_1w": cl[-6], "change_1m": cl[-23]})
+    # Les MÊMES repères que stock_bot.analyze : ses variations se retrouvent au bit près.
+    import stock_bot
+    bot = stock_bot.StockSignalBot(tickers=["AMD"], capital=100, dashboard=False)
+    a = bot.analyze("AMD", df)
+    retrouve = all((a["price"] - r["references"][cle]) / r["references"][cle] * 100 == a[cle]
+                   for cle in ("change_1d", "change_1w", "change_1m"))
+    ok("les variations de stock_bot.analyze se retrouvent au bit près avec ces repères", retrouve)
+    court = serveur.references_du_scan(df.iloc[-10:])
+    ok("un historique de 10 séances : pas de repère à 22 séances (None), comme le scan (0)",
+       court["references"]["change_1m"] is None and court["references"]["change_1w"] == cl[-6])
+    abime = df.copy()
+    abime.iloc[-2, abime.columns.get_loc("Close")] = 0.0
+    abime.iloc[-6, abime.columns.get_loc("Close")] = float("nan")
+    rr = serveur.references_du_scan(abime)["references"]
+    ok("un repère nul ou non fini devient None (jamais une division par zéro)",
+       rr["change_1d"] is None and rr["change_1w"] is None and rr["change_1m"] == cl[-23])
+
+
+def tableau():
+    print("Le tableau des 49 en direct")
+    maintenant = datetime.now(timezone.utc)
+    aujourd_hui = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    refs = {"change_1d": 400.0, "change_1w": 380.0, "change_1m": 500.0}
+    scan = {"rows": [
+        {"ticker": "AMD", "date_seance": aujourd_hui, "references": refs, "price": 405.0},
+        {"ticker": "MSFT", "date_seance": aujourd_hui, "references": {"change_1d": 300.0, "change_1w": None,
+                                                                      "change_1m": 250.0}},
+        {"ticker": "NVDA", "date_seance": "2026-01-02", "references": refs},
+        {"ticker": "TSLA", "date_seance": aujourd_hui, "references": refs},
+        {"ticker": "KO", "date_seance": aujourd_hui, "references": refs},
+        {"ticker": "PEP", "date_seance": aujourd_hui, "references": refs},
+        {"ticker": "XOM", "error": "données indisponibles"},
+    ], "scanned_at": "2026-11-25T16:00:00"}
+    CD = cours_direct.CoursDirect
+    flux = {"AMD": CD(420.0, maintenant - timedelta(seconds=3), 1),
+            "MSFT": CD(330.0, maintenant - timedelta(seconds=cours_direct.FRAIS_S - 1), 1),
+            "NVDA": CD(150.0, maintenant - timedelta(seconds=2), 1),
+            "TSLA": CD(380.0, maintenant - timedelta(seconds=2), 2),
+            "KO": CD(70.0, maintenant - timedelta(seconds=cours_direct.FRAIS_S + 1), 1)}
+    appels = []
+    reel = (cours_direct.cours, cours_direct.suivre, cours_direct.bourse, cours_direct.etat, serveur.etat_de_la_bourse)
+    cours_direct.cours = lambda s: flux.get(s)
+    cours_direct.suivre = lambda client, symboles: appels.append(("suivre", client, list(symboles)))
+    cours_direct.bourse = lambda e: appels.append(("bourse", e))
+    cours_direct.etat = lambda: {"etat": "ouvert", "raison": None, "depuis_s": 100.0, "actif": True}
+    serveur.etat_de_la_bourse = lambda: "ouverte"
+    serveur._cache.clear()
+    try:
+        vide = serveur.valeurs_en_direct()
+        ok("sans scan en mémoire : aucune valeur, pas « en direct », rien ne casse",
+           vide["valeurs"] == {} and vide["en_direct"] is False and vide["scan_de"] is None)
+        serveur._cache["/api/stocks"] = {"value": scan, "at": time.time()}
+        appels.clear()
+        v = serveur.valeurs_en_direct()
+        amd = v["valeurs"].get("AMD", {})
+        ok("AMD en séance, cours de 3 s : 420 $, +5 % sur un jour (420 / 400), écrits à la main",
+           amd.get("price") == 420.0 and proche(amd.get("change_1d"), 5.0)
+           and proche(amd.get("change_1w"), 40 / 380 * 100) and proche(amd.get("change_1m"), -16.0))
+        ok("… avec l'heure du cours", amd.get("heure") == flux["AMD"].heure.isoformat())
+        msft = v["valeurs"].get("MSFT", {})
+        ok("MSFT à 29 s : gardé ; un repère absent donne une variation absente (None)",
+           msft.get("price") == 330.0 and msft.get("change_1w") is None and proche(msft.get("change_1d"), 10.0))
+        ok("NVDA : le scan n'a pas encore la séance du jour, ses chiffres restent ceux du scan", "NVDA" not in v["valeurs"])
+        ok("TSLA : un cours d'après-séance n'entre pas dans le tableau", "TSLA" not in v["valeurs"])
+        ok("KO : un cours de 31 s n'entre pas", "KO" not in v["valeurs"])
+        ok("PEP (pas de cours du flux) et XOM (en erreur) n'y sont pas", "PEP" not in v["valeurs"] and "XOM" not in v["valeurs"])
+        ok("« en direct » et relu vite", v["en_direct"] is True and v["rapide"] is True)
+        ok("le flux suit les valeurs du scan (pas celle en erreur), et apprend l'état de la Bourse d'abord",
+           appels == [("bourse", "ouverte"), ("suivre", "tableau", ["AMD", "MSFT", "NVDA", "TSLA", "KO", "PEP"])])
+        ok("l'heure du scan est donnée", v["scan_de"] == "2026-11-25T16:00:00")
+        del serveur._cache["/api/stocks"]
+        serveur._cache["/api/stocks:classement"] = {"value": scan, "at": time.time()}
+        ok("le classement gardé après une décision notée sert aussi", "AMD" in serveur.valeurs_en_direct()["valeurs"])
+        for etat_bourse, demande in (("apres", False), ("avant", False), ("fermee", False), (None, True)):
+            serveur.etat_de_la_bourse = lambda e=etat_bourse: e
+            appels.clear()
+            serveur.valeurs_en_direct()
+            demandes = [a for a in appels if a[0] == "suivre"]
+            ok(f"Bourse « {etat_bourse} » : les 49 {'sont' if demande else 'ne sont pas'} demandés au flux",
+               bool(demandes) == demande and ("bourse", etat_bourse) in appels)
+        serveur.etat_de_la_bourse = lambda: "ouverte"
+        flux.clear()
+        cours_direct.etat = lambda: {"etat": "attente", "raison": "Yahoo refuse la connexion (code 503)",
+                                     "depuis_s": 3.0, "actif": True}
+        v = serveur.valeurs_en_direct()
+        ok("une panne du flux : aucune valeur, lent, et la raison est donnée",
+           v["valeurs"] == {} and v["en_direct"] is False and v["rapide"] is False and "503" in v["raison"])
+    finally:
+        cours_direct.cours, cours_direct.suivre, cours_direct.bourse, cours_direct.etat, serveur.etat_de_la_bourse = reel
+        serveur._cache.clear()
+
+
+def journal_et_cache():
+    print("Le journal, sa position, et le cache")
+    import ma_position
+    calculs = []
+    ordre = []
+
+    def fausse_position():
+        calculs.append(time.time())
+        return {"lignes": [{"ticker": "AMD", "prix_usd": 420.0 + len(calculs)}], "eurusd": 1.10, "n": len(calculs)}
+    reel = (serveur.ma_position_en_direct, ma_position.journal_compare, cours_direct.etat)
+    serveur.ma_position_en_direct = fausse_position
+    ma_position.journal_compare = lambda prix, fx: {"decisions": [], "prix_vus": dict(prix), "fx_vu": fx}
+    serveur._cache.clear()
+    try:
+        for e, attendu in (("connexion", 1), ("ouvert", 1), ("attente", 60), ("arrete", 60), ("indisponible", 60)):
+            cours_direct.etat = lambda e=e: {"etat": e}
+            ok(f"la position gardée {attendu} s quand le flux est « {e} »", serveur.duree_cache_position() == attendu)
+        cours_direct.etat = lambda: {"etat": "ouvert"}
+        j = serveur.mon_journal()
+        ok("le journal rend la position qu'il a utilisée", j.get("position", {}).get("n") == 1)
+        ok("… et compte avec ses cours (une seule photo)", j["prix_vus"] == {"AMD": 421.0} and j["fx_vu"] == 1.10)
+        p, _ = serveur.cached("/api/position", serveur.duree_cache_position(), serveur.ma_position_en_direct)
+        ok("/api/position, demandée dans la seconde, rend LA MÊME position (même objet)", p is j["position"])
+        serveur._cache["/api/position"]["at"] -= 1.5
+        j2 = serveur.mon_journal()
+        ok("pendant le direct, une position de plus d'une seconde est recalculée", j2["position"]["n"] == 2)
+        cours_direct.etat = lambda: {"etat": "arrete"}
+        serveur._cache["/api/position"]["at"] -= 30
+        ok("sans le direct, elle reste gardée 60 s (comme avant)", serveur.mon_journal()["position"]["n"] == 2)
+    finally:
+        serveur.ma_position_en_direct, ma_position.journal_compare, cours_direct.etat = reel
+        serveur._cache.clear()
+
+    print("L'état de la Bourse est donné au flux AVANT le calcul")
+    reel = (serveur.etat_de_la_bourse, cours_direct.bourse, ma_position.position)
+    serveur.etat_de_la_bourse = lambda: "fermee"
+    cours_direct.bourse = lambda e: ordre.append(("bourse", e))
+    ma_position.position = lambda rang_de=None: ordre.append(("position",)) or {"lignes": []}
+    try:
+        p = serveur.ma_position_en_direct()
+        ok("l'ordre : la Bourse, puis la position ; et la position la dit",
+           ordre == [("bourse", "fermee"), ("position",)] and p["bourse"] == "fermee")
+    finally:
+        serveur.etat_de_la_bourse, cours_direct.bourse, ma_position.position = reel
+
+
+def bourse():
+    print("L'état de la Bourse")
+    maintenant = datetime.now(timezone.utc)
+    ouverte = {"jour": None, "courante": (maintenant - timedelta(hours=1), maintenant + timedelta(hours=5)),
+               "avant": (maintenant - timedelta(hours=6), maintenant - timedelta(hours=1)),
+               "apres": (maintenant + timedelta(hours=5), maintenant + timedelta(hours=9))}
+    passee = {"jour": None, "courante": (maintenant - timedelta(hours=20), maintenant - timedelta(hours=14)),
+              "avant": (maintenant - timedelta(hours=25), maintenant - timedelta(hours=20)),
+              "apres": (maintenant - timedelta(hours=14), maintenant - timedelta(hours=10))}
+    lectures = []
+    reponse = {"periode": ouverte, "panne": False}
+
+    def fausse_minute(symbole, relire=False):
+        lectures.append(symbole)
+        if reponse["panne"]:
+            raise ValueError("Yahoo ne répond pas")
+        return 700.0, maintenant, reponse["periode"]
+    reel = (papier.minute_de_seance, dict(serveur._seances_bourse), os.environ.get("FLUX_URL"),
+            os.environ.get("FLUX_BOURSE"))
+    papier.minute_de_seance = fausse_minute
+    for cle in ("FLUX_URL", "FLUX_BOURSE"):
+        os.environ.pop(cle, None)
+    serveur._seances_bourse.update(lu=0.0, periode=None, essai=0.0)
+    erreur_avant = sys.stderr
+    sys.stderr = open(os.devnull, "w")       # la ligne « état de la Bourse » de la panne, voulue ici
+    try:
+        ok("ouverte, d'après les séances de Yahoo", serveur.etat_de_la_bourse() == "ouverte" and lectures == ["SPY"])
+        ok("… gardées : une seconde demande ne relit pas Yahoo", serveur.etat_de_la_bourse() == "ouverte"
+           and lectures == ["SPY"])
+        serveur._seances_bourse["essai"] -= 61
+        serveur.etat_de_la_bourse()
+        ok("… ni une minute plus tard (gardées une heure)", lectures == ["SPY"])
+        serveur._seances_bourse["lu"] -= 3601
+        serveur._seances_bourse["essai"] -= 3601
+        serveur.etat_de_la_bourse()
+        ok("relues après une heure", lectures == ["SPY", "SPY"])
+        reponse["periode"] = passee
+        serveur._seances_bourse.update(lu=time.time() - 3601, essai=0.0)
+        ok("fermée (la séance du jour est passée)", serveur.etat_de_la_bourse() == "fermee")
+        n = len(lectures)
+        serveur.etat_de_la_bourse()
+        ok("fermée : pas relue avant 5 minutes", len(lectures) == n)
+        serveur._seances_bourse["lu"] -= 301
+        serveur._seances_bourse["essai"] -= 301
+        reponse["periode"] = ouverte
+        ok("fermée depuis 5 minutes : relue (et la voilà ouverte)", serveur.etat_de_la_bourse() == "ouverte"
+           and len(lectures) == n + 1)
+        reponse["panne"] = True
+        serveur._seances_bourse.update(lu=time.time() - 3601, essai=0.0)
+        n = len(lectures)
+        e1 = serveur.etat_de_la_bourse()
+        serveur.etat_de_la_bourse()
+        ok("Yahoo en panne : l'ancien état reste, et un seul essai par minute",
+           e1 == "ouverte" and len(lectures) == n + 1)
+        serveur._seances_bourse.update(lu=0.0, periode=None, essai=0.0)
+        ok("Yahoo n'a jamais répondu : None (la page fait son propre calcul)", serveur.etat_de_la_bourse() is None)
+        os.environ["FLUX_BOURSE"] = "fermee"
+        serveur._seances_bourse.update(lu=0.0, periode=None, essai=0.0)
+        reponse["panne"] = False
+        ok("FLUX_BOURSE sans faux flux (FLUX_URL) est ignoré", serveur.etat_de_la_bourse() == "ouverte")
+        os.environ["FLUX_URL"] = "ws://127.0.0.1:9"
+        ok("avec un faux flux, FLUX_BOURSE impose l'état (les vérifications de la page)",
+           serveur.etat_de_la_bourse() == "fermee")
+        os.environ["FLUX_BOURSE"] = "n'importe quoi"
+        ok("… un état inconnu donne None", serveur.etat_de_la_bourse() is None)
+    finally:
+        sys.stderr.close()
+        sys.stderr = erreur_avant
+        papier.minute_de_seance = reel[0]
+        serveur._seances_bourse.clear()
+        serveur._seances_bourse.update(reel[1])
+        for cle, v in (("FLUX_URL", reel[2]), ("FLUX_BOURSE", reel[3])):
+            if v is None:
+                os.environ.pop(cle, None)
+            else:
+                os.environ[cle] = v
+
+
+def sortie_d_erreur():
+    print("La sortie d'erreur quand l'appli lance le serveur")
+    script = ("import importlib.util, os, sys\n"
+              f"spec = importlib.util.spec_from_file_location('s', {FICHIER_SERVEUR!r})\n"
+              "s = importlib.util.module_from_spec(spec); spec.loader.exec_module(s)\n"
+              "print('avant', file=sys.stderr, flush=True)\n"
+              "s.sortie_d_erreur_dans_un_fichier(dossier=sys.argv[1])\n"
+              "print('après', file=sys.stderr, flush=True)\n"
+              "os.write(2, b'brut\\n')\n")
+    with tempfile.TemporaryDirectory() as dossier:
+        env = {k: v for k, v in os.environ.items() if k != "DASHBOARD_PARENT_PID"}
+        r = subprocess.run([sys.executable, "-c", script, dossier], capture_output=True, text=True,
+                           env={**env, "DASHBOARD_PARENT_PID": "1"}, timeout=120)
+        chemin = os.path.join(dossier, "serveur.log")
+        fichier = open(chemin).read() if os.path.exists(chemin) else ""
+        ok("lancé par l'appli : après la bascule, plus rien dans le tuyau",
+           "avant" in r.stderr and "après" not in r.stderr and "brut" not in r.stderr)
+        ok("… tout va dans logs/serveur.log (Python et le reste)", "après" in fichier and "brut" in fichier)
+        with open(chemin, "w") as f:
+            f.write("vieux\n" * 1000)
+        subprocess.run([sys.executable, "-c", script, dossier], capture_output=True, text=True,
+                       env={**env, "DASHBOARD_PARENT_PID": "1"}, timeout=120)
+        ok("le fichier est vidé à chaque lancement", "vieux" not in open(chemin).read())
+        r = subprocess.run([sys.executable, "-c", script, dossier + "-pas-utilise"], capture_output=True,
+                           text=True, env=env, timeout=120)
+        ok("lancé au Terminal (sans l'appli) : rien ne change, tout reste sur la sortie d'erreur",
+           "après" in r.stderr and "brut" in r.stderr and not os.path.exists(dossier + "-pas-utilise"))
+
+
+def main():
+    references()
+    tableau()
+    journal_et_cache()
+    bourse()
+    sortie_d_erreur()
+    print(f"\n{sum(cas)}/{len(cas)} vérifications réussies")
+    sys.exit(0 if all(cas) else 1)
+
+
+if __name__ == "__main__":
+    main()

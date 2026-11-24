@@ -655,6 +655,11 @@ def etat_de_la_bourse():
     par minute quand Yahoo ne répond pas.
     """
     import papier
+    # Les vérifications du direct (outils/verif_direct.mjs) imposent l'état, pour ne pas dépendre
+    # de l'heure du marché ; seulement avec un faux flux (FLUX_URL), jamais pour la vraie appli.
+    force = os.environ.get("FLUX_BOURSE")
+    if force and os.environ.get("FLUX_URL"):
+        return force if force in ("avant", "ouverte", "apres", "fermee") else None
     s = _seances_bourse
     etat = papier.etat_bourse(datetime.now(timezone.utc), s["periode"]) if s["periode"] else None
     age = time.time() - s["lu"]
@@ -732,8 +737,12 @@ def valeurs_en_direct():
         entree = _cache.get("/api/stocks") or _cache.get("/api/stocks:classement")
     scan = entree["value"] if entree else None
     rangs = [r for r in (scan or {}).get("rows", []) if not r.get("error") and r.get("ticker")]
-    cours_direct.bourse(etat_de_la_bourse())
-    cours_direct.suivre("tableau", [r["ticker"] for r in rangs])
+    bourse = etat_de_la_bourse()
+    cours_direct.bourse(bourse)
+    # Les 49 ne servent qu'en séance normale : hors d'elle, ils ne sont pas demandés au flux
+    # (oubliés 90 s plus tard). État inconnu (Yahoo muet) : demandés quand même.
+    if bourse in ("ouverte", None):
+        cours_direct.suivre("tableau", [r["ticker"] for r in rangs])
     aujourd_hui = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
     maintenant = datetime.now(timezone.utc)
     valeurs = {}
@@ -1040,7 +1049,7 @@ def surveiller_parent(server):
     threading.Thread(target=boucle, daemon=True).start()
 
 
-def sortie_d_erreur_dans_un_fichier():
+def sortie_d_erreur_dans_un_fichier(dossier=None):
     """
     Lancé par l'appli (DASHBOARD_PARENT_PID), le serveur écrit ses erreurs dans
     logs/serveur.log, vidé à chaque lancement. L'appli (figée par PyInstaller le
@@ -1052,9 +1061,10 @@ def sortie_d_erreur_dans_un_fichier():
     """
     if not os.environ.get("DASHBOARD_PARENT_PID"):
         return
+    dossier = dossier or os.path.join(ROOT, "logs")
     try:
-        os.makedirs(os.path.join(ROOT, "logs"), exist_ok=True)
-        fd = os.open(os.path.join(ROOT, "logs", "serveur.log"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        os.makedirs(dossier, exist_ok=True)
+        fd = os.open(os.path.join(dossier, "serveur.log"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
     except OSError:
         return
     sys.stderr.flush()

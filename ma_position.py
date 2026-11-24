@@ -1546,6 +1546,18 @@ def _verifier_direct(ok, proche):
             ok("direct : un cours 4 s dans le futur (l'horloge de Yahoo) compte comme frais",
                position()["direct"]["en_direct"] is True)
             ok("direct : sans ligne détenue, jamais « en direct »", etat_du_direct([])["en_direct"] is False)
+            ok("direct : une ligne lue dans les barres, même de 5 s, ne fait pas « en direct »",
+               etat_du_direct([{"source_du_cours": "minutes", "cours_a": il_y_a(5).isoformat()}])["en_direct"] is False)
+            ok("direct : une ligne du flux de 5 s fait « en direct »",
+               etat_du_direct([{"source_du_cours": "direct", "cours_a": il_y_a(5).isoformat()}])["en_direct"] is True)
+            ok("direct : une ligne du flux de 31 s ne fait pas « en direct »",
+               etat_du_direct([{"source_du_cours": "direct", "cours_a": il_y_a(31).isoformat()}])["en_direct"] is False)
+            _memo_actuel.clear()
+            flux_faux.update(AMD=CD(440.0, il_y_a(40), 1), TSLA=CD(330.0, il_y_a(45), 1))
+            barres.update(AMD=(il_y_a(60), 430.0), TSLA=(il_y_a(60), 320.0))
+            p = position()
+            ok("direct : des cours du flux de 40 et 45 s, plus récents que les barres : gardés, mais « toutes les minutes »",
+               [l["source_du_cours"] for l in p["lignes"]] == ["direct", "direct"] and p["direct"]["en_direct"] is False)
             ok("direct : une ligne à l'heure illisible est ignorée, sans erreur",
                etat_du_direct([{"source_du_cours": "direct", "cours_a": "pas une heure"}])["en_direct"] is False)
 
