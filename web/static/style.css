@@ -1885,3 +1885,17 @@ body.vue3d-active { overflow: hidden; }
   color: var(--text-muted);
 }
 .table-direct-note { margin-top: var(--space-2, 8px); }
+/* Au doigt (écrans tactiles) : une zone de toucher de 44 px de haut, centrée sur le
+   bouton, sans changer son allure (il garde la taille des badges voisins). */
+@media (pointer: coarse) {
+  .direct-pause { position: relative; }
+  .direct-pause::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 44px;
+    transform: translateY(-50%);
+  }
+}
