@@ -853,9 +853,13 @@
     } catch (e) {
       echecs.set(cle, Date.now());
       if (choisie() && !connu) {
-        /* Le titre et la phrase ne parlent plus de la courbe d'avant (relecture du 25/11/2026). */
-        $('#pc-figure-titre').textContent = `Le cours de ${ticker}, en euros`;
-        $('#pc-legende').textContent = '';
+        /* Un autre choix : le titre et la phrase ne parlent plus de la courbe d'avant (relecture
+           du 25/11/2026). La même courbe, encore à l'écran : sa phrase reste avec elle. */
+        const memeCourbe = deja.graphe && `${deja.graphe.ticker}|${deja.graphe.periode}` === cle;
+        if (!memeCourbe) {
+          $('#pc-figure-titre').textContent = `Le cours de ${ticker}, en euros`;
+          $('#pc-legende').textContent = '';
+        }
         if (GRAPHE_LC && !lcEnPanne) {
           grapheLC.then((lc) => lc.message(`Cours indisponible pour l'instant (${e.message}).`, cle)).catch(() => {
             $('#pc-graphe').innerHTML = `<p class="pc-attente">Cours indisponible pour l'instant (${PP.esc(e.message)}).</p>`;

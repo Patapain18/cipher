@@ -138,6 +138,7 @@ window.PCGraphe = (() => {
     if (!barres.length) return { ordres, hors };
     const jours = barres.map((b) => jourNY(b.time));
     const joursAvecBarre = new Set(jours);
+    const dernierJour = jours[jours.length - 1];
     const premierJour = jours[0];
     for (const d of decisions || []) {
       if (d.ticker !== ticker) continue;
@@ -148,7 +149,9 @@ window.PCGraphe = (() => {
       const jour = jourNY(q);
       if (jour < premierJour) continue;
       const seance = enSeance(q);
-      const horsSeance = !seance || !joursAvecBarre.has(jour);
+      /* Un jour sans barre ENTRE deux barres de la courbe est férié ; après la dernière, la
+         courbe n'est simplement pas encore relue (seconde relecture du 25/11/2026). */
+      const horsSeance = !seance || (jour <= dernierJour && !joursAvecBarre.has(jour));
       let i = -1;
       if (periode === '1a') {
         const apresLaCloture = !seance && ny(q).minutes >= 960;
@@ -175,7 +178,7 @@ window.PCGraphe = (() => {
   function vierge() {
     return { chart: null, serie: null, marques: null, cle: '', periode: '1j', ticker: '',
              barres: [], nTotal: 0, indexDe: new Map(), ordres: [], hors: 0, reperes: [], cote: 'droite',
-             idx: null, clavier: false, actif: false, attente: null, c: null };
+             idx: null, clavier: false, actif: false, attente: null, c: null, bornage: false };
   }
 
   /* Le cadre #pc-graphe devient un groupe pris au clavier ; la zone du canvas, dedans,
@@ -313,7 +316,10 @@ window.PCGraphe = (() => {
     st.marques = LWC.createSeriesMarkers(serie, []);
     st.c = c;
     chart.subscribeCrosshairMove(survol);
-    chart.timeScale().subscribeVisibleLogicalRangeChange(() => requestAnimationFrame(placerEtiquettes));
+    chart.timeScale().subscribeVisibleLogicalRangeChange((plage) => {
+      requestAnimationFrame(placerEtiquettes);
+      garderDansLaCourbe(plage);
+    });
     if (st.actif) activer(true);
   }
 
@@ -415,21 +421,36 @@ window.PCGraphe = (() => {
      0 : la vue entière ; Échap : rend la molette à la page (un
      second Échap ferme le carnet, comme ailleurs).
      ------------------------------------------------------------ */
-  /* Une plage de barres sans vide avant le début ni après la fin de la courbe (aucun
-     bord n'est fixé, voir creer) ; null si elle est plus large que la courbe. */
+  /* Les bornes de la plage visible, en barres : la première barre à gauche, la dernière et
+     ses 12 px de marge à droite. Aucun bord n'est fixé dans la bibliothèque (voir creer) :
+     c'est ici que la souris, le doigt, la molette et le clavier sont tenus dans la courbe
+     (seconde relecture du 25/11/2026 : sans bord fixé, la courbe sortait du cadre). */
+  function bornes(largeurBarres) {
+    const largeurPx = Math.max(1, el.zone.clientWidth - st.chart.priceScale('left').width());
+    return { min: -0.5, max: st.nTotal - 0.5 + (12 * largeurBarres) / largeurPx };
+  }
   function plageBornee(from, to) {
-    const max = st.nTotal - 0.5;
-    if (to - from >= max + 0.5) return null;
+    const largeur = to - from;
+    const { min, max } = bornes(largeur);
+    if (largeur >= max - min) return { from: min, to: max };      // plus large : la vue entière
     let f = from;
     let t = to;
     if (t > max) { f -= t - max; t = max; }
-    if (f < -0.5) { t += -0.5 - f; f = -0.5; }
+    if (f < min) { t += min - f; f = min; }
     return { from: f, to: t };
   }
   function montrerPlage(from, to) {
-    const p = plageBornee(from, to);
-    if (p) st.chart.timeScale().setVisibleLogicalRange(p);
-    else st.chart.timeScale().fitContent();
+    st.chart.timeScale().setVisibleLogicalRange(plageBornee(from, to));
+  }
+  /* Appelée à chaque changement de la plage visible (glisser, molette, pincer, redimensionner) :
+     une plage qui sort de la courbe y est ramenée. Une tolérance de 0,05 barre évite de
+     corriger sans fin les arrondis de la bibliothèque. */
+  function garderDansLaCourbe(plage) {
+    if (!plage || st.bornage || !st.chart || !st.nTotal) return;
+    const p = plageBornee(plage.from, plage.to);
+    if (Math.abs(p.from - plage.from) < 0.05 && Math.abs(p.to - plage.to) < 0.05) return;
+    st.bornage = true;
+    try { st.chart.timeScale().setVisibleLogicalRange(p); } finally { st.bornage = false; }
   }
 
   function poserCurseur(i) {
@@ -516,7 +537,7 @@ window.PCGraphe = (() => {
     /* La courbe d'abord : si la bibliothèque la refuse, rien de l'état n'a encore changé et
        la courbe d'avant reste entière (ses flèches et ses lignes comprises). */
     try {
-      st.serie.setData(donnees);
+      outils.poserDonnees(st.serie, donnees);
     } catch (e) {
       if (!memeCourbe) detruire();
       message(`Courbe illisible (${e.message}).`);
@@ -599,7 +620,10 @@ window.PCGraphe = (() => {
                          marques: st.marques ? st.marques.markers() : [],
                          reperes: st.reperes.map(({ prix, texte }) => ({ prix, texte })), periode: st.periode,
                          idx: st.idx, clavier: st.clavier, actif: st.actif, nTotal: st.nTotal });
-  const outils = { barresDe, avecLeReste, placerOrdres, texteTemps, graduation, enSeance };
+  /* poserDonnees : le seul endroit où la courbe est donnée à la bibliothèque. Un essai peut la
+     remplacer pour provoquer un refus (l'objet LightweightCharts est figé, on ne peut pas y toucher). */
+  const outils = { barresDe, avecLeReste, placerOrdres, texteTemps, graduation, enSeance,
+                   poserDonnees: (serie, donnees) => serie.setData(donnees) };
 
   return { dessiner, ordres, message, vueEntiere, abandonner, essai, outils, PERIODES };
 })();

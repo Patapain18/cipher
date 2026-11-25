@@ -70,6 +70,7 @@ function attendus(g, decisions) {
   const cle = (s) => (g.periode === '1a' ? dateNY(s * 1000) : s);
   const premier = dateNY(barres[0] * 1000);
   const joursAvecBarre = new Set(barres.map((b) => dateNY(b * 1000)));
+  const dernierJour = dateNY(barres[barres.length - 1] * 1000);
   const sortieOrdres = [];
   let hors = 0;
   for (const d of decisions) {
@@ -79,7 +80,7 @@ function attendus(g, decisions) {
     const { semaine, minutes } = heureNY(ms);
     const seance = !['Sat', 'Sun'].includes(semaine) && minutes >= 570 && minutes < 960;
     // Hors séance : hors des heures de New York, ou un jour sans aucune barre (un jour férié).
-    const horsSeance = !seance || !joursAvecBarre.has(dateNY(ms));
+    const horsSeance = !seance || (dateNY(ms) <= dernierJour && !joursAvecBarre.has(dateNY(ms)));
     if (horsSeance) hors += 1;
     let barre;
     if (g.periode === '1a') {
@@ -317,22 +318,28 @@ for (const [moteur, lancer] of Object.entries(MOTEURS)) {
       ok(avant.idx === n - 4, `${nom} : Fin puis ← ← ← mènent à la 4e barre avant la fin (${avant.idx} pour ${n - 4})`);
       await page.keyboard.press('+');
       await page.waitForTimeout(300);
-      const zoom = await page.evaluate(() => ({ idx: PCGraphe.essai().idx, plage: PCGraphe.essai().chart.timeScale().getVisibleLogicalRange(),
-        nTotal: PCGraphe.essai().nTotal, curseur: document.getElementById('pc-curseur').textContent }));
+      const zoom = await page.evaluate(() => { const e = PCGraphe.essai(); const ts = e.chart.timeScale();
+        return { idx: e.idx, plage: ts.getVisibleLogicalRange(), curseur: document.getElementById('pc-curseur').textContent,
+                 largeur: document.querySelector('#pc-graphe .pc-lc').clientWidth - e.chart.priceScale('left').width(),
+                 xn: ts.timeToCoordinate(e.barres[e.barres.length - 1].time) }; });
       ok(zoom.plage.to - zoom.plage.from < avant.plage.to - avant.plage.from - 1 && zoom.idx === avant.idx,
         `${nom} : + zoome et le curseur garde sa barre`);
-      ok(zoom.plage.to <= zoom.nTotal + 0.5, `${nom} : pas de vide après la fin de la courbe au zoom`);
+      ok(zoom.xn <= zoom.largeur - 8 && zoom.xn >= zoom.largeur - 40,
+        `${nom} : au zoom près de la fin, la dernière barre garde sa marge, sans vide après elle (x ${Math.round(zoom.xn)} sur ${Math.round(zoom.largeur)})`);
       const ligne = await page.evaluate(({ i }) => {
         const e = PCGraphe.essai(); const b = e.barres[i];
         return `${PCGraphe.outils.texteTemps(b.time, '1a', true)} · ${PP.euros(b.value)}`;
       }, { i: avant.idx });
       ok(zoom.curseur.startsWith(ligne), `${nom} : la ligne du curseur écrit la barre lue (${zoom.curseur})`);
-      const plageDe = () => page.evaluate(() => { const e = PCGraphe.essai(); const r = e.chart.timeScale().getVisibleLogicalRange();
-        return { idx: e.idx, from: r.from, to: r.to, nTotal: e.nTotal, n: e.barres.length }; });
+      const plageDe = () => page.evaluate(() => { const e = PCGraphe.essai(); const ts = e.chart.timeScale(); const r = ts.getVisibleLogicalRange();
+        const largeur = document.querySelector('#pc-graphe .pc-lc').clientWidth - e.chart.priceScale('left').width();
+        return { idx: e.idx, from: r.from, to: r.to, nTotal: e.nTotal, n: e.barres.length, largeur,
+                 xn: ts.timeToCoordinate(e.barres[e.barres.length - 1].time) }; });
       await page.keyboard.press('End');
       await page.waitForTimeout(250);
       const fin = await plageDe();
-      ok(fin.idx === fin.n - 1 && fin.to <= fin.nTotal - 0.49 && fin.to >= fin.n - 1, `${nom} : Fin après un zoom va à la dernière barre, sans vide après elle`);
+      ok(fin.idx === fin.n - 1 && fin.xn <= fin.largeur - 8 && fin.xn >= fin.largeur - 40,
+        `${nom} : Fin après un zoom va à la dernière barre, avec sa marge et sans vide après elle (x ${Math.round(fin.xn)} sur ${Math.round(fin.largeur)})`);
       await page.keyboard.press('Home');
       await page.waitForTimeout(250);
       const debut = await plageDe();
@@ -369,7 +376,8 @@ for (const [moteur, lancer] of Object.entries(MOTEURS)) {
         const boite = await m.page.locator('#pc-graphe').boundingBox();
         const cx = boite.x + boite.width / 2;
         const cy = boite.y + boite.height / 2;
-        const lire = () => m.page.evaluate(() => ({ y: scrollY, plage: PCGraphe.essai().chart.timeScale().getVisibleLogicalRange() }));
+        const lire = () => m.page.evaluate(() => ({ y: Math.round(document.getElementById('pc-graphe').getBoundingClientRect().top),
+          plage: PCGraphe.essai().chart.timeScale().getVisibleLogicalRange() }));
         await m.page.mouse.move(cx, cy);
         const a0 = await lire();
         await m.page.mouse.wheel(0, 240);
@@ -390,8 +398,9 @@ for (const [moteur, lancer] of Object.entries(MOTEURS)) {
         await m.page.mouse.wheel(0, -240);
         await m.page.waitForTimeout(500);
         const b1 = await lire();
-        ok(b1.y === b0.y && Math.abs(b1.plage.to - b1.plage.from - (b0.plage.to - b0.plage.from)) > 0.5,
-          `${nom} : après un clic, la molette zoome et le carnet ne défile pas`);
+        ok(Math.abs(b1.y - b0.y) <= 2 && Math.abs(b1.plage.to - b1.plage.from - (b0.plage.to - b0.plage.from)) > 0.5,
+          `${nom} : après un clic, la molette zoome et le carnet ne défile pas (graphique à y ${b0.y} puis ${b1.y} ; `
+          + `${(b0.plage.to - b0.plage.from).toFixed(1)} puis ${(b1.plage.to - b1.plage.from).toFixed(1)} barres)`);
         await m.page.evaluate(() => document.querySelector('[data-periode="1a"]').click());
         await m.page.waitForTimeout(400);
         const re = await m.page.evaluate(() => PCGraphe.essai().chart.timeScale().getVisibleLogicalRange());
@@ -523,6 +532,8 @@ for (const [moteur, lancer] of Object.entries(MOTEURS)) {
       /* Un jour férié (jeudi 26/11, Thanksgiving) aux heures de séance : la séance suivante, hors séance. */
       const bf = ['2026-11-25', '2026-11-27'].map((j, i) => ({ time: s(`${j}T12:00:00Z`), value: 1 + i }));
       res.ferie = place(bf, [d('2026-11-26T16:00:00Z')], '1a');                                         // [1], hors 1
+      /* Un ordre en séance un jour que la courbe n'a pas encore (pas encore relue) : la dernière barre, pas hors séance. */
+      res.pasEncore = place(bf, [d('2026-11-30T16:00:00Z')], '1a');                                     // [1], hors 0
       /* L'heure de Paris autour des changements d'heure (9 h 30 à New York). */
       res.mars27 = texteTemps(s('2026-03-27T13:30:00Z'), '1j');     // New York en heure d'été, Paris pas encore : 14:30
       res.mars30 = texteTemps(s('2026-03-30T13:30:00Z'), '1j');     // les deux en heure d'été : 15:30
@@ -555,6 +566,7 @@ for (const [moteur, lancer] of Object.entries(MOTEURS)) {
     ok(JSON.stringify(r.heure1555.ordres.map((o) => o.i)) === '[1]' && r.heure1555.hors === 0, 'calcul 1 mois : 15 h 55, dans la barre de 15 h 30');
     ok(JSON.stringify(r.trou.ordres.map((o) => o.i)) === '[1]' && r.trou.hors === 0, 'calcul : un trou de Yahoo en séance → la barre qui suit, pas hors séance');
     ok(JSON.stringify(r.ferie.ordres.map((o) => o.i)) === '[1]' && r.ferie.hors === 1, 'calcul : un jour férié aux heures de séance → la séance suivante, hors séance');
+    ok(JSON.stringify(r.pasEncore.ordres.map((o) => o.i)) === '[1]' && r.pasEncore.hors === 0, 'calcul : un ordre en séance un jour que la courbe n\'a pas encore → la dernière barre, pas hors séance');
     ok(r.mars27 === '14:30' && r.mars30 === '15:30' && r.oct30 === '14:30' && r.nov03 === '15:30',
       `calcul : l'heure de Paris autour des changements d'heure (${r.mars27}, ${r.mars30}, ${r.oct30}, ${r.nov03})`);
     ok(JSON.stringify(r.seances) === '[true,false,true,false,false]', 'calcul : la séance de New York, à ses deux bouts et le samedi');
@@ -591,6 +603,40 @@ for (const [moteur, lancer] of Object.entries(MOTEURS)) {
         ok(v.from <= 0.5 && v.to >= v.nTotal - 1.5 && v.x0 >= 0 && v.xn <= v.largeur,
           `${moteur} ${p} : la fenêtre agrandie de 390 à ${w} px garde toute la courbe dans le cadre`);
       }
+      /* Glisser loin à droite puis à gauche, et dézoomer à la molette : la courbe reste dans le cadre
+         (aucun bord fixé dans la bibliothèque : graphe.js borne la plage, seconde relecture du 25/11). */
+      await page.evaluate(() => document.getElementById('pc-figure').scrollIntoView({ block: 'center' }));
+      await page.waitForTimeout(300);
+      const boite = await page.locator('#pc-graphe').boundingBox();
+      const cx = boite.x + boite.width / 2;
+      const cy = boite.y + boite.height / 2;
+      const dans = () => page.evaluate(() => {
+        const e = PCGraphe.essai(); const ts = e.chart.timeScale();
+        const largeur = document.querySelector('#pc-graphe .pc-lc').clientWidth - e.chart.priceScale('left').width();
+        /* La fin : la dernière case (en séance, les cases vides vont jusqu'à 16 h). */
+        const x0 = ts.logicalToCoordinate(0); const xn = ts.logicalToCoordinate(e.nTotal - 1);
+        const r = ts.getVisibleLogicalRange();
+        return { x0, xn, largeur, barre: largeur / (r.to - r.from) };
+      });
+      for (const [quoi, dx] of [['à droite', 700], ['à gauche', -700]]) {
+        await page.mouse.move(cx, cy);
+        await page.mouse.down();
+        await page.mouse.move(cx + dx, cy, { steps: 12 });
+        await page.mouse.up();
+        await page.waitForTimeout(400);
+        const v = await dans();
+        const borne = dx > 0 ? v.x0 >= -2 && v.x0 <= v.barre + 2 : v.xn <= v.largeur - 8 && v.xn >= v.largeur - 40;
+        ok(borne, `${moteur} ${p} : glisser de 700 px ${quoi} s'arrête au bout de la courbe (première barre x ${Math.round(v.x0)}, dernière ${Math.round(v.xn)} sur ${Math.round(v.largeur)})`);
+      }
+      await page.mouse.click(cx, cy);
+      await page.waitForTimeout(300);
+      for (let k = 0; k < 8; k++) { await page.mouse.wheel(0, 240); await page.waitForTimeout(120); }
+      await page.waitForTimeout(400);
+      const z = await dans();
+      ok(z.x0 >= -2 && z.x0 <= z.barre + 2 && z.xn <= z.largeur - 8 && z.xn >= z.largeur - 40,
+        `${moteur} ${p} : dézoomer à la molette s'arrête à la courbe entière (x ${Math.round(z.x0)} à ${Math.round(z.xn)} sur ${Math.round(z.largeur)})`);
+      await page.keyboard.press('Escape');
+      await page.mouse.move(2, 2);
     }
   } else ok(false, `${moteur} agrandir : le graphique se dessine`);
   await contexte.close();
@@ -665,6 +711,30 @@ for (const [moteur, lancer] of Object.entries(MOTEURS)) {
         const y = e().serie.priceToCoordinate(loin);
         res.journal = { plus: e().marques.length === avant + 1, dedans: y !== null && y >= 0 && y <= h };
         PCGraphe.ordres(decisions);
+        /* La bibliothèque refuse la courbe rafraîchie (setData remplacé) : rien de l'état ne change. */
+        const avantRefus = { barres: e().barres.length, marques: e().marques.length, lignes: e().reperes.length };
+        const serie = e().serie;
+        const vraiSetData = serie.setData;
+        serie.setData = () => { throw new Error('refus inventé'); };
+        PCGraphe.dessiner({ g: { ...g, points: g.points.slice(0, g.points.length - 3) }, decisions });
+        await att(200);
+        res.refusMeme = { garde: !!e().chart && e().barres.length === avantRefus.barres && e().marques.length === avantRefus.marques
+          && e().reperes.length === avantRefus.lignes, msg: document.getElementById('pc-graphe-msg').textContent };
+        serie.setData = vraiSetData;
+        PCGraphe.dessiner({ g, decisions });
+        await att(200);
+        res.apresRefus = !document.getElementById('pc-graphe-msg').hidden ? 'message encore là' : 'ok';
+        /* Une courbe NEUVE (une autre période) refusée : pas de graphique vide laissé derrière. */
+        const vraiPoser = PCGraphe.outils.poserDonnees;
+        PCGraphe.outils.poserDonnees = () => { throw new Error('refus inventé'); };
+        PCGraphe.dessiner({ g: { ...g, periode: '1m' }, decisions });
+        await att(200);
+        res.refusNeuve = { chart: !!e().chart, cache: document.getElementById('pc-graphe').hidden,
+                           msg: !document.getElementById('pc-graphe-msg').hidden };
+        PCGraphe.outils.poserDonnees = vraiPoser;
+        PCGraphe.dessiner({ g, decisions });
+        await att(300);
+        res.apresNeuve = !!e().chart && !document.getElementById('pc-graphe').hidden;
         return res;
       }, { g, decisions });
       ok(!r.uneBarre.chart && r.uneBarre.cadreCache && r.uneBarre.msg, 'chrome une seule barre (l\'ouverture) : « Pas assez de points », sans graphique');
@@ -673,6 +743,10 @@ for (const [moteur, lancer] of Object.entries(MOTEURS)) {
       else note(`chrome séance en cours : la courbe du jour ne commence pas à 9 h 30 (${r.debutNY}), cas sauté`);
       ok(r.zoomGarde, 'chrome la même courbe rafraîchie garde le zoom');
       ok(r.journal.plus && r.journal.dedans, 'chrome un ordre de plus au journal : sa flèche arrive, et l\'échelle l\'englobe même loin de la courbe');
+      ok(r.refusMeme.garde && r.refusMeme.msg.startsWith('Courbe illisible') && r.apresRefus === 'ok',
+        'chrome la bibliothèque refuse la courbe rafraîchie : la courbe d\'avant reste entière, puis la suivante passe');
+      ok(!r.refusNeuve.chart && r.refusNeuve.cache && r.refusNeuve.msg && r.apresNeuve,
+        'chrome la bibliothèque refuse une courbe neuve : pas de graphique vide laissé, puis la suivante passe');
     } else ok(false, 'chrome graphe.js direct : le graphique se dessine');
     await contexte.close();
   }
@@ -713,6 +787,8 @@ for (const [moteur, lancer] of Object.entries(MOTEURS)) {
     const { contexte, page } = await ouvrir(navigateur, ordi, URL_LC, { routes: (pg) => pg.route('**/api/graphique**',
       (r) => r.fulfill({ status: 500, contentType: 'application/json', body: '{"erreur": "panne inventée"}' })) });
     await page.waitForFunction(() => { const m = document.getElementById('pc-graphe-msg'); return m && !m.hidden; }, null, { timeout: 40000 }).catch(() => {});
+    ok(await page.evaluate(() => !document.querySelector('#pc-graphe .pc-lc').textContent.includes('indisponible')
+      && document.getElementById('pc-graphe-msg').textContent.includes('indisponible')), 'chrome panne : le message à côté du graphique, jamais dans son cadre');
     await page.unroute('**/api/graphique**');
     await page.evaluate(() => document.querySelector('[data-periode="1m"]').click());
     const revenu = await pret(page, '1m', 40000);
