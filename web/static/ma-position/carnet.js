@@ -151,11 +151,12 @@
      ------------------------------------------------------------ */
   const PERIODES = { '1j': '1 jour', '1m': '1 mois', '1a': '1 an' };
 
-  /* Le graphique avec Lightweight Charts (plan du 24/11/2026, fin de BRIEF.md). Pendant
-     le chantier, seulement avec ?graphe=lc : sans lui, rien n'est chargé et le graphique
-     SVG ci-dessous reste celui de la vraie appli. graphe.js dessine ; ce fichier lui
-     donne la courbe et le journal, et écrit la phrase sous le graphique. */
-  const GRAPHE_LC = new URLSearchParams(location.search).get('graphe') === 'lc';
+  /* Le graphique avec Lightweight Charts (plan du 24/11/2026, fin de BRIEF.md), le graphique
+     par défaut depuis la bascule du 25/11/2026. ?graphe=svg garde l'ancien graphique SVG
+     ci-dessous, en secours (rien de la bibliothèque n'est alors chargé) ; il reprend aussi la
+     place seul si la bibliothèque manque ou échoue (lcEnPanne). graphe.js dessine ; ce
+     fichier lui donne la courbe et le journal, et écrit la phrase sous le graphique. */
+  const GRAPHE_LC = new URLSearchParams(location.search).get('graphe') !== 'svg';
   const grapheLC = GRAPHE_LC ? chargerGrapheLC() : null;
   let signatureOrdres = '';                 // les décisions déjà passées au graphique
   function chargerGrapheLC() {
@@ -742,7 +743,7 @@
     return { x, ticks };
   }
 
-  /* Le nouveau graphique (?graphe=lc) : graphe.js dessine, ici le titre et la phrase.
+  /* Le nouveau graphique (sauf ?graphe=svg) : graphe.js dessine, ici le titre et la phrase.
      La phrase garde « sur 1 jour / 1 mois / 1 an » (verif_direct.mjs la lit). */
   function resumeGraphe(g, r) {
     const pts = g.points || [];

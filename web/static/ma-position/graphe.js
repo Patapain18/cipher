@@ -3,8 +3,8 @@
    ============================================================
    Plan du 24/11/2026, validé par Mathis (fin de BRIEF.md).
 
-   Pendant le chantier, ce fichier n'est chargé qu'avec ?graphe=lc
-   (carnet.js, GRAPHE_LC) : la vraie appli garde le graphique SVG.
+   Chargé par carnet.js (GRAPHE_LC) depuis la bascule du 25/11/2026,
+   sauf avec ?graphe=svg : l'ancien graphique SVG, gardé en secours.
 
    La bibliothèque : web/static/vendor/lightweight-charts-5.3.0/
    (Apache 2.0). Sa notice et un lien vers tradingview.com sont
@@ -70,7 +70,12 @@ window.PCGraphe = (() => {
   /* TickMarkType de la bibliothèque : 0 année, 1 mois, 2 jour du mois, 3 heure. */
   const graduation = (periode) => (temps, type) => {
     const d = enDate(temps);
-    if (periode === '1a') return type === 0 ? F.an.format(d) : type === 1 ? F.mois.format(d) : F.jourMois.format(d);
+    if (periode === '1a') {
+      /* La première barre en plein mois : le nom de son mois, posé au bord gauche, y serait
+         coupé à moitié (vu par /verif le 25/11/2026). Le mois suivant porte le sien. */
+      if (type <= 1 && temps === st.premierTemps && d.getUTCDate() > 7) return '';
+      return type === 0 ? F.an.format(d) : type === 1 ? F.mois.format(d) : F.jourMois.format(d);
+    }
     return type <= 2 ? F.jourMois.format(d) : F.heure.format(d);
   };
 
@@ -178,7 +183,7 @@ window.PCGraphe = (() => {
   function vierge() {
     return { chart: null, serie: null, marques: null, cle: '', periode: '1j', ticker: '',
              barres: [], nTotal: 0, indexDe: new Map(), ordres: [], hors: 0, reperes: [], cote: 'droite',
-             idx: null, clavier: false, actif: false, attente: null, c: null, bornage: false };
+             idx: null, clavier: false, actif: false, attente: null, c: null, bornage: false, premierTemps: null };
   }
 
   /* Le cadre #pc-graphe devient un groupe pris au clavier ; la zone du canvas, dedans,
@@ -534,6 +539,8 @@ window.PCGraphe = (() => {
     const toutVu = !plage || (plage.from <= 0.5 && plage.to >= st.nTotal - 1.5);   // pas de zoom à garder
     const donnees = avecLeReste(barres, g.periode);
     if (!memeCourbe) creer(g, style(el.cadre));
+    /* Avant setData : la bibliothèque calcule (et garde) ses graduations pendant setData. */
+    st.premierTemps = barres[0].time;
     /* La courbe d'abord : si la bibliothèque la refuse, rien de l'état n'a encore changé et
        la courbe d'avant reste entière (ses flèches et ses lignes comprises). */
     try {

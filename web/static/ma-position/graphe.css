@@ -2,7 +2,7 @@
    Le graphique du carnet avec Lightweight Charts™
    ============================================================
    Plan du 24/11/2026 (fin de BRIEF.md). Chargé avec graphe.js,
-   seulement avec ?graphe=lc pendant le chantier.
+   sauf avec ?graphe=svg (l'ancien graphique, gardé en secours).
    Le cadre garde .pc-graphe (240 px de haut, position relative).
    ============================================================ */
 
