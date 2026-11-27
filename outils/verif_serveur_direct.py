@@ -386,53 +386,109 @@ def seances():
 def thermometre_panne():
     print("Le thermomètre pendant une panne de Yahoo (plan de la v finale, 27/11/2026)")
     import thermometre
-    reel = (thermometre.thermometre, dict(serveur._thermo_recent), dict(serveur._thermo_secours))
-    reponse = {"panne": False, "n": 0}
+    reel = (thermometre.thermometre, dict(serveur._thermo_recent))
+    reponse = {"panne": False, "n": 0, "pendant": None, "valeur": None}
     bonne = {"lecture": {"date": "2026-11-27", "niveau": 1}, "mesure": None, "avertissement": "…"}
+    nouvelle = {"lecture": {"date": "2026-11-30", "niveau": 0}, "mesure": None, "avertissement": "…"}
 
     def faux():
         reponse["n"] += 1
+        if reponse["pendant"]:
+            reponse["pendant"]()                 # une décision notée pendant ce calcul
         if reponse["panne"]:
             raise ValueError("aucun cours reçu pour ^GSPC (Yahoo refuse)")
-        return bonne
+        return reponse["valeur"] or bonne
+
+    def route():
+        """Comme le serveur : la durée de cache lue à chaque demande, puis cached()."""
+        producteur, duree = serveur.ROUTES["/api/thermometre"]
+        return serveur.cached("/api/thermometre", duree() if callable(duree) else duree, producteur)[0]
+
+    def vieillir(secondes):
+        with serveur._cache_lock:
+            entree = serveur._cache.get("/api/thermometre")
+            if entree:
+                entree["at"] -= secondes
+        serveur._thermo_recent["quand"] -= secondes
+
+    def noter_une_decision():
+        serveur._cache_generation[0] += 1
     thermometre.thermometre = faux
     try:
+        with serveur._cache_lock:
+            serveur._cache.pop("/api/thermometre", None)
         serveur._thermo_recent.update(valeur=None, quand=0.0)
-        serveur._thermo_secours.update(actif=False)
         reponse["panne"] = True
         try:
-            serveur.thermometre_du_marche()
+            route()
             erreur = False
         except ValueError:
             erreur = True
         ok("Yahoo en panne dès le lancement : l'erreur reste (la page dit « indisponible »)", erreur)
         reponse["panne"] = False
-        v = serveur.thermometre_du_marche()
-        ok("une lecture réussie : rendue telle quelle, la route gardée une heure",
+        v = route()
+        ok("une lecture réussie : rendue telle quelle, gardée une heure",
            v is bonne and serveur.duree_cache_thermometre() == 3600)
         n = reponse["n"]
-        serveur.thermometre_du_marche()
-        ok("… une seconde demande dans les 2 minutes reprend la même, sans Yahoo", reponse["n"] == n)
-        serveur._thermo_recent["quand"] -= 3601
+        vieillir(1800)
+        route()
+        ok("… une demande 30 min plus tard reprend la même, sans Yahoo", reponse["n"] == n)
+        vieillir(1801)
         reponse["panne"] = True
-        v = serveur.thermometre_du_marche()
-        ok("Yahoo en panne ensuite : la dernière lecture, avec son heure et la raison (sans toucher à la lecture gardée)",
+        v = route()
+        ok("Yahoo en panne après une heure : la dernière lecture, avec son heure et la raison (sans toucher à la lecture gardée)",
            v["lecture"] == bonne["lecture"] and v["secours"]["raison"].startswith("aucun cours reçu")
            and datetime.fromisoformat(v["secours"]["lue_le"]) < datetime.now(timezone.utc) - timedelta(minutes=59)
            and "secours" not in bonne)
-        ok("… et la route n'est gardée que 5 minutes : Yahoo sera relu bientôt", serveur.duree_cache_thermometre() == 300)
-        reponse["panne"] = False
-        v = serveur.thermometre_du_marche()
-        ok("Yahoo revenu : la nouvelle lecture, sans « secours », de nouveau gardée une heure",
-           "secours" not in v and serveur.duree_cache_thermometre() == 3600)
+        ok("… gardée 5 minutes seulement : Yahoo sera relu bientôt", serveur.duree_cache_thermometre() == 300)
+        n = reponse["n"]
+        vieillir(240)
+        route()
+        ok("… à 4 minutes, toujours la lecture de secours, sans Yahoo", reponse["n"] == n)
+        reponse.update(panne=False, valeur=nouvelle, pendant=noter_une_decision)
+        vieillir(61)
+        v = route()
+        ok("Yahoo revenu pendant qu'une décision est notée : la nouvelle lecture est servie",
+           v is nouvelle and reponse["n"] == n + 1)
+        ok("… pas rangée (décision notée), et la lecture de secours rangée reste à 5 minutes, pas une heure",
+           serveur.duree_cache_thermometre() == 300)
+        reponse["pendant"] = None
+        vieillir(301)
+        v = route()
+        ok("… 5 minutes plus tard, la nouvelle lecture est rangée et gardée une heure",
+           v is nouvelle and "secours" not in v and serveur.duree_cache_thermometre() == 3600)
         ok("la route du thermomètre lit sa durée de cache à chaque demande",
            serveur.ROUTES["/api/thermometre"][1] is serveur.duree_cache_thermometre)
     finally:
         thermometre.thermometre = reel[0]
         serveur._thermo_recent.clear()
         serveur._thermo_recent.update(reel[1])
-        serveur._thermo_secours.clear()
-        serveur._thermo_secours.update(reel[2])
+        with serveur._cache_lock:
+            serveur._cache.pop("/api/thermometre", None)
+
+
+def statut_du_bot():
+    print("Le statut du bot (un fichier PID périmé repris par un autre programme, 27/11/2026)")
+    avant = os.getcwd()
+    faux_bot = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "stock_bot.py"])
+    with tempfile.TemporaryDirectory() as dossier:
+        os.makedirs(os.path.join(dossier, "logs"))
+        os.makedirs(os.path.join(dossier, "data"))
+        os.chdir(dossier)                         # bots_status lit logs/ et data/ là où il tourne
+        try:
+            time.sleep(0.3)
+            with open(os.path.join("logs", "stock_bot.pid"), "w") as f:
+                f.write(str(os.getpid()))         # vivant, mais ce n'est pas un bot (ce script)
+            perime = serveur.bots_status()["stock_bot"]["process"]
+            with open(os.path.join("logs", "stock_bot.pid"), "w") as f:
+                f.write(str(faux_bot.pid))
+            vivant = serveur.bots_status()["stock_bot"]["process"]
+            ok("un PID vivant qui n'est pas un stock_bot.py s'affiche arrêté ; un vrai bot, en marche",
+               perime == {"pid": os.getpid(), "running": False} and vivant == {"pid": faux_bot.pid, "running": True})
+        finally:
+            os.chdir(avant)
+            faux_bot.kill()
+            faux_bot.wait()
 
 
 def sortie_d_erreur():
@@ -482,6 +538,7 @@ def main():
             bourse()
             seances()
             thermometre_panne()
+            statut_du_bot()
             sortie_d_erreur()
         finally:
             ma_position.JOURNAL = reel_journal

@@ -1119,6 +1119,14 @@ function htmlThermometre(t) {
     <p class="thermo-avertissement">${esc(t.avertissement)}${m?.maj ? ` Mesure du ${esc(PP.jour(m.maj.slice(0, 10)))}.` : ''}</p>`;
 }
 
+/* « 14:05 » si la lecture est d'aujourd'hui (à Paris), sinon « 27 nov. 2026, 22:10 » (comme le carnet). */
+function quandThermo(iso) {
+  const d = new Date(iso);
+  if (!iso || Number.isNaN(d.getTime())) return '—';
+  const jourParis = (x) => x.toLocaleDateString('en-CA', { timeZone: 'Europe/Paris' });
+  return jourParis(d) === jourParis(new Date()) ? PP.heure(iso) : PP.dateHeure(iso);
+}
+
 async function renderThermometre() {
   const section = $('#section-thermometre');
   const zone = $('#thermometre');
@@ -1140,11 +1148,15 @@ async function renderThermometre() {
     return;
   }
   /* Yahoo en panne côté serveur : il rend sa dernière lecture réussie, avec son heure
-     (champ `secours`, plan de la « v finale », 27/11/2026). Même phrase qu'une panne vue d'ici. */
+     (champ `secours`, plan de la « v finale », 27/11/2026). Même phrase qu'une panne vue d'ici ;
+     l'heure seule si c'est aujourd'hui, sinon le jour aussi (après une veille du Mac, « 22:10 »
+     se lisait comme aujourd'hui). La zone est lue par VoiceOver (aria-live) : on ne la réécrit
+     que si la phrase change, sinon elle serait relue à chaque rafraîchissement. */
   if (etat) {
-    etat.textContent = t.secours
-      ? `Mise à jour impossible pour l'instant (${t.secours.raison}) : la lecture affichée date de ${PP.heure(t.secours.lue_le)}.`
+    const texte = t.secours
+      ? `Mise à jour impossible pour l'instant (${t.secours.raison}) : la lecture affichée date de ${quandThermo(t.secours.lue_le)}.`
       : '';
+    if (etat.textContent !== texte) etat.textContent = texte;
   }
   $('#thermo-date').textContent = `lecture du ${PP.jour(t.lecture.date)}${t.lecture.provisoire ? ', en séance (cours provisoire)' : ''}`;
   if (html === thermoDernierHtml) return;            // rien n'a changé : on ne touche à rien

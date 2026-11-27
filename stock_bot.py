@@ -24,6 +24,7 @@ import os
 import json
 import subprocess
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import yfinance as yf
 import pandas as pd
@@ -153,6 +154,8 @@ def couper_le_log(chemin=LOG_BOT, maximum=LOG_MAX, garder=LOG_GARDE, fd=1, maint
     vide le reste sur place, avec une ligne qui le dit. Seulement si `fd` (la sortie du bot) EST
     ce fichier, en mode « ajout ». Renvoie le nombre d'octets retirés (0 : rien n'est fait).
     """
+    sys.stdout.flush()                                 # d'abord : ce qui attend dans les tampons est gardé
+    sys.stderr.flush()
     try:
         taille = os.path.getsize(chemin)
         meme_fichier = os.path.samestat(os.fstat(fd), os.stat(chemin))
@@ -169,8 +172,6 @@ def couper_le_log(chemin=LOG_BOT, maximum=LOG_MAX, garder=LOG_GARDE, fd=1, maint
     quand = (maintenant or datetime.now()).strftime("%d/%m/%Y %H:%M")
     texte = (f"[{quand}] Log coupé : {taille - len(fin)} octets retirés, "
              f"les {len(fin)} derniers gardés.\n").encode() + fin
-    sys.stdout.flush()
-    sys.stderr.flush()
     os.truncate(chemin, 0)
     while texte:                                       # en mode « ajout » : écrit au début du fichier vidé
         texte = texte[os.write(fd, texte):]
@@ -190,12 +191,13 @@ def date_de_mesure(chemin=THERMO_RAPPORT):
 def thermometre_a_mesurer(maintenant, mesure_le, forcer=False):
     """
     `maintenant` : l'heure du Mac, avec son fuseau. La mesure est à refaire le samedi ou le
-    dimanche si elle a plus de THERMO_JOURS jours, ou si elle manque ; `forcer` passe outre
-    (la commande `stock_bot.py --thermometre`).
+    dimanche À NEW YORK (la séance du vendredi est alors close, même si le Mac est à Tokyo, où
+    le samedi commence pendant qu'elle tourne encore) si elle a plus de THERMO_JOURS jours, ou
+    si elle manque ; `forcer` passe outre (la commande `stock_bot.py --thermometre`).
     """
     if forcer:
         return True
-    if maintenant.weekday() < 5:
+    if maintenant.astimezone(ZoneInfo("America/New_York")).weekday() < 5:
         return False
     return mesure_le is None or maintenant - mesure_le > timedelta(days=THERMO_JOURS)
 
@@ -249,11 +251,25 @@ def running_instance():
         return None
     if pid == os.getpid():
         return None            # c'est nous : manage_bot.sh a pris les devants
+    return pid if est_un_bot(pid) else None     # sinon : PID périmé, ou repris par un autre programme
+
+
+def est_un_bot(pid):
+    """
+    Le processus `pid` est-il vivant, et est-ce bien un stock_bot.py ? Après un redémarrage
+    non propre du Mac, le fichier PID reste, et son numéro peut appartenir à un autre programme :
+    le 27/11/2026 à 13 h 41, le 812 du 14/11 était devenu un programme de Safari ; le bot,
+    lancé au login, a cru tourner déjà et s'est arrêté (sans KeepAlive, il n'est jamais revenu).
+    """
     try:
         os.kill(pid, 0)        # signal 0 : « es-tu vivant ? », ne tue rien
-        return pid
     except OSError:
-        return None            # PID périmé, le processus n'existe plus
+        return False
+    try:
+        r = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return True            # ps muet : prudence, on le croit vivant (l'ancien comportement)
+    return "stock_bot.py" in r.stdout
 
 
 def notify_macos(title, message, subtitle=""):
@@ -1438,6 +1454,106 @@ def verifier():
             ok("bot : le log est contrôlé au premier tour, puis une fois par jour", len(coupes) == 2)
         finally:
             globals().update(reel)
+
+        # ── La relecture du 27/11/2026
+        tokyo = timezone(timedelta(hours=9))
+        ok("thermomètre : le week-end se juge à New York (Mac à Tokyo : samedi 5 h, la séance du vendredi "
+           "tourne encore ; samedi 14 h, c'est samedi à New York)",
+           not thermometre_a_mesurer(datetime(2026, 11, 28, 5, 0, tzinfo=tokyo), None)
+           and thermometre_a_mesurer(datetime(2026, 11, 28, 14, 0, tzinfo=tokyo), None))
+        ok("les réglages du plan : 20 Mo, 1 Mo gardé, 30 jours, 10 min de délai",
+           (LOG_MAX, LOG_GARDE, THERMO_JOURS, THERMO_DELAI) == (20 * 1024 * 1024, 1024 * 1024, 30, 600))
+        # Ce qui attend dans le tampon de Python avant la coupe (un print sans flush) : dans un autre
+        # processus dont la sortie EST le log, en mode « ajout », comme sous launchd.
+        ecrire(b"x" * 100 + b"\n")
+        enfant = ("import importlib.util, sys\n"
+                  f"sys.path.insert(0, {ICI!r})\n"
+                  f"spec = importlib.util.spec_from_file_location('bot_essai', {os.path.abspath(__file__)!r})\n"
+                  "m = importlib.util.module_from_spec(spec)\n"
+                  "spec.loader.exec_module(m)\n"
+                  "print('AVANT-LA-COUPE')\n"
+                  f"m.couper_le_log({log!r}, maximum=10, garder=4096, fd=1)\n")
+        with open(log, "ab") as sortie:
+            subprocess.run([sys.executable, "-W", "ignore", "-c", enfant], stdout=sortie,
+                           stderr=subprocess.DEVNULL, cwd=dossier, timeout=120)
+        ok("log : ce qui attendait dans le tampon de Python avant la coupe est gardé",
+           b"AVANT-LA-COUPE" in open(log, "rb").read())
+
+        # Le fichier PID : vivant ET un stock_bot.py (le 812 du 14/11 était devenu un programme de Safari).
+        dormeur = subprocess.Popen(["sleep", "30"])
+        faux_bot = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "stock_bot.py"])
+        fini = subprocess.Popen(["true"])
+        fini.wait()
+        reel_pid = PID_FILE
+        try:
+            time.sleep(0.3)
+            ok("PID : un processus vivant qui n'est pas un bot ne compte pas ; un stock_bot.py vivant, si ; "
+               "un processus fini, non",
+               not est_un_bot(dormeur.pid) and est_un_bot(faux_bot.pid) and not est_un_bot(fini.pid))
+            globals()["PID_FILE"] = os.path.join(dossier, "bot.pid")
+            with open(PID_FILE, "w") as f:
+                f.write(str(dormeur.pid))
+            perime = running_instance()
+            with open(PID_FILE, "w") as f:
+                f.write(str(faux_bot.pid))
+            vivant = running_instance()
+            ok("au lancement, un fichier PID repris par un autre programme ne bloque plus le bot ; un bot vivant, si",
+               perime is None and vivant == faux_bot.pid)
+        finally:
+            globals()["PID_FILE"] = reel_pid
+            for p in (dormeur, faux_bot):
+                p.kill()
+                p.wait()
+
+        # Le branchement dans la boucle du bot, sur un seul tour, avec un bot inventé : l'attente de
+        # fin de tour (time.sleep, hors du try de la boucle) arrête l'essai, quoi que le tour ait appelé.
+        appels = []
+
+        class FinDuTour(Exception):
+            pass
+
+        def dormir(_):
+            raise FinDuTour()
+        faux = types.SimpleNamespace(
+            tickers=["AAA"], signal_history=[], running=True, use_dashboard=False, last_signals={},
+            check_log=lambda: appels.append("log"), _load_positions=lambda: {}, fetch_many=lambda t: {},
+            rank_by_momentum=lambda a: [], check_rebalance=lambda r: None, check_held_positions=lambda r: None,
+            check_point_semaine=lambda: appels.append("point"), check_thermometre=lambda: appels.append("thermometre"))
+        reel_perime, reel_time = engine.cache_earnings_perime, globals()["time"]
+        engine.cache_earnings_perime = lambda: False
+        globals()["time"] = types.SimpleNamespace(sleep=dormir)
+        try:
+            StockSignalBot.run(faux)
+        except FinDuTour:
+            pass
+        finally:
+            engine.cache_earnings_perime = reel_perime
+            globals()["time"] = reel_time
+        ok("bot : chaque tour contrôle le log (d'abord) et le thermomètre (après le point de la semaine)",
+           appels == ["log", "point", "thermometre"])
+
+        # --thermometre : la mesure FORCÉE, et le code de sortie.
+        forces = []
+
+        class FauxBot:
+            def __init__(self, *a, **k):
+                pass
+
+            def check_thermometre(self, forcer=False, maintenant=None):
+                forces.append(forcer)
+                return True
+        reel_classe, reel_argv = StockSignalBot, sys.argv
+        globals()["StockSignalBot"] = FauxBot
+        sys.argv = ["stock_bot.py", "--thermometre"]
+        try:
+            main()
+            code = None
+        except SystemExit as e:
+            code = e.code
+        finally:
+            globals()["StockSignalBot"], sys.argv = reel_classe, reel_argv
+        ok("--thermometre : la mesure forcée, puis le code de sortie 0 si elle est refaite",
+           forces == [True] and code == 0)
 
     print(f"\n{sum(cas)}/{len(cas)} vérifications réussies")
     return all(cas)

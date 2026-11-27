@@ -341,11 +341,9 @@ def bots_status():
             pid = int(open(path).read().strip())
         except (ValueError, OSError):
             return None
-        try:
-            os.kill(pid, 0)  # signal 0 = "es-tu vivant ?", ne tue rien
-            return {"pid": pid, "running": True}
-        except OSError:
-            return {"pid": pid, "running": False}
+        # Vivant ET un stock_bot.py : un PID périmé repris par un autre programme après un
+        # redémarrage disait « en marche » alors qu'aucun bot ne tournait (27/11/2026).
+        return {"pid": pid, "running": stock_bot.est_un_bot(pid)}
 
     def last_write(*paths):
         stamps = [os.path.getmtime(p) for p in paths if os.path.exists(p)]
@@ -373,7 +371,6 @@ def bots_status():
 
 _thermo_verrou = threading.Lock()
 _thermo_recent = {"valeur": None, "quand": 0.0}
-_thermo_secours = {"actif": False}      # la dernière réponse venait de la mémoire (Yahoo en panne)
 THERMO_RETENTE = 300                    # s : pendant une panne, Yahoo est relu toutes les 5 minutes
 
 
@@ -399,24 +396,29 @@ def thermometre_du_marche():
     import thermometre
     with _thermo_verrou:
         if _thermo_recent["valeur"] is not None and time.time() - _thermo_recent["quand"] < 120:
-            _thermo_secours["actif"] = False
             return _thermo_recent["valeur"]
         try:
             valeur = thermometre.thermometre()
         except Exception as e:
             if _thermo_recent["valeur"] is None:
                 raise
-            _thermo_secours["actif"] = True
             lue_le = datetime.fromtimestamp(_thermo_recent["quand"], timezone.utc).isoformat(timespec="seconds")
             return {**_thermo_recent["valeur"], "secours": {"lue_le": lue_le, "raison": str(e)[:200]}}
-        _thermo_secours["actif"] = False
         _thermo_recent.update(valeur=valeur, quand=time.time())
         return valeur
 
 
 def duree_cache_thermometre():
-    """Une heure ; 5 minutes quand la réponse gardée vient de la mémoire (Yahoo en panne)."""
-    return THERMO_RETENTE if _thermo_secours["actif"] else 3600
+    """
+    Une heure ; 5 minutes quand la réponse rangée est une lecture de secours (Yahoo en panne).
+    Jugé d'après la réponse rangée elle-même : un drapeau global se trompait quand la bonne
+    lecture du retour de Yahoo n'était pas rangée (une décision notée pendant son calcul :
+    la lecture de secours restait alors une heure ; relecture du 27/11/2026).
+    """
+    with _cache_lock:
+        entree = _cache.get("/api/thermometre")
+    valeur = entree.get("value") if entree else None
+    return THERMO_RETENTE if isinstance(valeur, dict) and "secours" in valeur else 3600
 
 
 _creux_verrou = threading.Lock()
