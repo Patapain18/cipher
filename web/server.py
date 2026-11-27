@@ -373,6 +373,8 @@ def bots_status():
 
 _thermo_verrou = threading.Lock()
 _thermo_recent = {"valeur": None, "quand": 0.0}
+_thermo_secours = {"actif": False}      # la dernière réponse venait de la mémoire (Yahoo en panne)
+THERMO_RETENTE = 300                    # s : pendant une panne, Yahoo est relu toutes les 5 minutes
 
 
 def thermometre_du_marche():
@@ -386,14 +388,35 @@ def thermometre_du_marche():
     retour de focus) ne font pas deux fois les mêmes demandes à Yahoo :
     la seconde attend la première et reprend son résultat (relu le
     15/11/2026).
+
+    Une panne de Yahoo (plan de la « v finale », 27/11/2026) : la dernière
+    lecture réussie est rendue, avec son heure et la raison (champ
+    `secours`), au lieu d'une erreur, et la route n'est alors gardée que
+    5 minutes (duree_cache_thermometre) : une page rechargée pendant la
+    panne montre encore le thermomètre. Sans lecture réussie depuis le
+    lancement du serveur, l'erreur reste (la page dit « indisponible »).
     """
     import thermometre
     with _thermo_verrou:
         if _thermo_recent["valeur"] is not None and time.time() - _thermo_recent["quand"] < 120:
+            _thermo_secours["actif"] = False
             return _thermo_recent["valeur"]
-        valeur = thermometre.thermometre()
+        try:
+            valeur = thermometre.thermometre()
+        except Exception as e:
+            if _thermo_recent["valeur"] is None:
+                raise
+            _thermo_secours["actif"] = True
+            lue_le = datetime.fromtimestamp(_thermo_recent["quand"], timezone.utc).isoformat(timespec="seconds")
+            return {**_thermo_recent["valeur"], "secours": {"lue_le": lue_le, "raison": str(e)[:200]}}
+        _thermo_secours["actif"] = False
         _thermo_recent.update(valeur=valeur, quand=time.time())
         return valeur
+
+
+def duree_cache_thermometre():
+    """Une heure ; 5 minutes quand la réponse gardée vient de la mémoire (Yahoo en panne)."""
+    return THERMO_RETENTE if _thermo_secours["actif"] else 3600
 
 
 _creux_verrou = threading.Lock()
@@ -899,7 +922,7 @@ GRAPHIQUE_CACHE = {"1j": 60, "1m": 600, "1a": 3600}
 ROUTES = {
     # chemin              → (fonction, durée de cache en secondes)
     "/api/semaine":        (point_de_la_semaine, 30),
-    "/api/thermometre":    (thermometre_du_marche, 3600),   # des cours de clôture : une heure suffit
+    "/api/thermometre":    (thermometre_du_marche, duree_cache_thermometre),   # une heure ; 5 min pendant une panne
     "/api/creux":          (creux_des_indices, 3600),       # des cours de clôture aussi
     "/api/banc":           (verdict_du_banc, 300),          # deux fichiers écrits une fois, jamais réécrits
     "/api/seance":         (mur_de_la_seance, 300),         # data/seance.json, réécrit à la main par seance.py --mesurer

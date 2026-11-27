@@ -383,6 +383,58 @@ def seances():
                 os.environ[cle] = v
 
 
+def thermometre_panne():
+    print("Le thermomètre pendant une panne de Yahoo (plan de la v finale, 27/11/2026)")
+    import thermometre
+    reel = (thermometre.thermometre, dict(serveur._thermo_recent), dict(serveur._thermo_secours))
+    reponse = {"panne": False, "n": 0}
+    bonne = {"lecture": {"date": "2026-11-27", "niveau": 1}, "mesure": None, "avertissement": "…"}
+
+    def faux():
+        reponse["n"] += 1
+        if reponse["panne"]:
+            raise ValueError("aucun cours reçu pour ^GSPC (Yahoo refuse)")
+        return bonne
+    thermometre.thermometre = faux
+    try:
+        serveur._thermo_recent.update(valeur=None, quand=0.0)
+        serveur._thermo_secours.update(actif=False)
+        reponse["panne"] = True
+        try:
+            serveur.thermometre_du_marche()
+            erreur = False
+        except ValueError:
+            erreur = True
+        ok("Yahoo en panne dès le lancement : l'erreur reste (la page dit « indisponible »)", erreur)
+        reponse["panne"] = False
+        v = serveur.thermometre_du_marche()
+        ok("une lecture réussie : rendue telle quelle, la route gardée une heure",
+           v is bonne and serveur.duree_cache_thermometre() == 3600)
+        n = reponse["n"]
+        serveur.thermometre_du_marche()
+        ok("… une seconde demande dans les 2 minutes reprend la même, sans Yahoo", reponse["n"] == n)
+        serveur._thermo_recent["quand"] -= 3601
+        reponse["panne"] = True
+        v = serveur.thermometre_du_marche()
+        ok("Yahoo en panne ensuite : la dernière lecture, avec son heure et la raison (sans toucher à la lecture gardée)",
+           v["lecture"] == bonne["lecture"] and v["secours"]["raison"].startswith("aucun cours reçu")
+           and datetime.fromisoformat(v["secours"]["lue_le"]) < datetime.now(timezone.utc) - timedelta(minutes=59)
+           and "secours" not in bonne)
+        ok("… et la route n'est gardée que 5 minutes : Yahoo sera relu bientôt", serveur.duree_cache_thermometre() == 300)
+        reponse["panne"] = False
+        v = serveur.thermometre_du_marche()
+        ok("Yahoo revenu : la nouvelle lecture, sans « secours », de nouveau gardée une heure",
+           "secours" not in v and serveur.duree_cache_thermometre() == 3600)
+        ok("la route du thermomètre lit sa durée de cache à chaque demande",
+           serveur.ROUTES["/api/thermometre"][1] is serveur.duree_cache_thermometre)
+    finally:
+        thermometre.thermometre = reel[0]
+        serveur._thermo_recent.clear()
+        serveur._thermo_recent.update(reel[1])
+        serveur._thermo_secours.clear()
+        serveur._thermo_secours.update(reel[2])
+
+
 def sortie_d_erreur():
     print("La sortie d'erreur quand l'appli lance le serveur")
     script = ("import importlib.util, os, sys\n"
@@ -429,6 +481,7 @@ def main():
             journal_et_cache()
             bourse()
             seances()
+            thermometre_panne()
             sortie_d_erreur()
         finally:
             ma_position.JOURNAL = reel_journal

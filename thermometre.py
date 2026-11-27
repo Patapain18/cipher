@@ -88,6 +88,10 @@ CHUTE_JOURS = 252                # douze mois de séances
 CHUTE_SEUIL = 0.20               # −20 %
 ALARME = 2                       # le niveau à partir duquel on parle d'alarme
 DEBUT_MESURE = "1952-01-01"      # les aiguilles 1 et 2 ont déjà 20 ans de passé
+# « max » de yfinance 1.2.0 ne remonte que 99 ans (start = fin − 3 122 064 000 s) : sans un début
+# donné, le S&P 500 aurait perdu un jour de 1927 chaque jour à partir du 05/12/2026. Un début demandé
+# avant son premier cours (30/12/1927), comme creux.py (plan de la « v finale », 27/11/2026).
+DEBUT_YAHOO = "1927-01-01"
 TROP_RARE = 12                   # moins de 12 mois à un niveau : rien à en tirer
 TROP_PEU = 24                    # une aiguille allumée moins de 24 mois : trop peu pour conclure
 
@@ -463,14 +467,17 @@ def _cours(symbole, periode, essais=3):
     réinvestis) : les fonds sectoriels se comparent ainsi au S&P 500, qui
     est lui aussi un prix seul. Yahoo refuse parfois une demande quand on
     en fait beaucoup d'un coup : on réessaie après une pause (2 s, puis
-    6 s) avant d'abandonner.
+    6 s) avant d'abandonner. « max » se demande avec un début (DEBUT_YAHOO).
     """
     import time
     import yfinance as yf
     erreur = None
     for n in range(essais):
         try:
-            h = yf.Ticker(symbole).history(period=periode, interval="1d", auto_adjust=False)
+            if periode == "max":
+                h = yf.Ticker(symbole).history(start=DEBUT_YAHOO, interval="1d", auto_adjust=False)
+            else:
+                h = yf.Ticker(symbole).history(period=periode, interval="1d", auto_adjust=False)
             if h is not None and not h.empty:
                 return _nettoyer(h["Close"])
             erreur = "réponse vide"
@@ -755,12 +762,14 @@ def verifier():
 
     # 17. Les cours, avec un FAUX Yahoo : le prix seul, les refus et les retards signalés.
     import types
+    demandes = []
 
     class FauxTicker:
         def __init__(self, symbole):
             self.symbole = symbole
 
-        def history(self, period, interval, auto_adjust):
+        def history(self, period=None, interval=None, auto_adjust=None, start=None):
+            demandes.append((self.symbole, period, start))
             if self.symbole == "REFUSE":
                 raise RuntimeError("Yahoo refuse")
             idx = pd.bdate_range("2026-01-05", periods=5, tz="America/New_York")
@@ -774,6 +783,12 @@ def verifier():
     try:
         ok("cours : le PRIX SEUL, pas le cours ajusté des dividendes",
            list(_cours("X", "5d", essais=1).values) == [10.0, 11.0, 12.0, 13.0, 14.0])
+        demandes.clear()
+        _cours("^GSPC", "max", essais=1)
+        _cours("XLK", "3y", essais=1)
+        ok("cours : « max » se demande avec un début en 1927 (le « max » de yfinance perdrait un jour de "
+           "1927 par jour dès le 05/12/2026) ; une autre période reste une période",
+           demandes == [("^GSPC", None, "1927-01-01"), ("XLK", "3y", None)] and DEBUT_YAHOO == "1927-01-01")
         SECTEURS.clear()
         SECTEURS.update({"OK": "Bon", "REFUSE": "Refusé", "RETARD": "En retard"})
         _, sect, manq = charger("5d", "5d", essais_secteurs=1)

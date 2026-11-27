@@ -1139,7 +1139,13 @@ async function renderThermometre() {
     }
     return;
   }
-  if (etat) etat.textContent = '';
+  /* Yahoo en panne côté serveur : il rend sa dernière lecture réussie, avec son heure
+     (champ `secours`, plan de la « v finale », 27/11/2026). Même phrase qu'une panne vue d'ici. */
+  if (etat) {
+    etat.textContent = t.secours
+      ? `Mise à jour impossible pour l'instant (${t.secours.raison}) : la lecture affichée date de ${PP.heure(t.secours.lue_le)}.`
+      : '';
+  }
   $('#thermo-date').textContent = `lecture du ${PP.jour(t.lecture.date)}${t.lecture.provisoire ? ', en séance (cours provisoire)' : ''}`;
   if (html === thermoDernierHtml) return;            // rien n'a changé : on ne touche à rien
 

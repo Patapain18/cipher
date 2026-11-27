@@ -58,10 +58,13 @@ case "$1" in
         # Quand le Mac dort, le processus est suspendu et repart au
         # réveil ; les scans manqués n'ont aucune conséquence, seul
         # l'historique a quelques trous.
+        # « >> » (mode ajout), comme launchd : le bot coupe lui-même son log
+        # quand il devient trop gros, et il ne le fait que dans ce mode
+        # (avec « > », le fichier vidé garderait un trou ; 27/11/2026).
         nohup python3 "$BOT_NAME" \
             "${TICKER_ARGS[@]}" \
             --capital "$CAPITAL" \
-            > "$LOG_FILE" 2>&1 &
+            >> "$LOG_FILE" 2>&1 &
 
         echo $! > "$PID_FILE"
         sleep 2

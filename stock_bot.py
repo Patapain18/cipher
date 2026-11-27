@@ -113,6 +113,108 @@ def point_a_preparer(maintenant, calcule_le):
     return calcule_le is None or calcule_le < dernier_rendez_vous(maintenant)
 
 
+# ── Sans entretien : le log du bot et le thermomètre (plan de la « v finale », 27/11/2026) ──
+#
+#  Le log : launchd écrit la sortie du bot dans logs/stock_bot_live.log (StandardOutPath du
+#  plist), et rien ne le coupait (50 Mo le 27/11/2026, environ 10 Mo de plus par mois). Au
+#  démarrage puis une fois par jour, au-delà de LOG_MAX, le bot garde la fin (LOG_GARDE) et vide
+#  le reste SUR PLACE. Seulement si sa sortie EST ce fichier, ouvert en mode « ajout » : sinon il
+#  continuerait d'écrire à son ancienne position, et le fichier vidé garderait un trou de 20 Mo
+#  (manage_bot.sh l'ouvrait avec « > » jusqu'au 27/11).
+#
+#  Le thermomètre : sa mesure sur le passé (data/thermometre.json) se refaisait à la main
+#  « chaque mois ». Le bot la refait quand elle a plus de THERMO_JOURS jours, le samedi ou le
+#  dimanche (les clôtures de la semaine sont toutes là), dans un processus à part (un import
+#  garderait l'ancien code dans le bot, qui tourne des semaines), avec un délai de garde. Un
+#  échec (Yahoo) est retenté au plus toutes les 30 minutes, comme le point de la semaine. Aucune
+#  bulle : la section du thermomètre écrit déjà « Mesure du … ».
+ICI = os.path.dirname(os.path.abspath(__file__))
+LOG_BOT = os.path.join(ICI, "logs", "stock_bot_live.log")
+LOG_MAX = 20 * 1024 * 1024
+LOG_GARDE = 1024 * 1024
+THERMO_RAPPORT = os.path.join(ICI, "data", "thermometre.json")
+THERMO_JOURS = 30
+THERMO_DELAI = 600          # secondes : la mesure en prend environ 25
+
+
+def sortie_en_ajout(fd=1):
+    """Le descripteur `fd` écrit-il dans un fichier ordinaire, en mode « ajout » (O_APPEND) ?"""
+    import fcntl
+    import stat
+    try:
+        return bool(fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_APPEND) and stat.S_ISREG(os.fstat(fd).st_mode)
+    except OSError:
+        return False
+
+
+def couper_le_log(chemin=LOG_BOT, maximum=LOG_MAX, garder=LOG_GARDE, fd=1, maintenant=None):
+    """
+    Au-delà de `maximum` octets, garde les `garder` derniers (à partir d'un début de ligne) et
+    vide le reste sur place, avec une ligne qui le dit. Seulement si `fd` (la sortie du bot) EST
+    ce fichier, en mode « ajout ». Renvoie le nombre d'octets retirés (0 : rien n'est fait).
+    """
+    try:
+        taille = os.path.getsize(chemin)
+        meme_fichier = os.path.samestat(os.fstat(fd), os.stat(chemin))
+    except OSError:
+        return 0
+    if taille <= maximum or not meme_fichier or not sortie_en_ajout(fd):
+        return 0
+    with open(chemin, "rb") as f:
+        f.seek(max(0, taille - garder))
+        fin = f.read()
+    fin_de_ligne = fin.find(b"\n")
+    if 0 <= fin_de_ligne < len(fin) - 1:
+        fin = fin[fin_de_ligne + 1:]                  # la première ligne gardée est entière
+    quand = (maintenant or datetime.now()).strftime("%d/%m/%Y %H:%M")
+    texte = (f"[{quand}] Log coupé : {taille - len(fin)} octets retirés, "
+             f"les {len(fin)} derniers gardés.\n").encode() + fin
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.truncate(chemin, 0)
+    while texte:                                       # en mode « ajout » : écrit au début du fichier vidé
+        texte = texte[os.write(fd, texte):]
+    return taille - len(fin)
+
+
+def date_de_mesure(chemin=THERMO_RAPPORT):
+    """La date de la mesure du thermomètre (son champ « maj », avec fuseau), ou None."""
+    try:
+        with open(chemin) as f:
+            maj = datetime.fromisoformat(json.load(f)["maj"])
+        return maj if maj.utcoffset() is not None else None
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def thermometre_a_mesurer(maintenant, mesure_le, forcer=False):
+    """
+    `maintenant` : l'heure du Mac, avec son fuseau. La mesure est à refaire le samedi ou le
+    dimanche si elle a plus de THERMO_JOURS jours, ou si elle manque ; `forcer` passe outre
+    (la commande `stock_bot.py --thermometre`).
+    """
+    if forcer:
+        return True
+    if maintenant.weekday() < 5:
+        return False
+    return mesure_le is None or maintenant - mesure_le > timedelta(days=THERMO_JOURS)
+
+
+def mesurer_le_thermometre(lancer=subprocess.run, delai=THERMO_DELAI):
+    """`thermometre.py --mesurer` dans un processus à part. Renvoie (réussie, raison d'un échec)."""
+    commande = [sys.executable, os.path.join(ICI, "thermometre.py"), "--mesurer"]
+    try:
+        r = lancer(commande, cwd=ICI, capture_output=True, text=True, timeout=delai)
+    except subprocess.TimeoutExpired:
+        return False, f"plus de {delai} s"
+    except OSError as e:
+        return False, str(e)[:200]
+    if r.returncode != 0:
+        lignes = [l.strip() for l in (r.stderr or "").splitlines() if l.strip()]
+        return False, (lignes[-1] if lignes else f"code de sortie {r.returncode}")[:200]
+    return True, None
+
+
 # Ce que le moteur conclut de son score technique, dit comme un état.
 # Les codes BUY, WATCH, HOLD et SELL restent dans les données (le tableau
 # de bord et l'historique s'en servent) ; affichés tels quels, ils se
@@ -203,6 +305,8 @@ class StockSignalBot:
         self._last_snapshot = self._restore_snapshot_times()
         self.discord_enabled = bool(DISCORD_WEBHOOK)
         self._point_essai = None   # dernier essai de point de la semaine
+        self._thermo_essai = None  # dernier essai de mesure du thermomètre
+        self._log_jour = None      # jour du dernier contrôle du log
 
     def _load_history(self):
         """Charge l'historique des signaux."""
@@ -531,6 +635,36 @@ class StockSignalBot:
                      subtitle="Dans Signaux actions, vue plan")
         console.print(f"\n[bold cyan]📅 Point de la semaine prêt[/bold cyan] — {marches}\n")
         return True
+
+    def check_log(self, aujourd_hui=None):
+        """Coupe le log au démarrage, puis une fois par jour (couper_le_log). Renvoie les octets retirés."""
+        jour = aujourd_hui or datetime.now().date()
+        if self._log_jour == jour:
+            return 0
+        self._log_jour = jour
+        retires = couper_le_log()
+        if retires:
+            console.print(f"[dim]Log coupé : {retires / 1024 / 1024:.1f} Mo retirés[/dim]")
+        return retires
+
+    def check_thermometre(self, forcer=False, maintenant=None):
+        """
+        Refait la mesure du thermomètre quand il le faut (thermometre_a_mesurer) ; un échec est
+        retenté au plus toutes les 30 minutes. Renvoie True (refaite), False (reportée) ou None
+        (rien à faire).
+        """
+        maintenant = maintenant or datetime.now().astimezone()
+        if not forcer and self._thermo_essai and maintenant - self._thermo_essai < timedelta(minutes=30):
+            return None
+        if not thermometre_a_mesurer(maintenant, date_de_mesure(), forcer):
+            return None
+        self._thermo_essai = maintenant
+        reussie, raison = mesurer_le_thermometre()
+        if reussie:
+            console.print("[dim]Thermomètre : mesure refaite[/dim]")
+        else:
+            console.print(f"[yellow]Thermomètre : mesure reportée ({raison})[/yellow]")
+        return reussie
 
     def _due_for_snapshot(self, ticker):
         """
@@ -985,6 +1119,7 @@ class StockSignalBot:
         while self.running:
             try:
                 cycle += 1
+                self.check_log()           # au premier tour, puis une fois par jour
                 # Les positions sont relues à chaque tour : elles peuvent
                 # avoir été modifiées depuis le dashboard pendant que le
                 # bot tournait. Sans cette relecture, il continuerait de
@@ -1029,6 +1164,7 @@ class StockSignalBot:
                 self.check_rebalance(ranked)
                 self.check_held_positions(ranked)
                 self.check_point_semaine()
+                self.check_thermometre()
 
                 # Les changements de score technique restent HISTORISÉS —
                 # ils décrivent fidèlement l'état d'une valeur et servent
@@ -1161,6 +1297,152 @@ def show_history(bot, ticker_filter=None, last=20):
         console.print(st)
 
 
+def verifier():
+    """Les cas du log et du thermomètre (plan de la « v finale », 27/11/2026) : des fichiers jetables et
+    des processus inventés, ni réseau, ni données réelles, ni vrai log."""
+    import tempfile
+    import types
+    from datetime import timezone
+    cas = []
+
+    def ok(nom, condition):
+        cas.append(bool(condition))
+        print(f"{'✓' if condition else '✗'} {nom}")
+
+    with tempfile.TemporaryDirectory() as dossier:
+        # ── Le log
+        log = os.path.join(dossier, "bot.log")
+        lignes = b"".join(f"ligne {i:03d}\n".encode() for i in range(40))      # 40 lignes de 10 octets
+
+        def ecrire(contenu):
+            with open(log, "wb") as f:
+                f.write(contenu)
+        ecrire(lignes)
+        fd = os.open(log, os.O_WRONLY | os.O_APPEND)
+        try:
+            ok("log : le mode « ajout » est reconnu", sortie_en_ajout(fd))
+            ok("log : sous le maximum, rien n'est coupé",
+               couper_le_log(log, maximum=400, garder=35, fd=fd) == 0 and open(log, "rb").read() == lignes)
+            retire = couper_le_log(log, maximum=100, garder=35, fd=fd, maintenant=datetime(2026, 11, 27, 19, 30))
+            contenu = open(log, "rb").read()
+            ok("log : au-delà, la fin est gardée à partir d'une ligne entière (370 octets retirés), "
+               "et une ligne le dit",
+               retire == 370 and contenu.startswith(b"[27/11/2026 19:30] Log coup")
+               and contenu.endswith(b"ligne 037\nligne 038\nligne 039\n") and contenu.count(b"\n") == 4)
+            os.write(fd, b"suite\n")
+            contenu = open(log, "rb").read()
+            ok("log : la sortie continue au bout du fichier vidé, sans trou",
+               contenu.endswith(b"ligne 039\nsuite\n") and b"\x00" not in contenu and len(contenu) < 200)
+        finally:
+            os.close(fd)
+        ecrire(lignes)
+        fd = os.open(log, os.O_WRONLY)
+        try:
+            ok("log : une sortie qui n'est pas en mode « ajout » n'est jamais coupée (le fichier vidé "
+               "garderait un trou)",
+               not sortie_en_ajout(fd) and couper_le_log(log, maximum=100, garder=35, fd=fd) == 0
+               and open(log, "rb").read() == lignes)
+        finally:
+            os.close(fd)
+        autre = os.path.join(dossier, "autre.log")
+        with open(autre, "wb") as f:
+            f.write(b"x")
+        fd = os.open(autre, os.O_WRONLY | os.O_APPEND)
+        try:
+            ok("log : une sortie qui écrit dans un autre fichier ne coupe rien",
+               couper_le_log(log, maximum=100, garder=35, fd=fd) == 0 and open(log, "rb").read() == lignes)
+        finally:
+            os.close(fd)
+        ok("log : un fichier absent, rien et sans erreur", couper_le_log(os.path.join(dossier, "absent.log")) == 0)
+        ecrire(b"x" * 300)
+        fd = os.open(log, os.O_WRONLY | os.O_APPEND)
+        try:
+            retire = couper_le_log(log, maximum=100, garder=50, fd=fd, maintenant=datetime(2026, 11, 27, 19, 30))
+            ok("log : une fin sans retour à la ligne est gardée telle quelle",
+               retire == 250 and open(log, "rb").read().endswith(b".\n" + b"x" * 50))
+        finally:
+            os.close(fd)
+
+        # ── Le thermomètre : quand le refaire
+        h = timezone(timedelta(hours=1))
+        samedi = datetime(2026, 11, 28, 10, 0, tzinfo=h)
+        dimanche = datetime(2026, 11, 29, 10, 0, tzinfo=h)
+        vendredi = datetime(2026, 11, 27, 20, 0, tzinfo=h)
+        avant = lambda jours, d=samedi: (d - timedelta(days=jours)).astimezone(timezone.utc)
+        ok("thermomètre : le samedi, une mesure de 31 jours est refaite, une de 29 non",
+           thermometre_a_mesurer(samedi, avant(31)) and not thermometre_a_mesurer(samedi, avant(29)))
+        ok("thermomètre : le dimanche aussi, jamais en semaine (même vieille de 40 jours)",
+           thermometre_a_mesurer(dimanche, avant(31, dimanche))
+           and not thermometre_a_mesurer(vendredi, avant(40, vendredi)))
+        ok("thermomètre : une mesure absente se fait le week-end ; « forcer » passe outre (un vendredi, "
+           "une mesure d'hier)",
+           thermometre_a_mesurer(samedi, None) and thermometre_a_mesurer(vendredi, avant(1, vendredi), forcer=True))
+        rapport = os.path.join(dossier, "thermometre.json")
+        with open(rapport, "w") as f:
+            json.dump({"maj": "2026-11-15T19:20:00+00:00"}, f)
+        ok("thermomètre : la date de la mesure est lue avec son fuseau",
+           date_de_mesure(rapport) == datetime(2026, 11, 15, 19, 20, tzinfo=timezone.utc))
+        lus = []
+        for i, contenu in enumerate([None, '{"maj": "pas une date"}', '{"maj": "2026-11-15T19:20:00"}',
+                                     '[1, 2]', '{abîmé']):
+            chemin = os.path.join(dossier, f"t{i}.json")
+            if contenu is not None:
+                with open(chemin, "w") as f:
+                    f.write(contenu)
+            lus.append(date_de_mesure(chemin))
+        ok("thermomètre : une mesure absente, illisible, sans fuseau ou abîmée vaut None (refaite le week-end)",
+           lus == [None] * 5)
+
+        # ── Le thermomètre : la mesure, dans un processus à part (inventé ici)
+        appels = []
+
+        def faux(code, erreur=""):
+            def lancer(commande, **kw):
+                appels.append((commande, kw))
+                return types.SimpleNamespace(returncode=code, stderr=erreur, stdout="")
+            return lancer
+        ok("thermomètre : la mesure lance thermometre.py --mesurer, dans le dossier du projet, avec un délai",
+           mesurer_le_thermometre(faux(0)) == (True, None)
+           and appels[-1][0][1:] == [os.path.join(ICI, "thermometre.py"), "--mesurer"]
+           and appels[-1][1].get("cwd") == ICI and appels[-1][1].get("timeout") == THERMO_DELAI)
+        ok("thermomètre : un refus de Yahoo, la dernière ligne de la sortie d'erreur est la raison",
+           mesurer_le_thermometre(faux(1, "Traceback (…)\nMesure annulée : Yahoo n'a pas donné XLK.\n"))
+           == (False, "Mesure annulée : Yahoo n'a pas donné XLK."))
+
+        def trop_long(commande, **kw):
+            raise subprocess.TimeoutExpired(commande, kw.get("timeout"))
+        ok("thermomètre : une mesure trop longue est reportée, sans planter",
+           mesurer_le_thermometre(trop_long, delai=5) == (False, "plus de 5 s"))
+
+        # ── Le bot : les deux contrôles de son tour, avec des fonctions inventées
+        reel = {n: globals()[n] for n in ("date_de_mesure", "mesurer_le_thermometre", "couper_le_log")}
+        essais, coupes = [], []
+        try:
+            globals()["date_de_mesure"] = lambda chemin=None: avant(40)
+            globals()["mesurer_le_thermometre"] = lambda *a, **k: essais.append(1) or (False, "Yahoo refuse")
+            bot = types.SimpleNamespace(_thermo_essai=None, _log_jour=None)
+            tour = lambda **k: StockSignalBot.check_thermometre(bot, **k)
+            r = (tour(maintenant=samedi), tour(maintenant=samedi + timedelta(minutes=5)),
+                 tour(maintenant=samedi + timedelta(minutes=31)))
+            ok("bot : un échec de la mesure est retenté au plus toutes les 30 minutes",
+               r == (False, None, False) and len(essais) == 2)
+            globals()["mesurer_le_thermometre"] = lambda *a, **k: essais.append(1) or (True, None)
+            bot._thermo_essai = None
+            n = len(essais)
+            ok("bot : en semaine, rien ; avec --thermometre (forcé), la mesure se fait tout de suite",
+               tour(maintenant=vendredi) is None and len(essais) == n
+               and tour(forcer=True, maintenant=vendredi) is True and len(essais) == n + 1)
+            globals()["couper_le_log"] = lambda *a, **k: coupes.append(1) or 0
+            for jour in (datetime(2026, 11, 27).date(), datetime(2026, 11, 27).date(), datetime(2026, 11, 28).date()):
+                StockSignalBot.check_log(bot, aujourd_hui=jour)
+            ok("bot : le log est contrôlé au premier tour, puis une fois par jour", len(coupes) == 2)
+        finally:
+            globals().update(reel)
+
+    print(f"\n{sum(cas)}/{len(cas)} vérifications réussies")
+    return all(cas)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Stock Signal Bot")
     parser.add_argument("--tickers", type=str, default=None, help="Actions à surveiller (séparées par virgule)")
@@ -1173,10 +1455,20 @@ def main():
     parser.add_argument("--test-discord", action="store_true", help="Tester la notification Discord")
     parser.add_argument("--legacy", action="store_true",
                         help="Utiliser l'ancien score v1 à poids fixes (comparaison)")
+    parser.add_argument("--thermometre", action="store_true",
+                        help="Refaire tout de suite la mesure du thermomètre, par le même chemin que le bot")
+    parser.add_argument("--verifier", action="store_true",
+                        help="Les cas du log et du thermomètre, sans réseau ni données réelles")
     args = parser.parse_args()
+
+    if args.verifier:
+        sys.exit(0 if verifier() else 1)
 
     tickers = args.tickers.split(",") if args.tickers else DEFAULT_TICKERS
     bot = StockSignalBot(tickers, args.capital, legacy=args.legacy)
+
+    if args.thermometre:
+        sys.exit(0 if bot.check_thermometre(forcer=True) else 1)
 
     if args.add:
         ticker, qty, price = args.add
