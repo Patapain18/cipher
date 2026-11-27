@@ -1263,7 +1263,7 @@ void main() {
     dans.appendChild(env);
     const pied = document.createElement('p');
     pied.className = 'vue3d-pied';
-    // « Le moins mauvais critère », jamais « validé » (CLAUDE.md, Décisions ; relecture du README, 27/11/2026).
+    // « Le moins mauvais critère », jamais « validé » (docs/notes.md, « Le classement relatif » ; 27/11/2026).
     pied.textContent = 'Le moins mauvais critère mesuré, sans être validé : momentum 12-1 — → pour le tableau complet';
     dans.appendChild(pied);
   }

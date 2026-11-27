@@ -106,7 +106,8 @@ cycle, ce qui lui permet de signaler le décrochage d'une valeur que tu détiens
 réellement.
 
 Ce que la page peut écrire se limite au journal (avec le carnet du bot qu'il
-tient à jour) et au défi papier : aucun ordre, aucune clé d'API. Elles exigent un en-tête `X-Dashboard` qu'une page tierce ne peut
+tient à jour) et au défi papier : aucun ordre, aucune clé d'API. Ces
+écritures exigent un en-tête `X-Dashboard` qu'une page tierce ne peut
 pas ajouter sans un préalable CORS auquel le serveur ne répond pas, et le
 serveur ne répond qu'aux noms `localhost` et `127.0.0.1` — sans quoi
 n'importe quel site ouvert dans ton navigateur pourrait écrire dans ton

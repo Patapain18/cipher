@@ -124,7 +124,7 @@ section lives.
 
 | Part | Files |
 |---|---|
-| The scanner, started by `launchd`, every five minutes | `stock_bot.py` |
+| The scanner, started by `launchd` at login; it scans every five minutes | `stock_bot.py` |
 | The signal engine: regime detection (ADX), distances in ATR, volume confirmation, rolling calibration | `stock_engine.py` |
 | The measurement: replay, information coefficient, random and permutation nulls, bootstrap | `stock_eval.py`, `pead_test.py` |
 | The forecasting bench and the fee wall | `banc.py`, `banc_methodes.py`, `banc_argent.py`, `seance.py` |
