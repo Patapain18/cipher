@@ -392,13 +392,27 @@ def thermometre_du_marche():
     5 minutes (duree_cache_thermometre) : une page rechargée pendant la
     panne montre encore le thermomètre. Sans lecture réussie depuis le
     lancement du serveur, l'erreur reste (la page dit « indisponible »).
+
+    « Provisoire » suit la vraie fin de séance, comme le carnet
+    (ma_position.seance_du_cours, avec les séances de Yahoo gardées par le
+    serveur et les séances courtes gardées sur disque) : le 27/11/2026,
+    séance courte, la lecture de 19 h 19 se disait encore « en séance »,
+    New York fermé depuis 13 h là-bas.
     """
+    import ma_position
     import thermometre
+    seances = _seances_bourse["periode"]
+    if seances is None:
+        try:
+            etat_de_la_bourse()
+        except Exception as e:      # sans les séances de Yahoo : celles du disque, sinon 16 h
+            print(f"[thermomètre] séances de Yahoo illisibles : {e}", file=sys.stderr)
+        seances = _seances_bourse["periode"]
     with _thermo_verrou:
         if _thermo_recent["valeur"] is not None and time.time() - _thermo_recent["quand"] < 120:
             return _thermo_recent["valeur"]
         try:
-            valeur = thermometre.thermometre()
+            valeur = thermometre.thermometre(seance=lambda instant: ma_position.seance_du_cours(instant, seances))
         except Exception as e:
             if _thermo_recent["valeur"] is None:
                 raise

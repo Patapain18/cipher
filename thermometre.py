@@ -416,7 +416,7 @@ def mesurer(df, debut=DEBUT_MESURE, abri=None, total=None):
     return rapport
 
 
-def lecture(df, manquants=(), maintenant=None):
+def lecture(df, manquants=(), maintenant=None, seance=None):
     """
     Les aiguilles à la dernière séance connue.
     `manquants` : les secteurs que Yahoo n'a pas donnés. Sans eux, une
@@ -424,13 +424,25 @@ def lecture(df, manquants=(), maintenant=None):
     l'allumer) : elle devient « inconnue », et le niveau un minimum.
     `provisoire` : la dernière séance est celle d'aujourd'hui, et la
     Bourse de New York n'a pas encore clôturé (cours du moment).
+    `seance(instant)` dit « avant », « ouverte » ou « apres » pour cet
+    instant : le serveur donne celle du carnet (ma_position.seance_du_cours,
+    la vraie fin d'une séance courte : 13 h à New York le 27/11/2026, où la
+    lecture de 19 h 19 à Paris se disait encore « en séance »). Sans elle, ou
+    si elle échoue : 16 h à New York.
     """
     d = df.iloc[-1]
     secteur = d["envolee_secteur"] if isinstance(d["envolee_secteur"], str) else None
     allumee = bool(d["envolee"] == 1)
     inconnue = bool(manquants) and not allumee
-    ny = (maintenant or datetime.now(timezone.utc)).astimezone(ZoneInfo("America/New_York"))
-    provisoire = df.index[-1].date() == ny.date() and (ny.hour, ny.minute) < (16, 0)
+    instant = maintenant or datetime.now(timezone.utc)
+    ny = instant.astimezone(ZoneInfo("America/New_York"))
+    pas_close = (ny.hour, ny.minute) < (16, 0)
+    if seance is not None:
+        try:
+            pas_close = seance(instant) != "apres"
+        except Exception as e:      # des séances illisibles ne cassent pas la lecture : 16 h, comme avant
+            print(f"[thermomètre] séance du jour illisible ({e}) : clôture à 16 h", file=sys.stderr)
+    provisoire = df.index[-1].date() == ny.date() and pas_close
     return {
         "date": f"{df.index[-1]:%Y-%m-%d}",
         "provisoire": bool(provisoire),
@@ -523,11 +535,13 @@ def lire_rapport():
         return None
 
 
-def thermometre():
-    """Ce que lit le tableau de bord : la lecture du jour, et la mesure sur le passé."""
+def thermometre(seance=None):
+    """Ce que lit le tableau de bord : la lecture du jour, et la mesure sur le passé.
+    `seance` : la séance du jour selon le serveur (voir `lecture`)."""
     marche, secteurs, manquants = charger("max", "3y", essais_secteurs=2)
     df = construire(marche, secteurs)
-    return {"lecture": lecture(df, manquants), "mesure": lire_rapport(), "avertissement": AVERTISSEMENT}
+    return {"lecture": lecture(df, manquants, seance=seance), "mesure": lire_rapport(),
+            "avertissement": AVERTISSEMENT}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -740,6 +754,54 @@ def verifier():
        lecture(dfp, maintenant=datetime(2026, 11, 16, 11, 0, tzinfo=ny))["provisoire"])
     ok("lecture : après la clôture de New York, elle ne l'est plus",
        not lecture(dfp, maintenant=datetime(2026, 11, 16, 16, 30, tzinfo=ny))["provisoire"])
+
+    # 14 bis. La vraie fin de séance, donnée par le serveur (séance courte du 27/11/2026 : 13 h à New York).
+    dfc = construire(pd.Series(100.0, index=pd.bdate_range("2026-01-01", "2026-11-27")), {})
+    fin_courte = datetime(2026, 11, 27, 13, 0, tzinfo=ny)
+    demandes = []
+
+    def courte(instant):
+        demandes.append(instant)
+        return "ouverte" if instant < fin_courte else "apres"
+    a_13h30 = datetime(2026, 11, 27, 13, 30, tzinfo=ny)
+    ok("lecture : un jour de séance courte, à 13 h 30 à New York (fermé à 13 h), la lecture du jour n'est plus provisoire",
+       not lecture(dfc, maintenant=a_13h30, seance=courte)["provisoire"] and demandes == [a_13h30])
+    ok("lecture : … à 12 h 30, encore en séance, elle l'est",
+       lecture(dfc, maintenant=datetime(2026, 11, 27, 12, 30, tzinfo=ny), seance=courte)["provisoire"])
+    ok("lecture : sans la séance du serveur, 16 h à New York comme avant (13 h 30 : provisoire)",
+       lecture(dfc, maintenant=a_13h30)["provisoire"])
+
+    def illisible(instant):
+        raise OSError("séances illisibles")
+    sortie_erreur = sys.stderr
+    sys.stderr = open(os.devnull, "w")      # la ligne « séance du jour illisible », voulue ici
+    try:
+        avant_16h = lecture(dfc, maintenant=a_13h30, seance=illisible)["provisoire"]
+        a_16h = lecture(dfc, maintenant=datetime(2026, 11, 27, 16, 0, tzinfo=ny), seance=illisible)["provisoire"]
+    finally:
+        sys.stderr.close()
+        sys.stderr = sortie_erreur
+    ok("lecture : une séance illisible ne casse rien : 16 h à New York (13 h 30 provisoire, 16 h non)",
+       avant_16h and not a_16h)
+    ok("lecture : la ligne de la veille n'est jamais provisoire, même si la séance du jour est ouverte",
+       not lecture(dfp, maintenant=datetime(2026, 11, 17, 11, 0, tzinfo=ny), seance=lambda instant: "ouverte")["provisoire"])
+    del demandes[:]
+    lecture(dfc, seance=courte)
+    ok("lecture : sans heure donnée, la séance est demandée pour maintenant, avec son fuseau",
+       len(demandes) == 1 and demandes[0].tzinfo is not None
+       and abs((datetime.now(timezone.utc) - demandes[0]).total_seconds()) < 60)
+    # thermometre() (ce que lit le serveur) passe la séance à la lecture : Yahoo et le rapport remplacés.
+    g = globals()
+    vrais = (g["charger"], g["lire_rapport"])
+    g["charger"] = lambda *a, **k: (pd.Series(100.0, index=pd.bdate_range("2026-01-01", "2026-11-27")), {}, [])
+    g["lire_rapport"] = lambda: None
+    try:
+        del demandes[:]
+        rendu = thermometre(seance=courte)
+    finally:
+        g["charger"], g["lire_rapport"] = vrais
+    ok("thermometre() passe la séance du serveur à la lecture du jour",
+       len(demandes) == 1 and rendu["lecture"]["date"] == "2026-11-27")
 
     # 15. La lecture : le sens de chaque aiguille, et la date de la lecture provisoire.
     l3 = lecture(c1)

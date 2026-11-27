@@ -386,12 +386,14 @@ def seances():
 def thermometre_panne():
     print("Le thermomètre pendant une panne de Yahoo (plan de la v finale, 27/11/2026)")
     import thermometre
-    reel = (thermometre.thermometre, dict(serveur._thermo_recent))
+    reel = (thermometre.thermometre, dict(serveur._thermo_recent), serveur.etat_de_la_bourse)
     reponse = {"panne": False, "n": 0, "pendant": None, "valeur": None}
     bonne = {"lecture": {"date": "2026-11-27", "niveau": 1}, "mesure": None, "avertissement": "…"}
     nouvelle = {"lecture": {"date": "2026-11-30", "niveau": 0}, "mesure": None, "avertissement": "…"}
+    # Sans séances gardées, le serveur les demande avant de lire le thermomètre : jamais Yahoo ici.
+    serveur.etat_de_la_bourse = lambda: None
 
-    def faux():
+    def faux(seance=None):
         reponse["n"] += 1
         if reponse["pendant"]:
             reponse["pendant"]()                 # une décision notée pendant ce calcul
@@ -461,8 +463,74 @@ def thermometre_panne():
            serveur.ROUTES["/api/thermometre"][1] is serveur.duree_cache_thermometre)
     finally:
         thermometre.thermometre = reel[0]
+        serveur.etat_de_la_bourse = reel[2]
         serveur._thermo_recent.clear()
         serveur._thermo_recent.update(reel[1])
+        with serveur._cache_lock:
+            serveur._cache.pop("/api/thermometre", None)
+
+
+def thermometre_seance():
+    print("Le thermomètre et la vraie fin de séance (séance courte du 27/11/2026)")
+    import thermometre
+    u = lambda m, j, h, mi: datetime(2026, m, j, h, mi, tzinfo=timezone.utc)
+    courte = {"jour": (u(11, 27, 14, 30), u(11, 27, 18, 0)), "courante": (u(11, 27, 14, 30), u(11, 27, 18, 0)),
+              "avant": None, "apres": None}
+    vues, appels = [], []
+    reel = (thermometre.thermometre, dict(serveur._thermo_recent), serveur.etat_de_la_bourse,
+            dict(serveur._seances_bourse))
+
+    def faux(seance=None):
+        vues.append(seance)
+        return {"lecture": {"date": "2026-11-27", "niveau": 1}, "mesure": None, "avertissement": "…"}
+    thermometre.thermometre = faux
+    serveur.etat_de_la_bourse = lambda: appels.append(1)
+    try:
+        serveur._thermo_recent.update(valeur=None, quand=0.0)
+        serveur._seances_bourse.update(periode=courte)
+        serveur.thermometre_du_marche()
+        s = vues[-1] if vues else None
+        ok("le thermomètre reçoit la séance du serveur : « apres » dès la fin de la séance courte (13 h à New York)",
+           callable(s) and s(u(11, 27, 18, 30)) == "apres" and s(u(11, 27, 17, 0)) == "ouverte" and appels == [])
+        dfc = thermometre.construire(pd.Series(100.0, index=pd.bdate_range("2026-01-01", "2026-11-27")), {})
+        ok("… la lecture de 13 h 30 à New York n'est plus « provisoire » ; celle de 12 h 30 l'est encore",
+           callable(s) and not thermometre.lecture(dfc, maintenant=u(11, 27, 18, 30), seance=s)["provisoire"]
+           and thermometre.lecture(dfc, maintenant=u(11, 27, 17, 30), seance=s)["provisoire"])
+        # Comme la vraie : la demande à Yahoo range les séances (ici, la séance courte du 24/12).
+        veille_de_noel = {"jour": (u(12, 24, 14, 30), u(12, 24, 18, 0)),
+                          "courante": (u(12, 24, 14, 30), u(12, 24, 18, 0)), "avant": None, "apres": None}
+        serveur.etat_de_la_bourse = lambda: appels.append(1) or serveur._seances_bourse.update(periode=veille_de_noel)
+        serveur._thermo_recent.update(valeur=None, quand=0.0)
+        serveur._seances_bourse.update(periode=None)
+        serveur.thermometre_du_marche()
+        s = vues[-1]
+        ok("sans séances gardées : il les demande une fois, puis lit celles qui viennent d'arriver",
+           appels == [1] and len(vues) == 2 and s(u(12, 24, 18, 30)) == "apres" and s(u(12, 24, 17, 0)) == "ouverte")
+
+        def yahoo_muet():
+            raise OSError("Yahoo muet")
+        serveur.etat_de_la_bourse = yahoo_muet
+        serveur._seances_bourse.update(periode=None)
+        serveur._thermo_recent.update(valeur=None, quand=0.0)
+        sortie_erreur = sys.stderr
+        sys.stderr = open(os.devnull, "w")       # la ligne « séances de Yahoo illisibles », voulue ici
+        try:
+            v = serveur.thermometre_du_marche()
+        except OSError:
+            v = None
+        finally:
+            sys.stderr.close()
+            sys.stderr = sortie_erreur
+        ok("… si cette demande échoue, le thermomètre est quand même lu : sans séance sur disque, 16 h à New York",
+           v is not None and v["lecture"]["date"] == "2026-11-27" and len(vues) == 3
+           and vues[-1](u(12, 24, 18, 30)) == "ouverte" and vues[-1](u(12, 24, 21, 0)) == "apres")
+    finally:
+        thermometre.thermometre = reel[0]
+        serveur.etat_de_la_bourse = reel[2]
+        serveur._thermo_recent.clear()
+        serveur._thermo_recent.update(reel[1])
+        serveur._seances_bourse.clear()
+        serveur._seances_bourse.update(reel[3])
         with serveur._cache_lock:
             serveur._cache.pop("/api/thermometre", None)
 
@@ -538,6 +606,7 @@ def main():
             bourse()
             seances()
             thermometre_panne()
+            thermometre_seance()
             statut_du_bot()
             sortie_d_erreur()
         finally:
