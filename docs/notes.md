@@ -1,6 +1,11 @@
 > **Notes techniques, en français.** Ce document était le README du projet :
 > le mode d'emploi au quotidien, les mesures du signal et leur historique.
 > La présentation du projet est dans le [README](../README.md).
+> Il s'arrête aux parties d'avant mi-novembre 2026 : les suivantes (Ma position,
+> le défi papier, le banc des prévisions, le mur des frais, le thermomètre, le
+> creux, le direct) sont décrites en tête de leur module (`ma_position.py`,
+> `papier.py`, `banc.py`, `seance.py`, `thermometre.py`, `creux.py`,
+> `cours_direct.py`).
 
 # Bots de trading
 
@@ -61,7 +66,7 @@ historique enregistré, et la fiabilité mesurée du signal. Il ne passe aucun
 ordre et n'utilise aucune clé d'API.
 
 **Comprendre les signaux** (`explications.html`, lien depuis le dashboard) :
-d'où vient une notification d'achat, comment le score est construit, et
+d'où viennent les notifications du bot, comment le score est construit, et
 surtout ce que valent ces signaux — chiffres à l'appui. Tous les nombres de
 cette page sont lus depuis `data/eval_report.json` et
 `data/ranking_report.json` et portent leur date de mesure : aucun n'est écrit
@@ -91,20 +96,22 @@ Le calendrier est mis en cache 24 h (`data/earnings_cache.json`) et rafraîchi
 et une page ne doit pas attendre le réseau. Seules les dates sont stockées, le
 nombre de jours se recalcule à l'affichage.
 
-**Mes positions.** La seule partie de la page qui écrit. Elle note les achats
-que tu as déjà passés chez ton courtier — quantité et prix d'entrée — et en
-affiche le P&L latent, valeur par valeur et au total. Le bot relit ce carnet
-à chaque cycle, ce qui lui permet de n'émettre un signal de vente que sur une
-valeur que tu détiens réellement.
+**Ma position** (depuis le 13/11/2026, à la place de l'ancien carnet « Mes
+positions »). Le carnet de bord (touche P) note les achats et les ventes déjà
+passés chez ton courtier, avec les euros vraiment payés, les frais et une
+phrase de raison, et compare chaque décision au S&P 500 : voir
+`ma_position.py`. Le bot relit son carnet en dollars
+(`data/stock_positions.json`, tenu à jour à chaque décision notée) à chaque
+cycle, ce qui lui permet de signaler le décrochage d'une valeur que tu détiens
+réellement.
 
-Les écritures se limitent à `data/stock_positions.json` : aucun ordre, aucune
-clé d'API. Elles exigent un en-tête `X-Dashboard` qu'une page tierce ne peut
-pas ajouter sans un préalable CORS auquel le serveur ne répond pas — sans
-quoi n'importe quel site ouvert dans ton navigateur pourrait écrire dans ton
-carnet, puisque le serveur écoute sur localhost. Le ticker doit appartenir à
-l'univers suivi, quantité et prix doivent être positifs, et le fichier est
-remplacé de façon atomique pour que le bot ne lise jamais un JSON à moitié
-écrit.
+Ce que la page peut écrire se limite au journal (avec le carnet du bot qu'il
+tient à jour) et au défi papier : aucun ordre, aucune clé d'API. Elles exigent un en-tête `X-Dashboard` qu'une page tierce ne peut
+pas ajouter sans un préalable CORS auquel le serveur ne répond pas, et le
+serveur ne répond qu'aux noms `localhost` et `127.0.0.1` — sans quoi
+n'importe quel site ouvert dans ton navigateur pourrait écrire dans ton
+carnet, puisque le serveur écoute sur localhost. Les fichiers sont remplacés
+d'un coup, pour que le bot ne lise jamais un JSON à moitié écrit.
 
 **Il est organisé autour du momentum**, le moins mauvais des critères
 testés (voir les réserves plus bas) : c'est la colonne mise en avant, le tri par défaut du tableau, la
@@ -148,7 +155,7 @@ des pixels, de l'immobilité, de l'opacité. Le dashboard n'est donc pas posé
 *sur* la ville : il est *dans* la pièce, sur du verre à 98 %, et chaque panneau
 ne montre qu'une chose.
 
-C'est aussi une question d'honnêteté. Ce README passe deux cents lignes à
+C'est aussi une question d'honnêteté. Ce document passe deux cents lignes à
 démonter ses propres résultats flatteurs — « autrement dit un pile ou face ».
 Un contenant est une affirmation : l'étage vitré ne dit rien des chiffres, il
 les tient à distance de lecture. Rien dans la ville ne commente un cours.
@@ -610,7 +617,7 @@ machine. Deux événements seulement déclenchent une alerte :
   signalée qu'une fois, et l'alerte se réarme si elle remonte.
 
 Pourquoi ce rythme plutôt qu'une alerte à chaque changement du classement ?
-Parce que la stratégie validée rééquilibre tous les dix jours avec 15 % de
+Parce que la stratégie mesurée rééquilibre tous les dix jours avec 15 % de
 rotation. Réagir à chaque mouvement produirait beaucoup plus de
 transactions — donc plus de frais, et un comportement qui n'est plus celui
 qui a été mesuré. Au premier lancement, la composition est enregistrée en
@@ -661,5 +668,5 @@ Tout est dans `.env`, et le dashboard les affiche en permanence en haut de page 
   réglage qui te sépare de l'argent réel** puisque `TESTNET=false`.
 - `STOP_LOSS_PCT`, `TAKE_PROFIT_PCT`, `MAX_DRAWDOWN_PCT`, `MAX_TRADES_PER_DAY`.
 
-`.env` contient une vraie clé API Binance, inutilisée depuis mai 2026 — si tu
-reprends, révoque-la et régénères-en une.
+La clé API Binance de `.env`, inutilisée depuis mai 2026, a été révoquée le
+05/11/2026 : pour reprendre les bots crypto, il faut en créer une nouvelle.

@@ -780,11 +780,13 @@ def verifier():
     sys.modules["yfinance"] = types.SimpleNamespace(Ticker=FauxTicker)
     _dernieres.clear()
     try:
-        c = thermometre._cours("^GSPC", "max", essais=1)
+        # Une période (« 5y »), pas « max » : depuis le 27/11/2026 (8eae845), « max » passe par un début
+        # (DEBUT_YAHOO), et ce faux Yahoo répond alors par sa série « start ». Le nettoyage est le même.
+        c = thermometre._cours("^GSPC", "5y", essais=1)
         ok("Yahoo : un fuseau (New York) retiré, la date en double gardée une fois (la dernière), en prix seul",
            list(c.index.strftime("%Y-%m-%d")) == ["2026-11-16", "2026-11-17", "2026-11-18", "2026-11-19"]
            and list(c.values) == [100.0, 70.0, 75.0, 80.0] and c.index.tz is None)
-        lire_vite = lambda s: thermometre._cours(s, "max", essais=1)    # noqa: E731
+        lire_vite = lambda s: thermometre._cours(s, "5y", essais=1)    # noqa: E731
         apres = ny(2026, 11, 23, 4, 0)
         r = creux_du_marche(maintenant=apres, lire=lire_vite)
         sp, nq = r["indices"]

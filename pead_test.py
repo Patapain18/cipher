@@ -35,8 +35,9 @@ USAGE
 """
 import warnings, json, os, sys
 warnings.filterwarnings('ignore')
-sys.path.insert(0, '/Users/Mathis/test2/trading-bot')
-os.chdir('/Users/Mathis/test2/trading-bot')
+ICI = os.path.dirname(os.path.abspath(__file__))   # le dossier du projet, où qu'il soit cloné
+sys.path.insert(0, ICI)
+os.chdir(ICI)
 import numpy as np, pandas as pd, yfinance as yf
 import stock_eval as se, stock_engine as engine
 
