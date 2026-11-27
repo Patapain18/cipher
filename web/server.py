@@ -401,6 +401,10 @@ def thermometre_du_marche():
     """
     import ma_position
     import thermometre
+    # Une lecture de moins de 120 s : rendue tout de suite, sans attendre les séances (seconde relecture).
+    with _thermo_verrou:
+        if _thermo_recent["valeur"] is not None and time.time() - _thermo_recent["quand"] < 120:
+            return _thermo_recent["valeur"]
     # Toujours consulter l'état de la Bourse : il ne relit Yahoo qu'au plus une fois par heure (5 min
     # Bourse fermée), et des séances d'un autre jour gardées en mémoire (un serveur lancé la veille)
     # ramenaient la clôture à 16 h (relecture du 27/11/2026).
