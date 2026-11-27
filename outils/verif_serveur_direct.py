@@ -472,10 +472,14 @@ def thermometre_panne():
 
 def thermometre_seance():
     print("Le thermomètre et la vraie fin de séance (séance courte du 27/11/2026)")
+    import threading
     import thermometre
     u = lambda m, j, h, mi: datetime(2026, m, j, h, mi, tzinfo=timezone.utc)
-    courte = {"jour": (u(11, 27, 14, 30), u(11, 27, 18, 0)), "courante": (u(11, 27, 14, 30), u(11, 27, 18, 0)),
-              "avant": None, "apres": None}
+    seance = lambda m, j, fin: {"jour": (u(m, j, 14, 30), fin), "courante": (u(m, j, 14, 30), fin),
+                                "avant": None, "apres": None}
+    courte = seance(11, 27, u(11, 27, 18, 0))           # le 27/11 : 9 h 30 – 13 h à New York
+    mercredi = seance(11, 25, u(11, 25, 21, 0))         # le 25/11 : une séance normale, la veille de Thanksgiving
+    veille_de_noel = seance(12, 24, u(12, 24, 18, 0))
     vues, appels = [], []
     reel = (thermometre.thermometre, dict(serveur._thermo_recent), serveur.etat_de_la_bourse,
             dict(serveur._seances_bourse))
@@ -483,47 +487,70 @@ def thermometre_seance():
     def faux(seance=None):
         vues.append(seance)
         return {"lecture": {"date": "2026-11-27", "niveau": 1}, "mesure": None, "avertissement": "…"}
-    thermometre.thermometre = faux
-    serveur.etat_de_la_bourse = lambda: appels.append(1)
-    try:
+
+    def lire(etat_de_la_bourse, periode):
+        """Une lecture du thermomètre par le serveur, avec cette etat_de_la_bourse et ces séances en mémoire."""
+        serveur.etat_de_la_bourse = etat_de_la_bourse
+        serveur._seances_bourse.update(periode=periode)
         serveur._thermo_recent.update(valeur=None, quand=0.0)
-        serveur._seances_bourse.update(periode=courte)
-        serveur.thermometre_du_marche()
-        s = vues[-1] if vues else None
+        del appels[:]
+        avant = len(vues)
+        v = serveur.thermometre_du_marche()
+        return v, (vues[-1] if len(vues) == avant + 1 else None)
+    thermometre.thermometre = faux
+    try:
+        _, s = lire(lambda: appels.append(1), courte)
         ok("le thermomètre reçoit la séance du serveur : « apres » dès la fin de la séance courte (13 h à New York)",
-           callable(s) and s(u(11, 27, 18, 30)) == "apres" and s(u(11, 27, 17, 0)) == "ouverte" and appels == [])
+           callable(s) and s(u(11, 27, 18, 30)) == "apres" and s(u(11, 27, 17, 0)) == "ouverte")
+        ok("… après avoir consulté l'état de la Bourse (qui décide seul s'il relit Yahoo)", appels == [1])
         dfc = thermometre.construire(pd.Series(100.0, index=pd.bdate_range("2026-01-01", "2026-11-27")), {})
         ok("… la lecture de 13 h 30 à New York n'est plus « provisoire » ; celle de 12 h 30 l'est encore",
            callable(s) and not thermometre.lecture(dfc, maintenant=u(11, 27, 18, 30), seance=s)["provisoire"]
            and thermometre.lecture(dfc, maintenant=u(11, 27, 17, 30), seance=s)["provisoire"])
-        # Comme la vraie : la demande à Yahoo range les séances (ici, la séance courte du 24/12).
-        veille_de_noel = {"jour": (u(12, 24, 14, 30), u(12, 24, 18, 0)),
-                          "courante": (u(12, 24, 14, 30), u(12, 24, 18, 0)), "avant": None, "apres": None}
-        serveur.etat_de_la_bourse = lambda: appels.append(1) or serveur._seances_bourse.update(periode=veille_de_noel)
-        serveur._thermo_recent.update(valeur=None, quand=0.0)
+
+        # Des séances d'un AUTRE jour en mémoire (le serveur tourne depuis la veille) : l'état de la Bourse
+        # les relit, et le thermomètre prend les nouvelles (relecture du 27/11/2026 : il gardait les vieilles).
+        _, s = lire(lambda: appels.append(2) or serveur._seances_bourse.update(periode=courte), mercredi)
+        ok("séances de la veille en mémoire : relues, et 13 h 30 à New York est « apres » (pas 16 h)",
+           appels == [2] and callable(s) and s(u(11, 27, 18, 30)) == "apres")
+
+        # Au démarrage, la position lit déjà les séances chez Yahoo (verrou pris) : la vraie etat_de_la_bourse()
+        # rend alors la main sans rien lire. Le thermomètre attend cette lecture au lieu de calculer sans elle.
+        pris = threading.Event()
+
+        def lecture_en_cours():
+            with serveur._seances_verrou:
+                pris.set()
+                time.sleep(0.4)
+                serveur._seances_bourse.update(periode=courte)
+        fil = threading.Thread(target=lecture_en_cours)
         serveur._seances_bourse.update(periode=None)
-        serveur.thermometre_du_marche()
-        s = vues[-1]
+        fil.start()
+        pris.wait(2)
+        _, s = lire(lambda: appels.append(3), None)
+        fil.join()
+        ok("au démarrage, une lecture des séances déjà en cours (la position) est attendue : 13 h 30 est « apres »",
+           callable(s) and s(u(11, 27, 18, 30)) == "apres")
+
+        # Sans séances en mémoire : la demande à Yahoo les range (comme la vraie), et elles servent aussitôt.
+        _, s = lire(lambda: appels.append(1) or serveur._seances_bourse.update(periode=veille_de_noel), None)
         ok("sans séances gardées : il les demande une fois, puis lit celles qui viennent d'arriver",
-           appels == [1] and len(vues) == 2 and s(u(12, 24, 18, 30)) == "apres" and s(u(12, 24, 17, 0)) == "ouverte")
+           appels == [1] and callable(s) and s(u(12, 24, 18, 30)) == "apres" and s(u(12, 24, 17, 0)) == "ouverte")
 
         def yahoo_muet():
             raise OSError("Yahoo muet")
-        serveur.etat_de_la_bourse = yahoo_muet
-        serveur._seances_bourse.update(periode=None)
-        serveur._thermo_recent.update(valeur=None, quand=0.0)
         sortie_erreur = sys.stderr
         sys.stderr = open(os.devnull, "w")       # la ligne « séances de Yahoo illisibles », voulue ici
         try:
-            v = serveur.thermometre_du_marche()
+            v, s = lire(yahoo_muet, None)
         except OSError:
-            v = None
+            v, s = None, None
         finally:
             sys.stderr.close()
             sys.stderr = sortie_erreur
         ok("… si cette demande échoue, le thermomètre est quand même lu : sans séance sur disque, 16 h à New York",
-           v is not None and v["lecture"]["date"] == "2026-11-27" and len(vues) == 3
-           and vues[-1](u(12, 24, 18, 30)) == "ouverte" and vues[-1](u(12, 24, 21, 0)) == "apres")
+           v is not None and v["lecture"]["date"] == "2026-11-27" and callable(s)
+           and s(u(12, 24, 18, 30)) == "ouverte" and s(u(12, 24, 21, 0)) == "apres")
     finally:
         thermometre.thermometre = reel[0]
         serveur.etat_de_la_bourse = reel[2]

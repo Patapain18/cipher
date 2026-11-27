@@ -762,12 +762,16 @@ def verifier():
 
     def courte(instant):
         demandes.append(instant)
+        if instant < datetime(2026, 11, 27, 9, 30, tzinfo=ny):
+            return "avant"
         return "ouverte" if instant < fin_courte else "apres"
     a_13h30 = datetime(2026, 11, 27, 13, 30, tzinfo=ny)
     ok("lecture : un jour de séance courte, à 13 h 30 à New York (fermé à 13 h), la lecture du jour n'est plus provisoire",
        not lecture(dfc, maintenant=a_13h30, seance=courte)["provisoire"] and demandes == [a_13h30])
     ok("lecture : … à 12 h 30, encore en séance, elle l'est",
        lecture(dfc, maintenant=datetime(2026, 11, 27, 12, 30, tzinfo=ny), seance=courte)["provisoire"])
+    ok("lecture : … avant l'ouverture (« avant »), une ligne du jour l'est aussi, comme avec 16 h",
+       lecture(dfc, maintenant=datetime(2026, 11, 27, 8, 0, tzinfo=ny), seance=courte)["provisoire"])
     ok("lecture : sans la séance du serveur, 16 h à New York comme avant (13 h 30 : provisoire)",
        lecture(dfc, maintenant=a_13h30)["provisoire"])
 

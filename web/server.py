@@ -401,12 +401,16 @@ def thermometre_du_marche():
     """
     import ma_position
     import thermometre
-    seances = _seances_bourse["periode"]
-    if seances is None:
-        try:
-            etat_de_la_bourse()
-        except Exception as e:      # sans les séances de Yahoo : celles du disque, sinon 16 h
-            print(f"[thermomètre] séances de Yahoo illisibles : {e}", file=sys.stderr)
+    # Toujours consulter l'état de la Bourse : il ne relit Yahoo qu'au plus une fois par heure (5 min
+    # Bourse fermée), et des séances d'un autre jour gardées en mémoire (un serveur lancé la veille)
+    # ramenaient la clôture à 16 h (relecture du 27/11/2026).
+    try:
+        etat_de_la_bourse()
+    except Exception as e:          # sans les séances de Yahoo : celles du disque, sinon 16 h
+        print(f"[thermomètre] séances de Yahoo illisibles : {e}", file=sys.stderr)
+    # Une lecture des séances déjà en cours (la position, au démarrage : etat_de_la_bourse() rend alors la
+    # main sans rien lire) est attendue, plutôt qu'un thermomètre calculé sans elle et gardé une heure.
+    with _seances_verrou:
         seances = _seances_bourse["periode"]
     with _thermo_verrou:
         if _thermo_recent["valeur"] is not None and time.time() - _thermo_recent["quand"] < 120:
