@@ -670,11 +670,35 @@ def etat_de_la_bourse():
             _, _, periode = papier.minute_de_seance(papier.INDICE)
             s.update(lu=time.time(), periode=periode)
             etat = papier.etat_bourse(datetime.now(timezone.utc), periode)
+            try:
+                # Une séance courte (13 h à New York) est gardée sur disque : Yahoo l'oublie dès la
+                # séance suivante, et un ordre passé après 13 h redevenait « en séance » (27/11/2026).
+                import ma_position
+                ma_position.retenir_seances(periode)
+            except Exception as e:
+                print(f"[position] séances courtes : {e}", file=sys.stderr)
         except Exception as e:
             print(f"[position] état de la Bourse : {e}", file=sys.stderr)
         finally:
             _seances_verrou.release()
     return etat
+
+
+def graphique_servi(ticker, periode):
+    """
+    /api/graphique : le graphique de ma_position avec les séances de Yahoo (la vraie fin d'une séance
+    courte), gardé en cache (GRAPHIQUE_CACHE). Tant que le serveur n'a pas lu les séances (démarrage,
+    Yahoo muet), il est calculé sans elles et gardé 30 s au plus, sous une autre clé : rangé sous la clé
+    normale, il serait resté sans elles jusqu'à une heure (relecture du 27/11/2026).
+    """
+    import ma_position
+    etat_de_la_bourse()
+    seances = _seances_bourse["periode"]
+    if seances is None:
+        return cached(f"/api/graphique?{ticker}&{periode}&sans-seances", min(30, GRAPHIQUE_CACHE[periode]),
+                      lambda: ma_position.graphique(ticker, periode))
+    return cached(f"/api/graphique?{ticker}&{periode}", GRAPHIQUE_CACHE[periode],
+                  lambda: ma_position.graphique(ticker, periode, seances=seances))
 
 
 def duree_cache_position():
@@ -698,7 +722,8 @@ def ma_position_en_direct():
     import ma_position
     bourse = etat_de_la_bourse()
     cours_direct.bourse(bourse)
-    p = ma_position.position(rang_de)
+    # Les séances de Yahoo disent aussi d'où vient chaque cours (une séance courte finit à 13 h).
+    p = ma_position.position(rang_de, seances=_seances_bourse["periode"])
     p["bourse"] = bourse
     return p
 
@@ -962,8 +987,7 @@ class Handler(SimpleHTTPRequestHandler):
                 raise ValueError("période : 1j, 1m ou 1a")
             # La valeur est vérifiée DANS la fonction, avant toute mise en
             # cache : un ticker inconnu ne remplit pas la mémoire du serveur.
-            payload, at = cached(f"/api/graphique?{ticker}&{periode}", GRAPHIQUE_CACHE[periode],
-                                 lambda: ma_position.graphique(ticker, periode))
+            payload, at = graphique_servi(ticker, periode)
             self._json(200, {"ok": True, "data": payload, "cached_at": at})
         except ValueError as e:
             self._json(400, {"ok": False, "error": str(e)})

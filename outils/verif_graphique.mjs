@@ -73,19 +73,24 @@ function attendus(g, decisions) {
   const dernierJour = dateNY(barres[barres.length - 1] * 1000);
   const sortieOrdres = [];
   let hors = 0;
+  // Les séances que Yahoo a données au serveur : celle d'un jour décide (une séance courte finit à 13 h).
+  const seancesYahoo = (Array.isArray(g.seances) ? g.seances : [])
+    .map((x) => ({ d: Date.parse(x?.debut), f: Date.parse(x?.fin) }))
+    .filter((x) => Number.isFinite(x.d) && Number.isFinite(x.f) && x.d < x.f);
   for (const d of decisions) {
     if (d.ticker !== g.ticker || !(Number(d.prix_eur) > 0)) continue;
     const ms = Date.parse(d.date_utc || d.date);
     if (!Number.isFinite(ms) || dateNY(ms) < premier) continue;
     const { semaine, minutes } = heureNY(ms);
-    const seance = !['Sat', 'Sun'].includes(semaine) && minutes >= 570 && minutes < 960;
+    const sj = seancesYahoo.find((x) => dateNY(x.d) === dateNY(ms));
+    const seance = sj ? ms >= sj.d && ms < sj.f : !['Sat', 'Sun'].includes(semaine) && minutes >= 570 && minutes < 960;
     // Hors séance : hors des heures de New York, ou un jour sans aucune barre (un jour férié).
     const horsSeance = !seance || (dateNY(ms) <= dernierJour && !joursAvecBarre.has(dateNY(ms)));
     if (horsSeance) hors += 1;
     let barre;
     if (g.periode === '1a') {
       const jour = dateNY(ms);
-      const apres = !seance && minutes >= 960;
+      const apres = !seance && (sj ? ms >= sj.f : minutes >= 960);
       barre = barres.find((b) => (apres ? dateNY(b * 1000) > jour : dateNY(b * 1000) >= jour));
     } else {
       const q = Math.floor(ms / 1000);
@@ -499,7 +504,7 @@ for (const [moteur, lancer] of Object.entries(MOTEURS)) {
     const { contexte, page } = await ouvrir(navigateur, ordi, URL_LC);
     await page.waitForFunction(() => window.PCGraphe, null, { timeout: 40000 }).catch(() => {});
     const r = await page.evaluate(() => {
-      const { barresDe, avecLeReste, placerOrdres, texteTemps, enSeance } = PCGraphe.outils;
+      const { barresDe, avecLeReste, placerOrdres, texteTemps, enSeance, seancesDe } = PCGraphe.outils;
       const s = (iso) => Date.parse(iso) / 1000;
       const res = {};
       /* Barres de 5 min du mardi 24/11/2026 à New York (heure d'hiver : 9 h 30 = 14 h 30 UTC). */
@@ -551,6 +556,28 @@ for (const [moteur, lancer] of Object.entries(MOTEURS)) {
       res.vides = { n: vides.length, premiereVide: vides[2].time - s('2026-11-24T14:30:00Z'), derniere: vides[vides.length - 1].time - s('2026-11-24T14:30:00Z'),
                     monte: vides.every((v, i) => i === 0 || v.time > vides[i - 1].time) };
       res.videsAutres = avecLeReste([{ time: 1, value: 1 }, { time: 2, value: 2 }], '1m').length;    // 2 : rien d'ajouté hors 1 jour
+      /* La séance courte du vendredi 27/11/2026 (9 h 30 – 13 h à New York = 14 h 30 – 18 h UTC), donnée par le
+         serveur ; les séances abîmées (heure illisible, absente, fin avant le début) sont écartées. */
+      const court = seancesDe({ seances: [{ debut: '2026-11-27T14:30:00+00:00', fin: '2026-11-27T18:00:00+00:00' },
+        { debut: 'x', fin: '2026-11-27T18:00:00+00:00' }, null, { debut: '2026-11-27T18:00:00+00:00', fin: '2026-11-27T14:30:00+00:00' }] });
+      res.courtLu = court.length === 1 && court[0].debut === s('2026-11-27T14:30:00Z') && court[0].fin === s('2026-11-27T18:00:00Z')
+        && seancesDe({}).length === 0 && seancesDe(null).length === 0 && seancesDe({ seances: 'abîmé' }).length === 0;
+      res.courtSeances = [enSeance(s('2026-11-27T17:59:00Z'), court), enSeance(s('2026-11-27T18:00:00Z'), court),
+        enSeance(s('2026-11-27T18:30:00Z'), court), enSeance(s('2026-11-27T18:30:00Z')), enSeance(s('2026-11-24T18:30:00Z'), court)];   // [true, false, false, true, true]
+      const b27 = [s('2026-11-27T14:30:00Z'), s('2026-11-27T14:35:00Z')].map((time, i) => ({ time, value: 100 + i }));
+      res.courtVides = avecLeReste(b27, '1j', court).length;      // 2 + de 14 h 40 à 17 h 55 UTC : 40 → 42
+      res.courtVidesSans = avecLeReste(b27, '1j').length;         // 2 + de 14 h 40 à 20 h 55 UTC : 76 → 78
+      res.courtApres = placerOrdres(b27, [d('2026-11-27T18:30:00Z')], 'AMD', '1j', court);   // 13 h 30 NY : la dernière barre [1], hors 1
+      res.courtApresSans = placerOrdres(b27, [d('2026-11-27T18:30:00Z')], 'AMD', '1j');      // sans Yahoo : [1], hors 0
+      const bj27 = ['2026-11-27', '2026-11-30'].map((j, i) => ({ time: s(`${j}T12:00:00Z`), value: 100 + i }));
+      res.courtAn = placerOrdres(bj27, [d('2026-11-27T18:30:00Z')], 'AMD', '1a', court);     // après 13 h → lundi 30 [1], hors 1
+      res.courtAnSans = placerOrdres(bj27, [d('2026-11-27T18:30:00Z')], 'AMD', '1a');        // sans Yahoo : le 27 [0], hors 0
+      /* Le jour d'une séance se compte à New York : 20 h le 24/11 à New York (1 h UTC le 25), après la
+         clôture du 24 → la barre du 25 ; compté en UTC, il tomberait « avant » la séance du 25 → le 24. */
+      const s2425 = seancesDe({ seances: [{ debut: '2026-11-24T14:30:00Z', fin: '2026-11-24T21:00:00Z' },
+                                          { debut: '2026-11-25T14:30:00Z', fin: '2026-11-25T21:00:00Z' }] });
+      const bj2425 = ['2026-11-24', '2026-11-25'].map((j, i) => ({ time: s(`${j}T12:00:00Z`), value: 100 + i }));
+      res.jourNY = placerOrdres(bj2425, [d('2026-11-25T01:00:00Z')], 'AMD', '1a', s2425);       // [1], hors 1
       return res;
     });
     ok(JSON.stringify(r.dansUneBarre) === '[1]', 'calcul : un ordre pendant une barre va sur elle');
@@ -575,6 +602,18 @@ for (const [moteur, lancer] of Object.entries(MOTEURS)) {
     ok(r.vides.monte && r.vides.premiereVide === 900 && r.vides.derniere === 6.5 * 3600 - 300 && r.vides.n === 2 + (6.5 * 3600 - 900) / 300,
       'calcul : les cases vides de la séance, après une barre hors grille, jusqu\'à 15 h 55 à New York');
     ok(r.videsAutres === 2, 'calcul : pas de cases vides hors de 1 jour');
+    ok(r.courtLu === true, 'calcul : les séances de Yahoo lues du serveur, les abîmées écartées (heure illisible, absente, fin avant le début)');
+    ok(JSON.stringify(r.courtSeances) === '[true,false,false,true,true]',
+      'calcul : séance courte du 27/11, 12 h 59 en séance, 13 h et 13 h 30 hors séance ; sans Yahoo, 13 h 30 restait en séance ; un autre jour garde 9 h 30 – 16 h');
+    ok(r.courtVides === 42 && r.courtVidesSans === 78,
+      `calcul : un jour de séance courte, les cases vides s'arrêtent à 12 h 55 à New York (${r.courtVides} cases ; ${r.courtVidesSans} jusqu'à 15 h 55 sans Yahoo)`);
+    ok(JSON.stringify(r.courtApres.ordres.map((o) => o.i)) === '[1]' && r.courtApres.hors === 1 && r.courtApresSans.hors === 0,
+      'calcul : un ordre de 13 h 30 un jour de séance courte est hors séance (en séance sans les séances de Yahoo)');
+    ok(JSON.stringify(r.courtAn.ordres.map((o) => o.i)) === '[1]' && r.courtAn.hors === 1
+      && JSON.stringify(r.courtAnSans.ordres.map((o) => o.i)) === '[0]' && r.courtAnSans.hors === 0,
+      'calcul 1 an : après la clôture de 13 h un jour de séance courte → la séance suivante (le jour même sans Yahoo)');
+    ok(JSON.stringify(r.jourNY.ordres.map((o) => o.i)) === '[1]' && r.jourNY.hors === 1,
+      'calcul 1 an : le jour d\'une séance se compte à New York (20 h le 24, 1 h UTC le 25 → la barre du 25)');
     await contexte.close();
   }
   await navigateur.close();
@@ -794,6 +833,42 @@ for (const [moteur, lancer] of Object.entries(MOTEURS)) {
     const revenu = await pret(page, '1m', 40000);
     const v = await page.evaluate(() => ({ cache: document.getElementById('pc-graphe').hidden, msg: !document.getElementById('pc-graphe-msg').hidden }));
     ok(revenu && !v.cache && !v.msg, 'chrome panne puis retour : un clic sur 1 mois redessine le graphique, sans le message');
+    await contexte.close();
+  }
+
+  /* Les séances du serveur arrivent jusqu'au dessin (dessiner) et aux flèches (ordres) : une séance
+     annoncée jusqu'à 17 h à New York allonge le blanc d'« 1 jour » jusque-là, et un ordre de 16 h 30
+     y est en séance (relecture du 27/11/2026 : seuls les calculs étaient vérifiés). */
+  {
+    let injecte = null;
+    const { contexte, page } = await ouvrir(navigateur, ordi, URL_LC, { routes: (pg) => pg.route('**/api/graphique**', async (r) => {
+      const u = new URL(r.request().url());
+      if (u.searchParams.get('periode') !== '1j') return r.continue();
+      const rep = await r.fetch();
+      const j = await rep.json();
+      const debut = Date.parse(j.data.points[0].t);
+      injecte = { ticker: u.searchParams.get('ticker'), debut: new Date(debut).toISOString(),
+                  fin: new Date(debut + 7.5 * 3600e3).toISOString() };
+      j.data.seances = [{ debut: injecte.debut, fin: injecte.fin }];
+      return r.fulfill({ response: rep, json: j });
+    }) });
+    if (await pret(page, '1j', 60000) && injecte) {
+      const v = await page.evaluate((s) => {
+        const e = PCGraphe.essai();
+        const debut = e.barres[0].time;
+        const fin = Date.parse(s.fin) / 1000;
+        const derniere = e.barres[e.barres.length - 1].time;
+        let vides = 0;
+        for (let t = debut + 300 * (Math.floor((derniere - debut) / 300) + 1); t < fin; t += 300) vides += 1;
+        const ordre = { ticker: s.ticker, sens: 'achat', prix_eur: e.barres[0].value,
+                        date_utc: new Date((debut + 7 * 3600) * 1000).toISOString() };
+        return { nTotal: e.nTotal, attendu: e.barres.length + vides, debutJuste: debut === Date.parse(s.debut) / 1000,
+                 hors: PCGraphe.ordres([ordre])?.hors };
+      }, injecte);
+      ok(v.debutJuste && v.nTotal === v.attendu,
+        `chrome séances : la séance du serveur arrive jusqu'au dessin (${v.nTotal} cases, ${v.attendu} attendues)`);
+      ok(v.hors === 0, 'chrome séances : … et jusqu\'aux flèches (un ordre de 16 h 30 en séance si elle va jusqu\'à 17 h)');
+    } else ok(false, 'chrome séances : le graphique se dessine');
     await contexte.close();
   }
 

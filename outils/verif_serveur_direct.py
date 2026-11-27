@@ -218,7 +218,7 @@ def journal_et_cache():
     reel = (serveur.etat_de_la_bourse, cours_direct.bourse, ma_position.position)
     serveur.etat_de_la_bourse = lambda: "fermee"
     cours_direct.bourse = lambda e: ordre.append(("bourse", e))
-    ma_position.position = lambda rang_de=None: ordre.append(("position",)) or {"lignes": []}
+    ma_position.position = lambda rang_de=None, seances=None: ordre.append(("position",)) or {"lignes": []}
     try:
         p = serveur.ma_position_en_direct()
         ok("l'ordre : la Bourse, puis la position ; et la position la dit",
@@ -305,6 +305,80 @@ def bourse():
                 os.environ[cle] = v
 
 
+def seances():
+    print("Les séances de Yahoo dans la position et le graphique (séance courte, 27/11/2026)")
+    import ma_position
+    u = lambda j, h, mi: datetime(2026, 11, j, h, mi, tzinfo=timezone.utc)
+    courte = {"jour": (u(27, 14, 30), u(27, 18, 0)), "courante": (u(27, 14, 30), u(27, 18, 0)),
+              "avant": None, "apres": None}
+    vus = {"position": [], "graphique": [], "retenues": []}
+    reel = (ma_position.position, ma_position.graphique, ma_position.retenir_seances, serveur.etat_de_la_bourse,
+            dict(serveur._seances_bourse), papier.minute_de_seance, os.environ.get("FLUX_URL"),
+            os.environ.get("FLUX_BOURSE"))
+
+    def fausse_position(rang_de=None, seances=None):
+        vus["position"].append(seances)
+        return {"lignes": [], "total": {}, "direct": {}}
+
+    def faux_graphique(ticker, periode, seances=None):
+        vus["graphique"].append(seances)
+        return {"ticker": ticker, "periode": periode}
+    ma_position.position, ma_position.graphique = fausse_position, faux_graphique
+    for cle in ("FLUX_URL", "FLUX_BOURSE"):
+        os.environ.pop(cle, None)
+    erreur_avant = sys.stderr
+    sys.stderr = open(os.devnull, "w")       # la ligne « séances courtes : disque plein », voulue ici
+    try:
+        serveur.etat_de_la_bourse = lambda: "ouverte"
+        serveur._seances_bourse.update(periode=courte)
+        serveur.ma_position_en_direct()
+        ok("la position reçoit les séances que le serveur garde", vus["position"] == [courte])
+        with serveur._cache_lock:
+            serveur._cache.clear()
+        serveur.graphique_servi("SPY", "1a")
+        serveur.graphique_servi("SPY", "1a")
+        ok("le graphique les reçoit aussi, gardé en cache (un calcul pour deux demandes)", vus["graphique"] == [courte])
+        serveur._seances_bourse.update(periode=None)
+        with serveur._cache_lock:
+            serveur._cache.clear()
+        vus["graphique"].clear()
+        serveur.graphique_servi("SPY", "1a")
+        ok("séances pas encore lues : calculé sans elles, et pas rangé sous la clé normale (1 h)",
+           vus["graphique"] == [None] and "/api/graphique?SPY&1a" not in serveur._cache)
+        serveur._seances_bourse.update(periode=courte)
+        serveur.graphique_servi("SPY", "1a")
+        ok("… dès qu'elles sont lues, le graphique les a (pas le calcul fait sans elles)",
+           vus["graphique"] == [None, courte])
+        serveur.etat_de_la_bourse = reel[3]
+        ma_position.retenir_seances = lambda p: vus["retenues"].append(p)
+        papier.minute_de_seance = lambda symbole, relire=False: (700.0, u(27, 15, 0), courte)
+        serveur._seances_bourse.update(lu=0.0, periode=None, essai=0.0)
+        serveur.etat_de_la_bourse()
+        ok("chaque lecture des séances de Yahoo est donnée à ma_position.retenir_seances", vus["retenues"] == [courte])
+
+        def disque_plein(_):
+            raise OSError("disque plein")
+        ma_position.retenir_seances = disque_plein
+        serveur._seances_bourse.update(lu=0.0, periode=None, essai=0.0)
+        ok("… et un disque plein ne casse pas l'état de la Bourse (séances gardées en mémoire)",
+           serveur.etat_de_la_bourse() in ("avant", "ouverte", "apres", "fermee")
+           and serveur._seances_bourse["periode"] is courte)
+    finally:
+        sys.stderr.close()
+        sys.stderr = erreur_avant
+        (ma_position.position, ma_position.graphique, ma_position.retenir_seances, serveur.etat_de_la_bourse) = reel[:4]
+        serveur._seances_bourse.clear()
+        serveur._seances_bourse.update(reel[4])
+        papier.minute_de_seance = reel[5]
+        with serveur._cache_lock:
+            serveur._cache.clear()
+        for cle, v in (("FLUX_URL", reel[6]), ("FLUX_BOURSE", reel[7])):
+            if v is None:
+                os.environ.pop(cle, None)
+            else:
+                os.environ[cle] = v
+
+
 def sortie_d_erreur():
     print("La sortie d'erreur quand l'appli lance le serveur")
     script = ("import importlib.util, os, sys\n"
@@ -335,11 +409,27 @@ def sortie_d_erreur():
 
 
 def main():
-    references()
-    tableau()
-    journal_et_cache()
-    bourse()
-    sortie_d_erreur()
+    import ma_position
+    # Rien dans data/ : les séances courtes que le serveur garde vont à côté du journal, et un premier
+    # essai du 27/11/2026 y avait écrit les séances inventées de bourse(). Le journal pointe donc vers
+    # un dossier jetable pendant tout l'essai, et le vrai fichier est surveillé.
+    vrai = os.path.join(PROJET, "data", "seances_courtes.json")
+    photo = lambda: os.stat(vrai).st_mtime_ns if os.path.exists(vrai) else None
+    avant, reel_journal = photo(), ma_position.JOURNAL
+    with tempfile.TemporaryDirectory() as dossier:
+        ma_position.JOURNAL = os.path.join(dossier, "journal.json")
+        ma_position._seances_gardees["chemin"] = None
+        try:
+            references()
+            tableau()
+            journal_et_cache()
+            bourse()
+            seances()
+            sortie_d_erreur()
+        finally:
+            ma_position.JOURNAL = reel_journal
+            ma_position._seances_gardees["chemin"] = None
+    ok("rien n'a été écrit dans data/ (data/seances_courtes.json inchangé)", photo() == avant)
     print(f"\n{sum(cas)}/{len(cas)} vérifications réussies")
     sys.exit(0 if all(cas) else 1)
 

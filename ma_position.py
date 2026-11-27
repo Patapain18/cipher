@@ -122,10 +122,101 @@ def _offert(d):
     return d["sens"] == "achat" and d.get("offert") is True
 
 
-def seance_du_cours(heure_utc):
-    """D'où vient un cours, d'après l'heure de New York : « avant » (avant 9 h 30), « ouverte », « apres » (16 h et plus).
-    Une séance raccourcie (13 h) n'est pas connue ici : son après-séance s'écrit « ouverte » jusqu'à 16 h."""
+def _seances_yahoo(seances):
+    """Les séances normales que Yahoo a données au serveur (papier._seances_de_yahoo : « jour », la
+    dernière séance commencée, puis « courante », celle en cours ou à venir), en (début, fin) UTC.
+    Rien si le serveur n'a encore rien lu, ou pour une séance abîmée."""
+    if not isinstance(seances, dict):
+        return []
+    sortie = []
+    for cle in ("jour", "courante"):
+        try:
+            debut, fin = seances.get(cle)
+            if debut.utcoffset() is not None and fin.utcoffset() is not None and debut < fin:
+                sortie.append((debut, fin))
+        except (TypeError, ValueError, AttributeError):
+            continue
+    return sortie
+
+
+# Les séances courtes vues chez Yahoo (New York ferme à 13 h le lendemain de Thanksgiving et la veille de
+# Noël), gardées à côté du journal (data/seances_courtes.json ; data/essai/… pour l'essai). Yahoo ne donne
+# que la dernière séance commencée et la suivante : sans ce fichier, un ordre passé après 13 h ce jour-là
+# redevenait « en séance » dès la séance suivante (relecture du 27/11/2026). Une séance normale
+# (9 h 30 – 16 h) n'y est jamais écrite : c'est la règle par défaut. Seul le serveur l'écrit.
+_seances_gardees = {"chemin": None, "valeurs": {}, "lisible": True}
+_verrou_seances = threading.Lock()
+
+
+def _chemin_seances_courtes():
+    return os.path.join(os.path.dirname(os.path.abspath(JOURNAL)), "seances_courtes.json")
+
+
+def _lire_seances_courtes():
+    """Les séances courtes gardées, {jour de New York : (début, fin) en UTC}, lues une fois par fichier.
+    Une ligne abîmée est sautée ; un fichier illisible n'est jamais remplacé."""
+    chemin = _chemin_seances_courtes()
+    if _seances_gardees["chemin"] != chemin:
+        valeurs, lisible = {}, True
+        try:
+            with open(chemin) as f:
+                brut = json.load(f)
+            for jour, paire in brut.items():
+                try:
+                    debut, fin = (datetime.fromisoformat(x) for x in paire)
+                    if debut.utcoffset() is not None and fin.utcoffset() is not None and debut < fin:
+                        valeurs[str(jour)] = (debut.astimezone(timezone.utc), fin.astimezone(timezone.utc))
+                except (TypeError, ValueError):
+                    continue
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, AttributeError) as e:
+            print(f"[ma_position] {chemin} illisible, gardé tel quel : {e}", file=sys.stderr)
+            lisible = False
+        _seances_gardees.update(chemin=chemin, valeurs=valeurs, lisible=lisible)
+    return _seances_gardees
+
+
+def retenir_seances(seances):
+    """Garde sur disque les séances courtes que Yahoo vient de donner au serveur (à chaque lecture de ses
+    séances, une fois par heure au plus). Seule une vraie séance courte est écrite : elle commence à
+    9 h 30 et finit avant 16 h, le même jour à New York (une séance normale ou une heure de fantaisie,
+    jamais : un essai du serveur avait écrit des séances inventées dans data/, le 27/11/2026)."""
+    nouvelles = {}
+    for debut, fin in _seances_yahoo(seances):
+        d, f = debut.astimezone(ZoneInfo("America/New_York")), fin.astimezone(ZoneInfo("America/New_York"))
+        if (d.date() == f.date() and (d.hour, d.minute, d.second, d.microsecond) == (9, 30, 0, 0)
+                and f.second == 0 and f.microsecond == 0 and f.hour * 60 + f.minute < 16 * 60):
+            nouvelles[d.date().isoformat()] = (debut.astimezone(timezone.utc), fin.astimezone(timezone.utc))
+    if not nouvelles:
+        return
+    with _verrou_seances:
+        g = _lire_seances_courtes()
+        if not g["lisible"] or all(g["valeurs"].get(j) == p for j, p in nouvelles.items()):
+            return
+        valeurs = {**g["valeurs"], **nouvelles}
+        try:
+            _ecrire(g["chemin"], {j: [d.isoformat(), f.isoformat()] for j, (d, f) in sorted(valeurs.items())})
+            g["valeurs"] = valeurs
+        except OSError as e:
+            print(f"[ma_position] séances courtes pas gardées : {e}", file=sys.stderr)
+
+
+def _seances_connues(seances):
+    """Les séances de Yahoo d'abord, puis les séances courtes gardées sur disque."""
+    return _seances_yahoo(seances) + list(_lire_seances_courtes()["valeurs"].values())
+
+
+def seance_du_cours(heure_utc, seances=None):
+    """D'où vient un cours : « avant » (avant-séance), « ouverte » (séance normale) ou « apres ».
+    Si Yahoo a donné la séance du même jour de New York (`seances`, gardées par le serveur), ou si une
+    séance courte de ce jour est gardée sur disque, elle décide : une séance raccourcie finit donc à
+    13 h (le lendemain de Thanksgiving, la veille de Noël ; corrigé le 27/11/2026, jour d'une séance
+    courte). Sinon : 9 h 30 – 16 h à New York."""
     ny = heure_utc.astimezone(ZoneInfo("America/New_York"))
+    for debut, fin in _seances_connues(seances):
+        if debut.astimezone(ZoneInfo("America/New_York")).date() == ny.date():
+            return "avant" if heure_utc < debut else "ouverte" if heure_utc < fin else "apres"
     minutes = ny.hour * 60 + ny.minute
     return "avant" if minutes < 9 * 60 + 30 else "apres" if minutes >= 16 * 60 else "ouverte"
 
@@ -636,10 +727,11 @@ def ajouter_decision(payload):
 #  CE QUE LIT LE TABLEAU DE BORD
 # ══════════════════════════════════════════════════════════════════
 
-def position(rang_de=None):
+def position(rang_de=None, seances=None):
     """
     La position en direct. `rang_de(ticker)` donne (rang, classées) depuis
-    le dernier scan du serveur, s'il en a un.
+    le dernier scan du serveur, s'il en a un ; `seances`, les séances de
+    Yahoo gardées par le serveur (seance_du_cours).
 
     Chaque ligne compte comme le courtier : depuis son prix d'achat, une
     action offerte depuis son prix du jour du cadeau. Le TOTAL répond à
@@ -659,7 +751,7 @@ def position(rang_de=None):
         prix_usd, heure = lu
         c = calcul_ligne(l["quantite"], l["cout_eur"], l["montant_eur"], prix_usd, eurusd)
         rang, classees = rang_de(l["ticker"]) if rang_de else (None, None)
-        lignes.append({**l, **c, "cours_a": heure.isoformat(), "seance_du_cours": seance_du_cours(heure),
+        lignes.append({**l, **c, "cours_a": heure.isoformat(), "seance_du_cours": seance_du_cours(heure, seances),
                        "source_du_cours": source_du_cours(lu),
                        "rang": rang, "classees": classees,
                        "suivie_par_le_bot": l["ticker"] in engine.UNIVERSE,
@@ -830,8 +922,10 @@ PERIODES = {"1j": dict(period="5d", interval="5m"),
             "1a": dict(period="2y", interval="1d")}
 
 
-def graphique(ticker, periode):
-    """Le cours en dollars et en euros, la ligne d'achat, et pour 1a les indicateurs."""
+def graphique(ticker, periode, seances=None):
+    """Le cours en dollars et en euros, la ligne d'achat, pour 1a les indicateurs, et les séances
+    normales connues de Yahoo (`seances`, gardées par le serveur) : le graphique y lit la vraie fin
+    d'une séance raccourcie, pour ses cases vides et ses ordres hors séance (27/11/2026)."""
     if periode not in PERIODES:
         raise ValueError("période : 1j, 1m ou 1a")
     if ticker != INDICE and ticker not in valeurs_du_journal():
@@ -845,7 +939,9 @@ def graphique(ticker, periode):
         cours, fx = cours[garde], fx[garde]
     sortie = {"ticker": ticker, "periode": periode, "indicateurs": None,
               "points": [{"t": t.isoformat(), "usd": round(float(u), 4), "eur": round(float(u / x), 4)}
-                         for t, u, x in zip(cours.index, cours.values, fx.values)]}
+                         for t, u, x in zip(cours.index, cours.values, fx.values)],
+              "seances": [{"debut": d.isoformat(), "fin": f.isoformat()}
+                          for d, f in dict.fromkeys(_seances_connues(seances))]}
     ligne = next((l for l in agreger(lire_journal()) if l["ticker"] == ticker), None)
     if ligne:
         sortie["achat"] = {"eur": ligne["montant_eur"] / ligne["quantite"],
@@ -1164,6 +1260,91 @@ def _verifier_lot3(ok, proche):
                [seance_du_cours(datetime(2026, 11, 17, h, mi, tzinfo=timezone.utc))
                 for h, mi in ((13, 0), (14, 29), (14, 30), (20, 59), (21, 0), (21, 30))]
                == ["avant", "avant", "ouverte", "ouverte", "apres", "apres"])
+
+            # ── La séance courte du vendredi 27/11/2026 (9 h 30 – 13 h à New York, soit 14 h 30 – 18 h UTC),
+            # telle que papier._seances_de_yahoo la rend au serveur.
+            u = lambda j, h, mi: datetime(2026, 11, j, h, mi, tzinfo=timezone.utc)
+            courte = {"jour": (u(27, 14, 30), u(27, 18, 0)), "courante": (u(27, 14, 30), u(27, 18, 0)),
+                      "avant": (u(27, 9, 0), u(27, 14, 30)), "apres": (u(27, 18, 0), u(28, 1, 0))}
+            ok("séance courte (27/11, 13 h à New York) : 12 h 59 séance, 13 h et 15 h 30 après-séance, 9 h 29 "
+               "avant-séance ; sans les séances de Yahoo, 15 h 30 restait « séance »",
+               [seance_du_cours(u(27, h, mi), courte) for h, mi in ((17, 59), (18, 0), (20, 30), (14, 29))]
+               == ["ouverte", "apres", "apres", "avant"] and seance_du_cours(u(27, 20, 30)) == "ouverte")
+            ok("la séance courte d'un autre jour ne change rien (le 24/11 : 15 h 30 séance, 16 h après-séance)",
+               [seance_du_cours(u(24, h, mi), courte) for h, mi in ((20, 30), (21, 0))] == ["ouverte", "apres"])
+            ok("des séances absentes ou abîmées : les heures habituelles, sans erreur",
+               all(seance_du_cours(u(27, 20, 30), s) == "ouverte"
+                   for s in (None, {}, {"jour": None}, {"jour": ("x", "y")}, {"jour": (u(27, 14, 30),)},
+                             {"jour": (u(27, 18, 0), u(27, 14, 30))},
+                             {"jour": (datetime(2026, 11, 27, 14, 30), datetime(2026, 11, 27, 18, 0))},
+                             "abîmé", 3)))
+            cours_actuel = lambda symbole: ({"SPY": 702.9, "EURUSD=X": 1.10, "MSFT": 220.0}[symbole], u(27, 20, 30))
+            _ecrire(JOURNAL, [achat1])
+            ok("« Ta position » : un cours de 15 h 30 à New York le 27/11 est d'après-séance avec les séances de "
+               "Yahoo, « séance » sans elles",
+               position(seances=courte)["lignes"][0]["seance_du_cours"] == "apres"
+               and position()["lignes"][0]["seance_du_cours"] == "ouverte")
+            barres = pd.DatetimeIndex([pd.Timestamp("2026-11-27 14:30", tz="UTC"),
+                                       pd.Timestamp("2026-11-27 17:55", tz="UTC")])
+            _historique = lambda symbole, **kw: pd.Series([1.10 if symbole == CHANGE else 600.0] * 2, index=barres)
+            ok("le graphique donne la séance de Yahoo une seule fois (« jour » et « courante » sont la même) : "
+               "le 27/11 de 14 h 30 à 18 h UTC",
+               graphique(INDICE, "1j", courte)["seances"]
+               == [{"debut": "2026-11-27T14:30:00+00:00", "fin": "2026-11-27T18:00:00+00:00"}])
+            ok("sans séances de Yahoo (pas encore lues, ou abîmées), le graphique n'en donne aucune",
+               graphique(INDICE, "1j")["seances"] == [] and graphique(INDICE, "1j", {"jour": "abîmé"})["seances"] == [])
+            # « jour » et « courante » différentes (la relecture du 27/11 : les cas d'avant les donnaient égales).
+            veille_et_courte = {"jour": (u(25, 14, 30), u(25, 21, 0)), "courante": (u(27, 14, 30), u(27, 18, 0))}
+            ok("avant l'ouverture du 27/11, la séance « courante » (pas encore commencée) décide déjà : "
+               "13 h 30 à New York → après-séance",
+               seance_du_cours(u(27, 18, 30), veille_et_courte) == "apres")
+            vendredi_soir = {"jour": (u(27, 14, 30), u(27, 18, 0)), "courante": (u(30, 14, 30), u(30, 21, 0))}
+            ok("vendredi soir, « courante » est déjà lundi : la séance « jour » décide pour le 27",
+               seance_du_cours(u(27, 18, 30), vendredi_soir) == "apres")
+            ok("le jour se compte à New York : un cours de 20 h le 26/11 (1 h UTC le 27) n'est pas « avant » le 27",
+               seance_du_cours(u(27, 1, 0), veille_et_courte) == "apres")
+            ok("« jour » passe avant « courante » quand les deux parlent du même jour",
+               seance_du_cours(u(27, 19, 0), {"jour": (u(27, 14, 30), u(27, 18, 0)),
+                                              "courante": (u(27, 14, 30), u(27, 21, 0))}) == "apres")
+
+            # ── Les séances courtes gardées sur disque, à côté du journal (relecture du 27/11/2026).
+            gardees = os.path.join(dossier, "seances_courtes.json")
+            _seances_gardees["chemin"] = None
+            retenir_seances({"jour": (u(25, 14, 30), u(25, 21, 0)), "courante": (u(25, 14, 30), u(25, 21, 0))})
+            retenir_seances({"jour": (u(27, 9, 1), u(27, 15, 1)), "courante": (u(26, 14, 1), u(26, 20, 1))})
+            retenir_seances({"jour": (u(27, 14, 30), u(27, 21, 30))})
+            ok("une séance normale n'est jamais gardée, ni une séance qui ne commence pas à 9 h 30 à New York, "
+               "ni une qui finit après 16 h", not os.path.exists(gardees))
+            retenir_seances(courte)
+            with open(gardees) as f:
+                ok("la séance courte du 27/11 est gardée à côté du journal",
+                   json.load(f) == {"2026-11-27": ["2026-11-27T14:30:00+00:00", "2026-11-27T18:00:00+00:00"]})
+            lundi = {"jour": (u(30, 14, 30), u(30, 21, 0)), "courante": (u(30, 14, 30), u(30, 21, 0))}
+            ok("lundi 30/11, Yahoo ne donne plus le 27 : 13 h 30 à New York ce jour-là reste après-séance",
+               seance_du_cours(u(27, 18, 30), lundi) == "apres" and seance_du_cours(u(27, 18, 30)) == "apres")
+            _seances_gardees["chemin"] = None          # comme au lancement suivant de l'appli
+            ok("… et au lancement suivant (relue sur disque), comme dans le graphique du lundi",
+               seance_du_cours(u(27, 18, 30), lundi) == "apres"
+               and {"debut": "2026-11-27T14:30:00+00:00", "fin": "2026-11-27T18:00:00+00:00"}
+               in graphique(INDICE, "1j", lundi)["seances"])
+            fichier_avant = os.stat(gardees).st_ino
+            retenir_seances(courte)
+            with open(gardees) as f:
+                ok("la même séance revue n'est pas réécrite (le même fichier, une seule séance)",
+                   os.stat(gardees).st_ino == fichier_avant and len(json.load(f)) == 1)
+            with open(gardees, "w") as f:
+                f.write("{abîmé")
+            _seances_gardees["chemin"] = None
+            ancienne_sortie = sys.stderr
+            sys.stderr = open(os.devnull, "w")       # la ligne « illisible, gardé tel quel », voulue ici
+            try:
+                retenir_seances({"jour": (u(24, 14, 30), u(24, 18, 0))})
+                ok("un fichier de séances abîmé n'est jamais remplacé, et ne casse rien (heures habituelles)",
+                   open(gardees).read() == "{abîmé" and seance_du_cours(u(27, 18, 30), lundi) == "ouverte")
+            finally:
+                sys.stderr.close()
+                sys.stderr = ancienne_sortie
+            _seances_gardees["chemin"] = None
         finally:
             JOURNAL, CARNET, cours_a, cours_actuel, _historique = reel
             _memo_passe.clear()

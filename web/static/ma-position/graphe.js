@@ -50,9 +50,21 @@ window.PCGraphe = (() => {
     const p = Object.fromEntries(F.partiesNY.formatToParts(enDate(secondes)).map((x) => [x.type, x.value]));
     return { semaine: p.weekday, minutes: Number(p.hour) * 60 + Number(p.minute) };
   }
-  /* En séance normale de New York : en semaine, de 9 h 30 à 16 h (les jours fériés ne sont
-     pas connus, comme dans PP.bourse). */
-  function enSeance(secondes) {
+  /* Les séances normales que Yahoo a données au serveur (`g.seances`, des heures ISO), en
+     secondes ; celle d'un jour de New York, s'il y en a une. Elles portent la vraie fin d'une
+     séance raccourcie : 13 h à New York le lendemain de Thanksgiving (27/11/2026). */
+  function seancesDe(g) {
+    return (Array.isArray(g?.seances) ? g.seances : [])
+      .map((x) => ({ debut: Date.parse(x?.debut) / 1000, fin: Date.parse(x?.fin) / 1000 }))
+      .filter((x) => Number.isFinite(x.debut) && Number.isFinite(x.fin) && x.debut < x.fin);
+  }
+  const seanceDu = (seances, jour) => (seances || []).find((x) => jourNY(x.debut) === jour);
+
+  /* En séance normale de New York : la séance de Yahoo pour ce jour-là s'il la connaît, sinon
+     en semaine de 9 h 30 à 16 h (les jours fériés ne sont pas connus, comme dans PP.bourse). */
+  function enSeance(secondes, seances) {
+    const s = seanceDu(seances, jourNY(secondes));
+    if (s) return secondes >= s.debut && secondes < s.fin;
     const { semaine, minutes } = ny(secondes);
     return semaine !== 'Sat' && semaine !== 'Sun' && minutes >= 570 && minutes < 960;
   }
@@ -115,12 +127,13 @@ window.PCGraphe = (() => {
     return [...parTemps].sort((a, b) => a[0] - b[0]).map(([time, value]) => ({ time, value }));
   }
 
-  /* 1 jour : des points vides jusqu'à 16 h à New York, sur la grille de 5 minutes de la
-     première barre. Le blanc qui suit la courbe dit « la séance n'est pas finie ». */
-  function avecLeReste(barres, periode) {
+  /* 1 jour : des points vides jusqu'à la fin de la séance (16 h à New York, ou celle que
+     Yahoo donne pour ce jour : 13 h un jour de séance courte), sur la grille de 5 minutes de
+     la première barre. Le blanc qui suit la courbe dit « la séance n'est pas finie ». */
+  function avecLeReste(barres, periode, seances) {
     if (periode !== '1j' || !barres.length) return barres;
     const debut = barres[0].time;
-    const fin = debut + SEANCE;
+    const fin = seanceDu(seances, jourNY(debut))?.fin ?? debut + SEANCE;
     const derniere = barres[barres.length - 1].time;
     const vides = [];
     for (let t = debut + 300 * (Math.floor((derniere - debut) / 300) + 1); t < fin; t += 300) vides.push({ time: t });
@@ -137,7 +150,7 @@ window.PCGraphe = (() => {
      - un ordre d'avant le jour de la première barre n'est pas montré (la bibliothèque,
        seule, le collerait sur la première barre).
      Le choix de la barre se fait en UTC, avant tout format d'heure. */
-  function placerOrdres(barres, decisions, ticker, periode) {
+  function placerOrdres(barres, decisions, ticker, periode, seances) {
     const ordres = [];
     let hors = 0;
     if (!barres.length) return { ordres, hors };
@@ -153,13 +166,14 @@ window.PCGraphe = (() => {
       const q = Math.floor(ms / 1000);
       const jour = jourNY(q);
       if (jour < premierJour) continue;
-      const seance = enSeance(q);
+      const seance = enSeance(q, seances);
       /* Un jour sans barre ENTRE deux barres de la courbe est férié ; après la dernière, la
          courbe n'est simplement pas encore relue (seconde relecture du 25/11/2026). */
       const horsSeance = !seance || (jour <= dernierJour && !joursAvecBarre.has(jour));
       let i = -1;
       if (periode === '1a') {
-        const apresLaCloture = !seance && ny(q).minutes >= 960;
+        const fin = seanceDu(seances, jour)?.fin;
+        const apresLaCloture = !seance && (fin !== undefined ? q >= fin : ny(q).minutes >= 960);
         i = jours.findIndex((j) => (apresLaCloture ? j > jour : j >= jour));
       } else {
         let k = -1;
@@ -182,7 +196,7 @@ window.PCGraphe = (() => {
   let st = vierge();
   function vierge() {
     return { chart: null, serie: null, marques: null, cle: '', periode: '1j', ticker: '',
-             barres: [], nTotal: 0, indexDe: new Map(), ordres: [], hors: 0, reperes: [], cote: 'droite',
+             barres: [], nTotal: 0, indexDe: new Map(), seances: [], ordres: [], hors: 0, reperes: [], cote: 'droite',
              idx: null, clavier: false, actif: false, attente: null, c: null, bornage: false, premierTemps: null };
   }
 
@@ -528,16 +542,17 @@ window.PCGraphe = (() => {
        une seule barre, puis plus jamais de graphique). */
     el.msg.hidden = true;
     el.cadre.hidden = false;
+    const seances = seancesDe(g);
     if (el.zone.clientWidth === 0) {            // carnet fermé, fenêtre hors de l'écran : plus tard
       st.attente = { g, decisions };
-      const { ordres, hors } = placerOrdres(barres, decisions, g.ticker, g.periode);
+      const { ordres, hors } = placerOrdres(barres, decisions, g.ticker, g.periode, seances);
       return { ordres: ordres.length, hors };
     }
     const cle = `${g.ticker}|${g.periode}`;
     const memeCourbe = st.chart && st.cle === cle;
     const plage = memeCourbe ? st.chart.timeScale().getVisibleLogicalRange() : null;
     const toutVu = !plage || (plage.from <= 0.5 && plage.to >= st.nTotal - 1.5);   // pas de zoom à garder
-    const donnees = avecLeReste(barres, g.periode);
+    const donnees = avecLeReste(barres, g.periode, seances);
     if (!memeCourbe) creer(g, style(el.cadre));
     /* Avant setData : la bibliothèque calcule (et garde) ses graduations pendant setData. */
     st.premierTemps = barres[0].time;
@@ -557,7 +572,8 @@ window.PCGraphe = (() => {
     st.cote = g.periode === '1j' ? 'droite' : 'gauche';
     st.barres = barres;
     st.indexDe = new Map(barres.map((b, i) => [b.time, i]));
-    ({ ordres: st.ordres, hors: st.hors } = placerOrdres(barres, decisions, g.ticker, g.periode));
+    st.seances = seances;
+    ({ ordres: st.ordres, hors: st.hors } = placerOrdres(barres, decisions, g.ticker, g.periode, seances));
     for (const r of st.reperes) if (r.ligne) st.serie.removePriceLine(r.ligne);
     st.reperes = reperesDe(g.achat);
     st.marques.setMarkers(marquesDe(st.ordres));
@@ -574,7 +590,7 @@ window.PCGraphe = (() => {
   /* Le journal a changé (un ordre noté) : les flèches suivent, sans toucher au zoom. */
   function ordres(decisions) {
     if (!st.chart || !st.barres.length) return null;
-    ({ ordres: st.ordres, hors: st.hors } = placerOrdres(st.barres, decisions, st.ticker, st.periode));
+    ({ ordres: st.ordres, hors: st.hors } = placerOrdres(st.barres, decisions, st.ticker, st.periode, st.seances));
     st.marques.setMarkers(marquesDe(st.ordres));
     st.serie.applyOptions({ autoscaleInfoProvider: (origine) => elargir(origine()) });
     return { ordres: st.ordres.length, hors: st.hors };
@@ -629,7 +645,7 @@ window.PCGraphe = (() => {
                          idx: st.idx, clavier: st.clavier, actif: st.actif, nTotal: st.nTotal });
   /* poserDonnees : le seul endroit où la courbe est donnée à la bibliothèque. Un essai peut la
      remplacer pour provoquer un refus (l'objet LightweightCharts est figé, on ne peut pas y toucher). */
-  const outils = { barresDe, avecLeReste, placerOrdres, texteTemps, graduation, enSeance,
+  const outils = { barresDe, avecLeReste, placerOrdres, texteTemps, graduation, enSeance, seancesDe,
                    poserDonnees: (serie, donnees) => serie.setData(donnees) };
 
   return { dessiner, ordres, message, vueEntiere, abandonner, essai, outils, PERIODES };

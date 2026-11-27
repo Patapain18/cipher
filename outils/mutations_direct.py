@@ -168,8 +168,11 @@ ERREURS = [
           '    return 60')], "la position gardée 60 s pendant le direct"),
     (S, [('    return 1 if cours_direct.etat().get("etat") in ("connexion", "ouvert") else 60',
           '    return 1')], "la position jamais gardée hors du direct"),
-    (S, [("    bourse = etat_de_la_bourse()\n    cours_direct.bourse(bourse)\n    p = ma_position.position(rang_de)",
-          "    p = ma_position.position(rang_de)\n    bourse = etat_de_la_bourse()\n    cours_direct.bourse(bourse)")],
+    (S, [("    bourse = etat_de_la_bourse()\n    cours_direct.bourse(bourse)\n"
+          "    # Les séances de Yahoo disent aussi d'où vient chaque cours (une séance courte finit à 13 h).\n"
+          "    p = ma_position.position(rang_de, seances=_seances_bourse[\"periode\"])",
+          "    p = ma_position.position(rang_de, seances=_seances_bourse[\"periode\"])\n"
+          "    bourse = etat_de_la_bourse()\n    cours_direct.bourse(bourse)")],
      "l'état de la Bourse donné au flux APRÈS le calcul"),
     (S, [('    a_relire = s["periode"] is None or not 0 <= age < 3600 or (etat == "fermee" and age >= 300)',
           '    a_relire = s["periode"] is None or not 0 <= age < 3600')], "fermée : pas relue avant une heure"),
