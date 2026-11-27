@@ -269,7 +269,8 @@ def est_un_bot(pid):
         r = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired):
         return True            # ps muet : prudence, on le croit vivant (l'ancien comportement)
-    return "stock_bot.py" in r.stdout
+    commande = r.stdout.lower()
+    return "stock_bot.py" in commande and "python" in commande     # pas un éditeur ni un `tail` du fichier
 
 
 def notify_macos(title, message, subtitle=""):
@@ -1482,14 +1483,16 @@ def verifier():
         # Le fichier PID : vivant ET un stock_bot.py (le 812 du 14/11 était devenu un programme de Safari).
         dormeur = subprocess.Popen(["sleep", "30"])
         faux_bot = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "stock_bot.py"])
+        editeur = subprocess.Popen(["/usr/bin/perl", "-e", "sleep 30", "stock_bot.py"])   # « stock_bot.py » sans python
         fini = subprocess.Popen(["true"])
         fini.wait()
         reel_pid = PID_FILE
         try:
             time.sleep(0.3)
             ok("PID : un processus vivant qui n'est pas un bot ne compte pas ; un stock_bot.py vivant, si ; "
-               "un processus fini, non",
-               not est_un_bot(dormeur.pid) and est_un_bot(faux_bot.pid) and not est_un_bot(fini.pid))
+               "un processus fini, non ; un programme qui nomme stock_bot.py sans être python, non",
+               not est_un_bot(dormeur.pid) and est_un_bot(faux_bot.pid) and not est_un_bot(fini.pid)
+               and not est_un_bot(editeur.pid))
             globals()["PID_FILE"] = os.path.join(dossier, "bot.pid")
             with open(PID_FILE, "w") as f:
                 f.write(str(dormeur.pid))
@@ -1501,7 +1504,7 @@ def verifier():
                perime is None and vivant == faux_bot.pid)
         finally:
             globals()["PID_FILE"] = reel_pid
-            for p in (dormeur, faux_bot):
+            for p in (dormeur, faux_bot, editeur):
                 p.kill()
                 p.wait()
 

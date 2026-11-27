@@ -1141,7 +1141,8 @@ async function renderThermometre() {
     /* Une panne de Yahoo ne doit ni effacer la dernière lecture, ni
        passer au rouge (le rouge dit « baisse » dans cette appli). */
     if (thermoDernierHtml) {
-      if (etat) etat.textContent = `Mise à jour impossible pour l'instant (${e.message}) : la lecture affichée est la dernière connue.`;
+      const texte = `Mise à jour impossible pour l'instant (${e.message}) : la lecture affichée est la dernière connue.`;
+      if (etat && etat.textContent !== texte) etat.textContent = texte;     // zone aria-live : seulement si elle change
     } else {
       zone.innerHTML = `<p class="thermo-attente">Thermomètre indisponible pour l'instant (${esc(e.message)}). Nouvel essai dans une minute.</p>`;
     }

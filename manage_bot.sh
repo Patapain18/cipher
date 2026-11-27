@@ -15,10 +15,20 @@ PID_FILE="logs/stock_bot.pid"
 
 mkdir -p logs data
 
+# Le bot vit-il, et est-ce bien LUI ? Après un redémarrage non propre du Mac, le fichier PID reste,
+# et son numéro peut appartenir à un autre programme : le 27/11/2026, le 812 du 14/11 était devenu un
+# programme de Safari (« stop » l'aurait tué, « status » disait « actif », « start » refusait). Même
+# contrôle que est_un_bot dans stock_bot.py.
+bot_vivant() {
+    local pid="$1"
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null \
+        && ps -o command= -p "$pid" 2>/dev/null | grep -i "python" | grep -q "stock_bot.py"
+}
+
 case "$1" in
     start)
         # Vérifier si déjà lancé
-        if [ -f "$PID_FILE" ] && kill -0 $(cat "$PID_FILE") 2>/dev/null; then
+        if [ -f "$PID_FILE" ] && bot_vivant "$(cat "$PID_FILE")"; then
             echo "❌ Le bot tourne déjà (PID: $(cat $PID_FILE))"
             exit 1
         fi
@@ -69,7 +79,7 @@ case "$1" in
         echo $! > "$PID_FILE"
         sleep 2
 
-        if kill -0 $(cat "$PID_FILE") 2>/dev/null; then
+        if bot_vivant "$(cat "$PID_FILE")"; then
             echo "✅ Bot lancé (PID: $(cat $PID_FILE))"
             echo "📁 Logs: $LOG_FILE"
             echo ""
@@ -91,20 +101,20 @@ case "$1" in
         fi
 
         PID=$(cat "$PID_FILE")
-        if kill -0 "$PID" 2>/dev/null; then
+        if bot_vivant "$PID"; then
             kill "$PID"
             # Tuer aussi caffeinate
             pkill -f "caffeinate.*stock_bot.py" 2>/dev/null
             rm "$PID_FILE"
             echo "✅ Bot arrêté"
         else
-            echo "⚠️  Le PID enregistré ($PID) n'existe plus"
+            echo "⚠️  Le PID enregistré ($PID) n'est pas un bot vivant (rien n'est tué)"
             rm "$PID_FILE"
         fi
         ;;
 
     status)
-        if [ -f "$PID_FILE" ] && kill -0 $(cat "$PID_FILE") 2>/dev/null; then
+        if [ -f "$PID_FILE" ] && bot_vivant "$(cat "$PID_FILE")"; then
             PID=$(cat "$PID_FILE")
             UPTIME=$(ps -o etime= -p "$PID" | tr -d ' ')
             echo "✅ Bot actif"

@@ -18,7 +18,7 @@ const { AxeBuilder } = require('@axe-core/playwright');
 
 const BASE = 'http://localhost:8779';
 const RAISON = 'aucun cours reçu pour ^GSPC (Yahoo refuse)';
-const RECENTE = new Date(Date.now() - 60_000).toISOString();          // il y a une minute : l'heure seule
+const RECENTE = new Date().toISOString();                             // maintenant (le jour même, même à 0 h) : l'heure seule
 const VIEILLE = '2026-11-25T21:10:00+00:00';                           // 22:10 à Paris, un autre jour
 const heureParis = (iso) => new Date(iso).toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris', hour: '2-digit', minute: '2-digit' });
 const PHRASE = `Mise à jour impossible pour l'instant (${RAISON}) : la lecture affichée date de ${heureParis(RECENTE)}.`;
