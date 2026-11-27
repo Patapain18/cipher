@@ -687,15 +687,20 @@ def etat_de_la_bourse():
 def graphique_servi(ticker, periode):
     """
     /api/graphique : le graphique de ma_position avec les séances de Yahoo (la vraie fin d'une séance
-    courte), gardé en cache (GRAPHIQUE_CACHE). Tant que le serveur n'a pas lu les séances (démarrage,
-    Yahoo muet), il est calculé sans elles et gardé 30 s au plus, sous une autre clé : rangé sous la clé
-    normale, il serait resté sans elles jusqu'à une heure (relecture du 27/11/2026).
+    courte), gardé en cache (GRAPHIQUE_CACHE). Les séances déjà lues par le serveur servent telles
+    quelles (la position les relit toutes les heures) : un graphique en cache n'attend jamais Yahoo.
+    Tant qu'elles ne sont pas lues (démarrage, Yahoo muet, ou l'état imposé des vérifications du
+    direct), le graphique est calculé sans elles et gardé sous une AUTRE clé : rangé sous la clé
+    normale, il serait resté sans elles jusqu'à une heure (relecture du 27/11/2026) ; dès qu'elles
+    sont lues, la clé normale prend le relais.
     """
     import ma_position
-    etat_de_la_bourse()
     seances = _seances_bourse["periode"]
     if seances is None:
-        return cached(f"/api/graphique?{ticker}&{periode}&sans-seances", min(30, GRAPHIQUE_CACHE[periode]),
+        etat_de_la_bourse()
+        seances = _seances_bourse["periode"]
+    if seances is None:
+        return cached(f"/api/graphique?{ticker}&{periode}&sans-seances", GRAPHIQUE_CACHE[periode],
                       lambda: ma_position.graphique(ticker, periode))
     return cached(f"/api/graphique?{ticker}&{periode}", GRAPHIQUE_CACHE[periode],
                   lambda: ma_position.graphique(ticker, periode, seances=seances))

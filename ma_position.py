@@ -145,59 +145,110 @@ def _seances_yahoo(seances):
 # redevenait « en séance » dès la séance suivante (relecture du 27/11/2026). Une séance normale
 # (9 h 30 – 16 h) n'y est jamais écrite : c'est la règle par défaut. Seul le serveur l'écrit.
 _seances_gardees = {"chemin": None, "valeurs": {}, "lisible": True}
-_verrou_seances = threading.Lock()
+_verrou_seances = threading.RLock()       # réentrant : retenir_seances relit la mémoire sous le verrou
 
 
 def _chemin_seances_courtes():
     return os.path.join(os.path.dirname(os.path.abspath(JOURNAL)), "seances_courtes.json")
 
 
+def _genre_de_seance(debut, fin):
+    """« courte » : une vraie séance courte de New York, qui commence à 9 h 30 pile et finit avant 16 h, le
+    même jour ; « normale » : 9 h 30 – 16 h pile ; None pour le reste (une heure de fantaisie : un essai du
+    serveur avait écrit des séances inventées dans data/, le 27/11/2026). La même règle à l'écriture et à
+    la lecture du fichier."""
+    try:
+        if debut.utcoffset() is None or fin.utcoffset() is None or not debut < fin:
+            return None
+        d, f = debut.astimezone(ZoneInfo("America/New_York")), fin.astimezone(ZoneInfo("America/New_York"))
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return None
+    if (d.date() != f.date() or (d.hour, d.minute, d.second, d.microsecond) != (9, 30, 0, 0)
+            or f.second or f.microsecond):
+        return None
+    minutes = f.hour * 60 + f.minute
+    return "courte" if minutes < 16 * 60 else "normale" if minutes == 16 * 60 else None
+
+
+def _seance_courte(debut, fin):
+    return _genre_de_seance(debut, fin) == "courte"
+
+
+def _jour_ny(instant):
+    return instant.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+
+
+def _lire_fichier_seances(chemin):
+    """Le fichier des séances courtes : ({jour : (début, fin) en UTC}, lisible). Une ligne qui n'est pas une
+    vraie séance courte, ou rangée sous un autre jour que celui de son début, est sautée."""
+    valeurs = {}
+    try:
+        with open(chemin) as f:
+            brut = json.load(f)
+        for jour, paire in brut.items():
+            try:
+                debut, fin = (datetime.fromisoformat(x) for x in paire)
+                if _seance_courte(debut, fin) and _jour_ny(debut) == jour:
+                    valeurs[jour] = (debut.astimezone(timezone.utc), fin.astimezone(timezone.utc))
+            except (TypeError, ValueError):
+                continue
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, AttributeError) as e:
+        print(f"[ma_position] {chemin} illisible, gardé tel quel : {e}", file=sys.stderr)
+        return {}, False
+    return valeurs, True
+
+
 def _lire_seances_courtes():
-    """Les séances courtes gardées, {jour de New York : (début, fin) en UTC}, lues une fois par fichier.
-    Une ligne abîmée est sautée ; un fichier illisible n'est jamais remplacé."""
+    """Les séances courtes gardées, lues une fois par fichier (sous le verrou : une lecture ne remet jamais
+    une mémoire plus vieille qu'une écriture). Un fichier illisible n'est jamais remplacé."""
     chemin = _chemin_seances_courtes()
-    if _seances_gardees["chemin"] != chemin:
-        valeurs, lisible = {}, True
-        try:
-            with open(chemin) as f:
-                brut = json.load(f)
-            for jour, paire in brut.items():
-                try:
-                    debut, fin = (datetime.fromisoformat(x) for x in paire)
-                    if debut.utcoffset() is not None and fin.utcoffset() is not None and debut < fin:
-                        valeurs[str(jour)] = (debut.astimezone(timezone.utc), fin.astimezone(timezone.utc))
-                except (TypeError, ValueError):
-                    continue
-        except FileNotFoundError:
-            pass
-        except (OSError, ValueError, AttributeError) as e:
-            print(f"[ma_position] {chemin} illisible, gardé tel quel : {e}", file=sys.stderr)
-            lisible = False
-        _seances_gardees.update(chemin=chemin, valeurs=valeurs, lisible=lisible)
-    return _seances_gardees
+    with _verrou_seances:
+        if _seances_gardees["chemin"] != chemin:
+            valeurs, lisible = _lire_fichier_seances(chemin)
+            _seances_gardees.update(chemin=chemin, valeurs=valeurs, lisible=lisible)
+        return _seances_gardees
 
 
 def retenir_seances(seances):
-    """Garde sur disque les séances courtes que Yahoo vient de donner au serveur (à chaque lecture de ses
-    séances, une fois par heure au plus). Seule une vraie séance courte est écrite : elle commence à
-    9 h 30 et finit avant 16 h, le même jour à New York (une séance normale ou une heure de fantaisie,
-    jamais : un essai du serveur avait écrit des séances inventées dans data/, le 27/11/2026)."""
-    nouvelles = {}
+    """Garde sur disque les séances que Yahoo vient de donner au serveur (à chaque lecture de ses séances,
+    une fois par heure au plus) : une vraie séance courte est ajoutée ; une séance normale (9 h 30 – 16 h)
+    pour un jour gardé l'en retire (Yahoo s'est dédit : relecture du 27/11/2026) ; une heure de fantaisie
+    ne change rien. Le fichier est relu sous un verrou entre processus juste avant d'être écrit (rien de ce
+    qu'un autre a écrit ne se perd), par un fichier temporaire unique."""
+    import fcntl
+    import tempfile
+    ajouts, retraits = {}, set()
     for debut, fin in _seances_yahoo(seances):
-        d, f = debut.astimezone(ZoneInfo("America/New_York")), fin.astimezone(ZoneInfo("America/New_York"))
-        if (d.date() == f.date() and (d.hour, d.minute, d.second, d.microsecond) == (9, 30, 0, 0)
-                and f.second == 0 and f.microsecond == 0 and f.hour * 60 + f.minute < 16 * 60):
-            nouvelles[d.date().isoformat()] = (debut.astimezone(timezone.utc), fin.astimezone(timezone.utc))
-    if not nouvelles:
-        return
+        genre = _genre_de_seance(debut, fin)
+        if genre == "courte":
+            ajouts[_jour_ny(debut)] = (debut.astimezone(timezone.utc), fin.astimezone(timezone.utc))
+        elif genre == "normale":
+            retraits.add(_jour_ny(debut))
+    retraits -= set(ajouts)
     with _verrou_seances:
         g = _lire_seances_courtes()
-        if not g["lisible"] or all(g["valeurs"].get(j) == p for j, p in nouvelles.items()):
-            return
-        valeurs = {**g["valeurs"], **nouvelles}
+        if not g["lisible"] or (all(g["valeurs"].get(j) == p for j, p in ajouts.items())
+                                and not retraits & set(g["valeurs"])):
+            return                                  # rien de neuf
+        chemin = g["chemin"]
         try:
-            _ecrire(g["chemin"], {j: [d.isoformat(), f.isoformat()] for j, (d, f) in sorted(valeurs.items())})
-            g["valeurs"] = valeurs
+            os.makedirs(os.path.dirname(chemin), exist_ok=True)
+            with open(chemin + ".verrou", "a") as verrou:
+                fcntl.flock(verrou.fileno(), fcntl.LOCK_EX)
+                sur_disque, lisible = _lire_fichier_seances(chemin)
+                if not lisible:
+                    g["lisible"] = False
+                    return
+                valeurs = {j: p for j, p in {**sur_disque, **ajouts}.items() if j not in retraits}
+                if valeurs != sur_disque:
+                    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(chemin), prefix=".seances-", suffix=".tmp")
+                    with os.fdopen(fd, "w") as f:
+                        json.dump({j: [d.isoformat(), fi.isoformat()] for j, (d, fi) in sorted(valeurs.items())},
+                                  f, indent=2)
+                    os.replace(tmp, chemin)
+                g["valeurs"] = valeurs
         except OSError as e:
             print(f"[ma_position] séances courtes pas gardées : {e}", file=sys.stderr)
 
@@ -1332,6 +1383,37 @@ def _verifier_lot3(ok, proche):
             with open(gardees) as f:
                 ok("la même séance revue n'est pas réécrite (le même fichier, une seule séance)",
                    os.stat(gardees).st_ino == fichier_avant and len(json.load(f)) == 1)
+            # La seconde passe de la relecture du 27/11/2026 : lecture contrôlée, deux processus, Yahoo qui se dédit.
+            tz = timezone.utc
+            with open(gardees, "w") as f:
+                json.dump({"2026-11-24": ["2026-11-24T10:00:00+00:00", "2026-11-24T11:00:00+00:00"],
+                           "2026-11-25": ["2026-11-27T14:30:00+00:00", "2026-11-27T18:00:00+00:00"],
+                           "2026-11-27": ["2026-11-27T14:30:00+00:00", "2026-11-27T18:00:00+00:00"]}, f)
+            _seances_gardees["chemin"] = None
+            ok("à la lecture aussi, seule une vraie séance courte rangée sous son jour compte (le 24 à 10 h UTC "
+               "et le 27 rangé sous le 25 sont sautés)",
+               [seance_du_cours(u(24, 20, 0), lundi), seance_du_cours(u(25, 18, 30), lundi),
+                seance_du_cours(u(27, 18, 30), lundi)] == ["ouverte", "ouverte", "apres"])
+            with open(gardees, "w") as f:      # un autre processus ajoute le 24/12, sans que celui-ci le sache
+                json.dump({"2026-11-27": ["2026-11-27T14:30:00+00:00", "2026-11-27T18:00:00+00:00"],
+                           "2026-12-24": ["2026-12-24T14:30:00+00:00", "2026-12-24T18:00:00+00:00"]}, f)
+            retenir_seances({"jour": (datetime(2027, 7, 2, 13, 30, tzinfo=tz), datetime(2027, 7, 2, 17, 0, tzinfo=tz))})
+            with open(gardees) as f:
+                ok("deux processus : le fichier est relu juste avant d'écrire, rien ne se perd (27/11, 24/12, 02/07/2027)",
+                   sorted(json.load(f)) == ["2026-11-27", "2026-12-24", "2027-07-02"])
+            retenir_seances({"jour": (datetime(2026, 12, 24, 15, 0, tzinfo=tz), datetime(2026, 12, 24, 16, 0, tzinfo=tz))})
+            retenir_seances({"jour": (u(27, 14, 30), u(27, 21, 0))})
+            with open(gardees) as f:
+                ok("Yahoo se dédit (une séance normale le 27/11) : le jour est retiré ; une heure de fantaisie "
+                   "le 24/12 ne retire rien",
+                   sorted(json.load(f)) == ["2026-12-24", "2027-07-02"]
+                   and seance_du_cours(u(27, 18, 30), lundi) == "ouverte")
+            with open(gardees, "w") as f:      # la séance du 27 rangée sous le 25 : Yahoo ne pourrait jamais la retirer
+                json.dump({"2026-11-25": ["2026-11-27T14:30:00+00:00", "2026-11-27T18:00:00+00:00"]}, f)
+            _seances_gardees["chemin"] = None
+            retenir_seances({"jour": (u(27, 14, 30), u(27, 21, 0))})
+            ok("une séance rangée sous un autre jour est sautée : Yahoo dit « normale » le 27, et le 27 l'est",
+               seance_du_cours(u(27, 18, 30), lundi) == "ouverte")
             with open(gardees, "w") as f:
                 f.write("{abîmé")
             _seances_gardees["chemin"] = None

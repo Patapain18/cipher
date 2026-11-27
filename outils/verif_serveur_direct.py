@@ -329,22 +329,26 @@ def seances():
     erreur_avant = sys.stderr
     sys.stderr = open(os.devnull, "w")       # la ligne « séances courtes : disque plein », voulue ici
     try:
-        serveur.etat_de_la_bourse = lambda: "ouverte"
+        appels = []
+        serveur.etat_de_la_bourse = lambda: appels.append(1) or "ouverte"
         serveur._seances_bourse.update(periode=courte)
         serveur.ma_position_en_direct()
         ok("la position reçoit les séances que le serveur garde", vus["position"] == [courte])
         with serveur._cache_lock:
             serveur._cache.clear()
+        n = len(appels)
         serveur.graphique_servi("SPY", "1a")
         serveur.graphique_servi("SPY", "1a")
-        ok("le graphique les reçoit aussi, gardé en cache (un calcul pour deux demandes)", vus["graphique"] == [courte])
+        ok("le graphique les reçoit aussi, gardé en cache (un calcul pour deux demandes), sans attendre Yahoo",
+           vus["graphique"] == [courte] and len(appels) == n)
         serveur._seances_bourse.update(periode=None)
         with serveur._cache_lock:
             serveur._cache.clear()
         vus["graphique"].clear()
+        n = len(appels)
         serveur.graphique_servi("SPY", "1a")
-        ok("séances pas encore lues : calculé sans elles, et pas rangé sous la clé normale (1 h)",
-           vus["graphique"] == [None] and "/api/graphique?SPY&1a" not in serveur._cache)
+        ok("séances pas encore lues : une lecture tentée, calculé sans elles, pas rangé sous la clé normale (1 h)",
+           vus["graphique"] == [None] and len(appels) == n + 1 and "/api/graphique?SPY&1a" not in serveur._cache)
         serveur._seances_bourse.update(periode=courte)
         serveur.graphique_servi("SPY", "1a")
         ok("… dès qu'elles sont lues, le graphique les a (pas le calcul fait sans elles)",
